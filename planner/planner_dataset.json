@@ -1,0 +1,530 @@
+[
+  {
+    "instruction": "Add pagination support to the listUsers endpoint so the frontend can request pages of 50 users.",
+    "expected_steps": [
+      {
+        "action": "EDIT",
+        "description": "Add pagination logic to listUsers endpoint"
+      }
+    ]
+  },
+  {
+    "instruction": "Where in the codebase are the API routes registered for the HTTP server?",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate API route registration"
+      }
+    ]
+  },
+  {
+    "instruction": "Explain how JWT authentication is implemented in this backend service.",
+    "expected_steps": [
+      {
+        "action": "EXPLAIN",
+        "description": "Explain JWT authentication implementation"
+      }
+    ]
+  },
+  {
+    "instruction": "Add Redis as a service in docker-compose so the API can cache responses locally.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Add Redis service to docker-compose"
+      }
+    ]
+  },
+  {
+    "instruction": "Refactor the email sender so it uses dependency injection instead of creating the SMTP client directly.",
+    "expected_steps": [
+      {
+        "action": "EDIT",
+        "description": "Refactor email sender for dependency injection"
+      }
+    ]
+  },
+  {
+    "instruction": "Find where password hashing is implemented and increase the bcrypt cost factor from 10 to 12.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate password hashing implementation"
+      },
+      {
+        "action": "EDIT",
+        "description": "Increase bcrypt cost factor"
+      }
+    ]
+  },
+  {
+    "instruction": "Locate the session manager and change the session expiry to 30 minutes instead of one hour.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate session manager"
+      },
+      {
+        "action": "EDIT",
+        "description": "Update session expiry to 30 minutes"
+      }
+    ]
+  },
+  {
+    "instruction": "Create a Dockerfile for the API service and wire it into docker-compose.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Create Dockerfile for API service"
+      },
+      {
+        "action": "INFRA",
+        "description": "Add service to docker-compose"
+      }
+    ]
+  },
+  {
+    "instruction": "Search for all usages of the legacy auth module and replace them with the new auth service.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Find usages of legacy auth module"
+      },
+      {
+        "action": "EDIT",
+        "description": "Replace legacy auth usage with new service"
+      }
+    ]
+  },
+  {
+    "instruction": "Before we refactor caching, explain how cache invalidation currently works.",
+    "expected_steps": [
+      {
+        "action": "EXPLAIN",
+        "description": "Explain current cache invalidation logic"
+      }
+    ]
+  },
+  {
+    "instruction": "Users report login sometimes returns HTTP 500. Track down the login handler and fix the null pointer.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate login handler"
+      },
+      {
+        "action": "EDIT",
+        "description": "Fix null pointer bug in login handler"
+      }
+    ]
+  },
+  {
+    "instruction": "Expose a /health endpoint and configure Kubernetes readiness probes to call it.",
+    "expected_steps": [
+      {
+        "action": "EDIT",
+        "description": "Add health endpoint to API"
+      },
+      {
+        "action": "INFRA",
+        "description": "Configure Kubernetes readiness probe"
+      }
+    ]
+  },
+  {
+    "instruction": "The product API is slow. Locate the caching layer and increase the cache TTL to five minutes.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate caching layer"
+      },
+      {
+        "action": "EDIT",
+        "description": "Update cache TTL to five minutes"
+      }
+    ]
+  },
+  {
+    "instruction": "Add structured logging to the checkout flow for production debugging.",
+    "expected_steps": [
+      {
+        "action": "EDIT",
+        "description": "Add structured logging to checkout flow"
+      }
+    ]
+  },
+  {
+    "instruction": "Set up a GitHub Actions workflow that runs tests and builds the Docker image.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Create GitHub Actions workflow"
+      }
+    ]
+  },
+  {
+    "instruction": "Investigate why the background worker times out and add exponential backoff to retries.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate background worker retry logic"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add exponential backoff to retry logic"
+      }
+    ]
+  },
+  {
+    "instruction": "Locate the configuration loader and modify it to read secrets from AWS Secrets Manager.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate configuration loader"
+      },
+      {
+        "action": "EDIT",
+        "description": "Integrate AWS Secrets Manager"
+      }
+    ]
+  },
+  {
+    "instruction": "Add a Helm chart so this service can be deployed to Kubernetes.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Create Helm chart for service"
+      }
+    ]
+  },
+  {
+    "instruction": "Find the metrics exporter and add per-endpoint latency metrics.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate metrics exporter"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add latency metrics per endpoint"
+      }
+    ]
+  },
+  {
+    "instruction": "Refactor the order service so database access goes through a repository layer.",
+    "expected_steps": [
+      {
+        "action": "EDIT",
+        "description": "Introduce repository layer for database access"
+      }
+    ]
+  },
+  {
+    "instruction": "The login endpoint is missing request logging. Locate the handler and add request logs.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate login handler"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add request logging"
+      }
+    ]
+  },
+  {
+    "instruction": "Explain how the background worker processes jobs from the queue.",
+    "expected_steps": [
+      {
+        "action": "EXPLAIN",
+        "description": "Explain background worker job processing"
+      }
+    ]
+  },
+  {
+    "instruction": "Add environment variable support for the database connection string.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Add environment variable configuration"
+      },
+      {
+        "action": "EDIT",
+        "description": "Update database initialization to read env variable"
+      }
+    ]
+  },
+  {
+    "instruction": "Find where file uploads are handled and enforce a 10MB file size limit.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate file upload handler"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add file size validation"
+      }
+    ]
+  },
+  {
+    "instruction": "Explain how the payment service communicates with Stripe.",
+    "expected_steps": [
+      {
+        "action": "EXPLAIN",
+        "description": "Explain Stripe integration"
+      }
+    ]
+  },
+  {
+    "instruction": "Locate the request middleware stack and add correlation IDs to all requests.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate request middleware"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add correlation ID middleware"
+      }
+    ]
+  },
+  {
+    "instruction": "Add rate limiting to the login endpoint to prevent brute force attacks.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate login endpoint"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add rate limiting"
+      }
+    ]
+  },
+  {
+    "instruction": "Configure the service so logs are written to stdout in JSON format.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Configure JSON logging"
+      }
+    ]
+  },
+  {
+    "instruction": "Find where user sessions are created and add audit logging.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate session creation"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add audit logging"
+      }
+    ]
+  },
+  {
+    "instruction": "Explain how the API validates incoming requests.",
+    "expected_steps": [
+      {
+        "action": "EXPLAIN",
+        "description": "Explain request validation"
+      }
+    ]
+  },
+  {
+    "instruction": "Locate the job scheduler and add support for cron-style schedules.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate job scheduler"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add cron scheduling support"
+      }
+    ]
+  },
+  {
+    "instruction": "Add support for gzip compression in API responses.",
+    "expected_steps": [
+      {
+        "action": "EDIT",
+        "description": "Add gzip compression middleware"
+      }
+    ]
+  },
+  {
+    "instruction": "Set up Terraform configuration for deploying this service to AWS.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Create Terraform deployment configuration"
+      }
+    ]
+  },
+  {
+    "instruction": "Find where email templates are rendered and update them to use the new branding.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate email template renderer"
+      },
+      {
+        "action": "EDIT",
+        "description": "Update templates with new branding"
+      }
+    ]
+  },
+  {
+    "instruction": "Explain how request authentication is enforced in middleware.",
+    "expected_steps": [
+      {
+        "action": "EXPLAIN",
+        "description": "Explain authentication middleware"
+      }
+    ]
+  },
+  {
+    "instruction": "Locate the caching decorator and make it configurable via environment variables.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate caching decorator"
+      },
+      {
+        "action": "EDIT",
+        "description": "Make caching configurable via environment variables"
+      }
+    ]
+  },
+  {
+    "instruction": "Add Prometheus metrics to the API server.",
+    "expected_steps": [
+      {
+        "action": "EDIT",
+        "description": "Expose Prometheus metrics endpoint"
+      }
+    ]
+  },
+  {
+    "instruction": "Find where database migrations run and update them to include the new orders table.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate migration runner"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add orders table migration"
+      }
+    ]
+  },
+  {
+    "instruction": "Explain how the retry mechanism works in the message consumer.",
+    "expected_steps": [
+      {
+        "action": "EXPLAIN",
+        "description": "Explain retry mechanism"
+      }
+    ]
+  },
+  {
+    "instruction": "Add CI lint checks for Python formatting using black.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Add black lint step to CI"
+      }
+    ]
+  },
+  {
+    "instruction": "Find where product search queries are built and optimize them to avoid N+1 queries.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate product search query builder"
+      },
+      {
+        "action": "EDIT",
+        "description": "Optimize query to avoid N+1"
+      }
+    ]
+  },
+  {
+    "instruction": "Configure the API container so it exposes port 8080 instead of 5000.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Update container port configuration"
+      }
+    ]
+  },
+  {
+    "instruction": "Locate the payment webhook handler and add signature validation.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate payment webhook handler"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add signature verification"
+      }
+    ]
+  },
+  {
+    "instruction": "Explain how database connections are pooled in this service.",
+    "expected_steps": [
+      {
+        "action": "EXPLAIN",
+        "description": "Explain database connection pooling"
+      }
+    ]
+  },
+  {
+    "instruction": "Add request tracing using OpenTelemetry.",
+    "expected_steps": [
+      {
+        "action": "EDIT",
+        "description": "Add OpenTelemetry tracing"
+      }
+    ]
+  },
+  {
+    "instruction": "Find where API responses are serialized and update them to include request IDs.",
+    "expected_steps": [
+      {
+        "action": "SEARCH",
+        "description": "Locate response serializer"
+      },
+      {
+        "action": "EDIT",
+        "description": "Add request ID to responses"
+      }
+    ]
+  },
+  {
+    "instruction": "Configure the service so feature flags are loaded from LaunchDarkly.",
+    "expected_steps": [
+      {
+        "action": "INFRA",
+        "description": "Integrate LaunchDarkly configuration"
+      },
+      {
+        "action": "EDIT",
+        "description": "Update feature flag loader"
+      }
+    ]
+  },
+  {
+    "instruction": "Explain how authorization rules are applied in the API.",
+    "expected_steps": [
+      {
+        "action": "EXPLAIN",
+        "description": "Explain authorization logic"
+      }
+    ]
+  }
+]

@@ -1,0 +1,642 @@
+[
+  {
+    "instruction": "Find where JWT tokens are generated and modify the logic so the issuer claim is included.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Locate the Redis cache initialization and update it to enable key expiration.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Before touching authentication, identify the login handler and add rate limiting to it.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Search for the email sending function and update it so failures trigger retries.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Look up where the payment webhook is processed and add idempotency checks.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Check where the session middleware lives and update it to expire sessions after 30 minutes.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Find the code that uploads files to S3 and modify it so uploads larger than 20MB are rejected.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Locate the background worker loop and change it so failed jobs retry with exponential backoff.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Identify the API handler for product creation and add validation for negative prices.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Search for the cart update logic and change it so duplicate items increment quantity.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Find the password reset endpoint and modify it so reset tokens expire after one hour.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Locate where user emails are stored and normalize them to lowercase before saving.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Before modifying the worker retry strategy locate the queue consumer and update the retry logic.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Check where login failures are handled and add a counter for failed attempts.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Find the notification dispatcher and modify it to avoid sending duplicate notifications.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Search for the metrics exporter and update it to track request latency.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Locate the configuration loader and modify it to support environment overrides.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Identify the API gateway middleware and add request ID generation.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Find where API responses are serialized and update them to omit null values.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Search for order creation logic and enforce validation for invalid coupon codes.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Explain how JWT authentication works before we modify the token generation logic.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the role of Redis caching so we understand why database queries are slow.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how the job queue processes background tasks before changing retry behavior.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Walk through how the authentication middleware validates requests.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how the order creation API works internally.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how database connection pools improve performance.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the lifecycle of an HTTP request in this backend.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how Kubernetes routes traffic from services to pods.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how distributed locks using Redis work.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why retries often use exponential backoff.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how a rate limiting middleware protects APIs.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain what the repository pattern provides in backend architecture.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the difference between synchronous and asynchronous job processing.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how caching layers typically sit between services and databases.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how load balancers distribute traffic across instances.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why idempotency matters for webhook handlers.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how message queues allow asynchronous processing.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how feature flags enable safer deployments.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how container orchestration platforms schedule workloads.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how distributed tracing helps debug production issues.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Before modifying the login flow find where JWT validation happens.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the file where the Redis client is initialized before changing caching logic.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for the function that sends transactional emails.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the API registers HTTP routes.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the module responsible for background job processing.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the codebase for where password hashing occurs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the database connection pool is created.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the configuration loader used during application startup.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for code that handles file uploads.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the module responsible for generating password reset tokens.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where the application validates API keys.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the codebase for the retry helper used by HTTP clients.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where analytics events are published.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the part of the system that processes webhooks.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for the logic responsible for product indexing.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the component responsible for websocket connections.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where request logging middleware is defined.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for where order totals are calculated.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the code that generates request correlation IDs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where authentication cookies are issued.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Create a Dockerfile for the backend API and ensure it installs dependencies.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add Redis to the docker compose configuration so the app runs locally.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Provision a PostgreSQL database using Terraform.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure a Kubernetes deployment for the worker service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add a CI workflow that runs tests and builds a Docker image.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure environment variables required for staging deployment.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up monitoring using Prometheus and Grafana.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Create a Helm chart for deploying the backend service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure autoscaling rules for the API deployment.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add Kubernetes secrets for API keys used by the service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure log aggregation using Loki.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up automatic database migrations during deployment.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Provision an S3 bucket for storing uploaded files.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add alerting rules for API error rates.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure ingress routing for the API service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Create a staging environment using infrastructure as code.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure CI caching to speed up dependency installs.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add container security scanning to the CI pipeline.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure distributed tracing infrastructure.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up automated backups for the production database.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Find where JWT tokens are generated and modify the logic so the issuer claim is included.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Locate the Redis cache initialization and update it to enable key expiration.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Before touching authentication, identify the login handler and add rate limiting to it.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Search for the email sending function and update it so failures trigger retries.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Look up where the payment webhook is processed and add idempotency checks.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Check where the session middleware lives and update it to expire sessions after 30 minutes.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Find the code that uploads files to S3 and modify it so uploads larger than 20MB are rejected.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Locate the background worker loop and change it so failed jobs retry with exponential backoff.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Identify the API handler for product creation and add validation for negative prices.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Search for the cart update logic and change it so duplicate items increment quantity.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Find the password reset endpoint and modify it so reset tokens expire after one hour.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Locate where user emails are stored and normalize them to lowercase before saving.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Before modifying the worker retry strategy locate the queue consumer and update the retry logic.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Check where login failures are handled and add a counter for failed attempts.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Find the notification dispatcher and modify it to avoid sending duplicate notifications.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Search for the metrics exporter and update it to track request latency.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Locate the configuration loader and modify it to support environment overrides.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Identify the API gateway middleware and add request ID generation.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Find where API responses are serialized and update them to omit null values.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Search for order creation logic and enforce validation for invalid coupon codes.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Explain how JWT authentication works before we modify the token generation logic.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the role of Redis caching so we understand why database queries are slow.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how the job queue processes background tasks before changing retry behavior.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Walk through how the authentication middleware validates requests.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how the order creation API works internally.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how database connection pools improve performance.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the lifecycle of an HTTP request in this backend.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how Kubernetes routes traffic from services to pods.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how distributed locks using Redis work.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why retries often use exponential backoff.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how a rate limiting middleware protects APIs.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain what the repository pattern provides in backend architecture.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the difference between synchronous and asynchronous job processing.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how caching layers typically sit between services and databases.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how load balancers distribute traffic across instances.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why idempotency matters for webhook handlers.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how message queues allow asynchronous processing.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how feature flags enable safer deployments.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how container orchestration platforms schedule workloads.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how distributed tracing helps debug production issues.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Before modifying the login flow find where JWT validation happens.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the file where the Redis client is initialized before changing caching logic.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for the function that sends transactional emails.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the API registers HTTP routes.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the module responsible for background job processing.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the codebase for where password hashing occurs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the database connection pool is created.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the configuration loader used during application startup.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for code that handles file uploads.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the module responsible for generating password reset tokens.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where the application validates API keys.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the codebase for the retry helper used by HTTP clients.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where analytics events are published.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the part of the system that processes webhooks.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for the logic responsible for product indexing.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the component responsible for websocket connections.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where request logging middleware is defined.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for where order totals are calculated.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the code that generates request correlation IDs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where authentication cookies are issued.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Create a Dockerfile for the backend API and ensure it installs dependencies.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add Redis to the docker compose configuration so the app runs locally.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Provision a PostgreSQL database using Terraform.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure a Kubernetes deployment for the worker service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add a CI workflow that runs tests and builds a Docker image.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure environment variables required for staging deployment.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up monitoring using Prometheus and Grafana.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Create a Helm chart for deploying the backend service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure autoscaling rules for the API deployment.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add Kubernetes secrets for API keys used by the service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure log aggregation using Loki.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up automatic database migrations during deployment.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Provision an S3 bucket for storing uploaded files.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add alerting rules for API error rates.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure ingress routing for the API service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Create a staging environment using infrastructure as code.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure CI caching to speed up dependency installs.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add container security scanning to the CI pipeline.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure distributed tracing infrastructure.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up automated backups for the production database.",
+    "expected_category": "INFRA"
+  }
+]

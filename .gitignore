@@ -1,0 +1,34 @@
+# Virtual env and local Python
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / editor
+.continue/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Serena (local tool config and cache)
+.serena/
+
+# Optional: uncomment if you don't want to track eval outputs
+# router_eval/*.png
+# router_eval/plots/

@@ -1,0 +1,1190 @@
+[
+  {
+    "instruction": "Update the authentication middleware so expired JWT tokens trigger a 401 response instead of silently refreshing.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the user service so email addresses are normalized to lowercase before being stored.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the order validation logic to eliminate duplicated checks across multiple endpoints.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add pagination support to the listUsers API endpoint.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the error handling in the payment processing function.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Change the caching layer so product queries are cached for five minutes.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the API handler to validate phone numbers before saving them.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the background worker loop so jobs that fail are retried with exponential backoff.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the SQL query so inactive users are excluded from search results.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add structured logging to the checkout flow.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Extend the TypeScript Product interface to include a stockQuantity field.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the file upload endpoint so files larger than 20MB are rejected.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the session manager so sessions expire after 30 minutes of inactivity.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add retry logic to the external payment gateway client.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the notification service so duplicate messages are ignored.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the user repository so database access is centralized.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add input validation to the createOrder API endpoint.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the logging format used across all API handlers.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the password reset logic so reset tokens expire after one hour.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the metrics exporter so request latency is tracked per endpoint.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the websocket connection manager to properly clean up closed connections.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add rate limiting middleware to protect public API routes.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the Redis client initialization so it reuses a shared connection pool.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the background worker so completed jobs emit success metrics.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add validation so uploaded images must be JPEG or PNG.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the email sending function so failures trigger retries.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the token generation logic to include issuer and audience claims.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add request ID generation for incoming API requests.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the API error responses so they follow a consistent JSON structure.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the cart service so duplicate items increment quantity instead of adding new entries.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the user profile endpoint so it returns the last login timestamp.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the product search function to support case insensitive queries.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add caching to the product catalog endpoint.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the order creation flow so invalid discount codes are rejected.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the API gateway so requests exceeding rate limits return HTTP 429.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the image processing pipeline so transformations run asynchronously.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add metrics collection for background job execution time.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the API documentation generator so endpoints include example responses.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the search indexer so deleted products are removed from the index.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add validation so usernames cannot contain whitespace.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the worker so job results are persisted to the database.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the request logging middleware to include response status codes.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the user registration flow so duplicate emails are rejected.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the cache invalidation logic used by product updates.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add timeout handling to the external shipping API client.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the checkout flow so shipping addresses are validated.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the API client so requests include a correlation ID header.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the password hashing logic to use bcrypt with stronger cost parameters.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add monitoring hooks to the queue processing system.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve error messages returned by the login endpoint.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the cart service so expired sessions automatically clear carts.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add audit logging when users update their profiles.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the job scheduler so tasks can be delayed.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve validation logic for order line items.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add compression support for large API responses.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the Redis cache so user sessions are stored separately from application caches.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the notification dispatch system so messages are queued.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve retry logic for failed webhook deliveries.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add support for filtering orders by status in the API.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the webhook handler so invalid signatures are rejected.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the analytics pipeline so page view events include user IDs.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the batch import process so malformed records are skipped.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the configuration loader to support environment variable overrides.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add throttling to the email sending service.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the password validation logic so weak passwords are rejected.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the search API so results are sorted by relevance.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the order history endpoint so cancelled orders are excluded by default.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the Redis locking mechanism used for background tasks.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add pagination support to the product reviews API.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve database query performance for product lookups.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the event consumer so duplicate messages are ignored.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the API rate limiter so limits are applied per API key.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add error metrics for failed payment attempts.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the order export feature so CSV files include timestamps.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the queue worker so it logs processing duration.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the comment system so deleted comments are soft deleted.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add validation so product prices cannot be negative.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve session handling so users are logged out after password changes.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the notification API so unread counts are returned.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the recommendation engine so it supports user preferences.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add caching to the frequently accessed settings endpoint.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the audit trail so configuration changes are tracked.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the search service so it logs query latency.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the API client so requests automatically retry on transient errors.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the background job dispatcher so jobs are prioritized.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add validation so coupon codes cannot be reused.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the payment webhook processor so duplicate events are ignored.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the login handler so failed attempts increment a counter.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the image upload service so thumbnails are generated automatically.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the database migration runner so migrations are idempotent.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add caching to the user permissions lookup.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the worker shutdown logic so running jobs complete gracefully.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the API gateway so it forwards client IP headers.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the message queue consumer so message acknowledgments are explicit.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the search indexing pipeline to run in batches.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add validation so uploaded CSV imports require headers.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the API response serializer to remove null fields.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the shipping calculator so weight limits are enforced.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the comment moderation logic so flagged comments are hidden.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the configuration parser so invalid values trigger warnings.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add structured logging to the email notification service.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve retry handling in the external inventory API client.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the analytics event collector so events include request IDs.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the product import process so duplicate SKUs are rejected.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the cache eviction policy for the product service.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add metrics collection for API error rates.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the user lookup query to reduce database load.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the job queue so tasks can be cancelled.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the settings endpoint so only admins can modify configuration.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Rewrite the webhook retry logic to support exponential backoff.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add validation so order quantities must be positive integers.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Improve the notification batching system to reduce API calls.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Modify the password reset endpoint so requests are rate limited.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Update the metrics exporter so system health metrics are included.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Refactor the database connection initialization to reuse a shared pool.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Add caching to the frequently requested user profile endpoint.",
+    "expected_category": "EDIT"
+  },
+  {
+    "instruction": "Locate where JWT tokens are generated in the backend code.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the file responsible for initializing the Redis client.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for the function that validates passwords.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Identify where HTTP routes are registered in the server.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the application initializes the database connection pool.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search for the module responsible for sending transactional emails.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the background worker entrypoint that consumes the job queue.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find every place where the authentication middleware is used.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for code that uploads files to S3.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Identify the component responsible for metrics collection.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the function that generates request IDs for API calls.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for usages of the cache invalidation helper.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the module that handles webhook requests.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where API rate limiting is implemented.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for code that processes payment webhooks.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Identify where the email templates are rendered.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the file where environment variables are loaded.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for the implementation of the retry helper.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where request logging middleware is defined.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the product search indexer runs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for database migration scripts.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where API keys are validated.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the component that manages websocket connections.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search for the queue producer that sends background jobs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where the user password hashing function is defined.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the function that validates uploaded file types.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the codebase for how sessions are stored in Redis.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Identify where the analytics events are published.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the part of the code that processes discount codes.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search for the API handler responsible for user profile updates.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where request validation schemas are defined.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the module responsible for sending push notifications.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search for the configuration loader used by the application.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Identify where the order export logic lives.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the class responsible for interacting with the payment gateway.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for rate limiter initialization.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the function responsible for creating background jobs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where Redis locks are implemented.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the codebase for code handling duplicate webhook events.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Identify where product recommendations are generated.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the module responsible for managing feature flags.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the analytics batch processor runs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for the code that creates order invoices.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the email notification queue producer.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the job scheduler initializes recurring tasks.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for product image processing logic.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Identify the component that calculates shipping costs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where request timeout configuration is defined.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the module responsible for generating CSV exports.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search for code that handles user account deletion.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the logic responsible for invalidating caches.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where audit logs are recorded.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for webhook signature validation.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where authentication tokens are refreshed.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where background workers register queue consumers.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for configuration related to session expiration.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where user permissions are checked.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the function responsible for generating password reset tokens.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the codebase for code that compresses API responses.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the module responsible for loading API configuration.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where health check endpoints are defined.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for code that validates coupon codes.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where feature flags are evaluated.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the file responsible for application startup configuration.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for the service that handles notifications.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where session cookies are created.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the module responsible for sending SMS notifications.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for where application metrics are exported.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the database query used for fetching order history.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the code responsible for validating API request payloads.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for where error logging is configured.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where the event streaming producer is implemented.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the background job retry strategy is defined.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for the handler responsible for product reviews.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where HTTP request tracing is implemented.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the code responsible for generating product slugs.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for how API pagination is implemented.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where Redis pubsub is used in the application.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where order totals are calculated.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search for code that sends confirmation emails.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where request throttling rules are defined.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the module responsible for storing uploaded files.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repository for how authentication cookies are created.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where order state transitions are handled.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where the API versioning logic is implemented.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the codebase for the handler that returns product reviews.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate the module responsible for formatting API responses.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find where application startup logs are emitted.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Search the repo for how webhook retries are scheduled.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Locate where the API gateway forwards incoming requests.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Find the function responsible for validating order totals.",
+    "expected_category": "SEARCH"
+  },
+  {
+    "instruction": "Explain how Redis caching helps reduce database load.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how JWT authentication works conceptually.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain the difference between optimistic and pessimistic locking.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "How does Kubernetes route traffic from a Service to Pods?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why database indexes improve query performance.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the lifecycle of an HTTP request in a web server.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how rate limiting middleware protects APIs.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What does the repository pattern achieve in backend systems?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how background job queues work.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the difference between synchronous and asynchronous processing.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how database connection pools improve performance.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Why might a database query slow down as a table grows?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how distributed locks can be implemented using Redis.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the role of middleware in a web application.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how exponential backoff works in retry systems.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What is the purpose of environment variables in application configuration?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how Docker containers isolate applications.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how message queues enable asynchronous workflows.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how API gateways help manage microservices.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What happens internally when a request passes through authentication middleware?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain the difference between REST and RPC APIs.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how caching layers are typically structured.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why idempotency is important for webhook handlers.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how database migrations work.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how TLS encryption secures network traffic.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What does horizontal scaling mean in distributed systems?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain the purpose of health check endpoints.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how metrics systems like Prometheus collect data.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why observability is important in production systems.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What is the difference between logs, metrics, and traces?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how feature flags allow safe feature rollouts.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how session management works in web applications.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why input validation is important for APIs.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What does eventual consistency mean in distributed databases?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain the purpose of API versioning.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how event driven architectures operate.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how circuit breakers protect services from cascading failures.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What is the difference between caching and memoization?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why message ordering matters in queue systems.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how load balancers distribute traffic.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain the purpose of correlation IDs in distributed systems.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how API pagination typically works.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why retries should use exponential backoff.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What problems do distributed transactions try to solve?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain the concept of idempotent HTTP methods.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how content delivery networks reduce latency.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain the difference between stateful and stateless services.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What role does message serialization play in distributed systems?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how application tracing tools visualize request flows.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how rate limits are enforced at an API gateway.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain why database normalization reduces redundancy.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What is the purpose of circuit breakers in microservices?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe how rolling deployments reduce downtime.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how feature toggles allow experimentation.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "What advantages do message queues provide over direct RPC?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how distributed tracing helps debug production issues.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Describe the difference between push and pull message queues.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how container orchestration systems manage workloads.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Why are immutable infrastructure practices beneficial?",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Explain how autoscaling policies work in cloud platforms.",
+    "expected_category": "EXPLAIN"
+  },
+  {
+    "instruction": "Create a Dockerfile for a FastAPI backend service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add Redis to the docker compose configuration.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Provision a PostgreSQL database using Terraform.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure Kubernetes deployment manifests for the API service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add a GitHub Actions workflow that runs tests on every push.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure environment variables required by the worker service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Create a docker compose override file for local development.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add a CI pipeline step that builds a Docker image.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure the Terraform backend to use an S3 bucket.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up monitoring using Prometheus and Grafana.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add Kubernetes health check probes to the API deployment.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure centralized logging using Loki.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up automatic database migrations during deployment.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add Kubernetes Secrets for API keys used by the service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure staging and production environments in the CI pipeline.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Provision a Redis instance using Terraform.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Create a Helm chart for deploying the backend service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure autoscaling for the API deployment.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add infrastructure for a message queue service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up alerting rules for API latency metrics.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure container image scanning in the CI pipeline.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add deployment steps for rolling updates in Kubernetes.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Provision an S3 bucket for storing uploaded files.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure secrets management using a cloud secrets service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up distributed tracing infrastructure using Jaeger.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Add automated backups for the database.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Configure ingress routing for the API service.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Create a monitoring dashboard for API error rates.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Set up CI caching to speed up dependency installation.",
+    "expected_category": "INFRA"
+  },
+  {
+    "instruction": "Provision a staging environment using infrastructure as code.",
+    "expected_category": "INFRA"
+  }
+]
