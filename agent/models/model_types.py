@@ -8,3 +8,4 @@ class ModelType(str, Enum):
 
     SMALL = "SMALL"
     REASONING = "REASONING"
+    REASONING_V2 = "REASONING_V2"

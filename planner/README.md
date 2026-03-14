@@ -36,15 +36,16 @@ The evaluation script (`planner_eval.py`) reports:
 
 Additional metrics: step count MAE (mean absolute error), P95 latency.
 
-## Integration with the router
+## Integration with the agent
 
-Each planner step maps to **one** router action. A runner can:
+Each planner step maps to **one** action. The agent loop:
 
-1. Call `plan(instruction)` to get a list of steps.
-2. For each step, call the existing router with the step’s `description` (or a derived instruction) to get a category and confidence.
-3. Execute the appropriate handler (edit, search, explain, infra) per step.
+1. Calls `plan(instruction)` to get a list of steps.
+2. For each step, `dispatch` routes by `action` to the policy engine (SEARCH/EDIT/INFRA) or EXPLAIN.
+3. SEARCH uses graph retriever (when index exists) or Serena; EDIT uses diff planner (when `ENABLE_DIFF_PLANNER=1`) or read_file.
 
-The planner does not call or change the router; it only produces a sequence of steps whose `action` values align with the router’s categories (EDIT, SEARCH, EXPLAIN, INFRA).
+See [Docs/AGENT_LOOP_WORKFLOW.md](../Docs/AGENT_LOOP_WORKFLOW.md) and [Docs/REPOSITORY_SYMBOL_GRAPH.md](../Docs/REPOSITORY_SYMBOL_GRAPH.md) for execution details.
+
 
 ## Running evaluation
 

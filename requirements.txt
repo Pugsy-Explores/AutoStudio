@@ -1,0 +1,11 @@
+# Core
+openai>=1.0.0
+PyYAML>=6.0
+
+# Repository indexing (tree-sitter)
+tree-sitter>=0.20.0
+tree-sitter-python>=0.20.0
+
+# Optional: embedding-based search and task index
+# chromadb>=0.4.0
+# sentence-transformers>=2.2.0

@@ -25,6 +25,8 @@ def get_model_for_task(task_name: str) -> ModelType:
     name = (TASK_MODELS.get(task_name) or "REASONING").upper()
     if name == "SMALL":
         return ModelType.SMALL
+    if name == "REASONING_V2":
+        return ModelType.REASONING_V2
     return ModelType.REASONING
 
 

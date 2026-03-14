@@ -18,7 +18,20 @@ def run_agent(instruction: str) -> AgentState:
     Returns final AgentState.
     """
     plan_result = plan(instruction)
-    state = AgentState(instruction=instruction, current_plan=plan_result)
+    state = AgentState(
+        instruction=instruction,
+        current_plan=plan_result,
+        context={
+            "tool_node": "START",
+            "retrieved_files": [],
+            "retrieved_symbols": [],
+            "retrieved_references": [],
+            "context_snippets": [],
+            "ranked_context": [],
+            "context_candidates": [],
+            "ranking_scores": [],
+        },
+    )
 
     executor = StepExecutor()
 

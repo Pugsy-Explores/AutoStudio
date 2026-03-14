@@ -36,3 +36,8 @@ from router_eval.routers.baseline_router import route
 | 7 | final_router | Fast accept if high conf + agree, else critic |
 
 **Rule:** Do not change the dataset and a router in the same change. The dataset is the fixed test suite.
+
+## See also
+
+- [Docs/AGENT_LOOP_WORKFLOW.md](../Docs/AGENT_LOOP_WORKFLOW.md) — Agent execution flow
+- [README.md](../README.md) — Project overview

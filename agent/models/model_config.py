@@ -10,15 +10,24 @@ _CONFIG_FILE = _CONFIG_DIR / "models_config.json"
 
 _DEFAULT_SMALL_NAME = "Qwen 2B"
 _DEFAULT_REASONING_NAME = "Qwen 9B"
+_DEFAULT_REASONING_V2_NAME = "Qwen 14B"
 _DEFAULT_SMALL_ENDPOINT = "http://localhost:8001/v1/chat/completions"
 _DEFAULT_REASONING_ENDPOINT = "http://localhost:8002/v1/chat/completions"
+_DEFAULT_REASONING_V2_ENDPOINT = "http://localhost:8003/v1/chat/completions"
 
+_DEFAULT_MODELS = {
+    "SMALL": {"name": _DEFAULT_SMALL_NAME, "endpoint": _DEFAULT_SMALL_ENDPOINT},
+    "REASONING": {"name": _DEFAULT_REASONING_NAME, "endpoint": _DEFAULT_REASONING_ENDPOINT},
+    "REASONING_V2": {"name": _DEFAULT_REASONING_V2_NAME, "endpoint": _DEFAULT_REASONING_V2_ENDPOINT},
+}
 
 _DEFAULT_TASK_MODELS = {
     "query rewriting": "SMALL",
     "validation": "SMALL",
     "EXPLAIN": "REASONING",
     "routing": "SMALL",
+    "planner": "REASONING",
+    "context_ranking": "REASONING",
 }
 
 _DEFAULT_API_KEY = "none"
@@ -92,6 +101,7 @@ def _load_config() -> dict:
         "small_model_endpoint": _DEFAULT_SMALL_ENDPOINT,
         "reasoning_model_endpoint": _DEFAULT_REASONING_ENDPOINT,
         "api_key": _DEFAULT_API_KEY,
+        "models": dict(_DEFAULT_MODELS),
         "model_call": {
             "temperature": _DEFAULT_TEMPERATURE,
             "max_tokens": None,
@@ -108,6 +118,14 @@ def _load_config() -> dict:
         for key in ("small_model_name", "reasoning_model_name", "small_model_endpoint", "reasoning_model_endpoint", "api_key"):
             if key in data and data[key] is not None and str(data[key]).strip():
                 defaults[key] = str(data[key]).strip()
+        if "models" in data and isinstance(data["models"], dict):
+            for k, v in data["models"].items():
+                if isinstance(v, dict) and v.get("endpoint"):
+                    key_upper = str(k).strip().upper()
+                    defaults["models"][key_upper] = {
+                        "name": str(v.get("name", "")).strip() or defaults["models"].get(key_upper, {}).get("name", ""),
+                        "endpoint": str(v.get("endpoint", "")).strip(),
+                    }
         defaults["model_call"] = _get_model_call(data)
         if "task_models" in data and isinstance(data["task_models"], dict):
             defaults["task_models"] = {str(k): str(v).strip().upper() for k, v in data["task_models"].items()}
@@ -155,15 +173,40 @@ def get_model_call_params(task_name: str | None) -> dict:
         "request_timeout_seconds": over.get("request_timeout_seconds", base["request_timeout_seconds"]),
     }
 
-# Endpoints: from config, overridable by env
-SMALL_MODEL_ENDPOINT = os.environ.get("SMALL_MODEL_ENDPOINT", _loaded["small_model_endpoint"])
-REASONING_MODEL_ENDPOINT = os.environ.get(
-    "REASONING_MODEL_ENDPOINT", _loaded["reasoning_model_endpoint"]
-)
+# Models registry: model_key -> {name, endpoint}
+_MODELS_REGISTRY = _loaded.get("models", _DEFAULT_MODELS)
+
+
+def get_endpoint_for_model(model_key: str) -> str:
+    """Return endpoint URL for model key (SMALL, REASONING, REASONING_V2, etc.)."""
+    key = (model_key or "REASONING").upper()
+    env_map = {
+        "SMALL": "SMALL_MODEL_ENDPOINT",
+        "REASONING": "REASONING_MODEL_ENDPOINT",
+        "REASONING_V2": "REASONING_V2_MODEL_ENDPOINT",
+    }
+    env_var = env_map.get(key)
+    if env_var and os.environ.get(env_var):
+        return os.environ.get(env_var)
+    entry = _MODELS_REGISTRY.get(key) or _MODELS_REGISTRY.get("REASONING")
+    return (entry or {}).get("endpoint", _DEFAULT_REASONING_ENDPOINT)
+
+
+def get_model_name(model_key: str) -> str:
+    """Return display name for model key."""
+    key = (model_key or "REASONING").upper()
+    entry = _MODELS_REGISTRY.get(key) or {}
+    return entry.get("name", "Unknown")
+
+# Endpoints: from config, overridable by env (backward compat)
+SMALL_MODEL_ENDPOINT = os.environ.get("SMALL_MODEL_ENDPOINT", get_endpoint_for_model("SMALL"))
+REASONING_MODEL_ENDPOINT = os.environ.get("REASONING_MODEL_ENDPOINT", get_endpoint_for_model("REASONING"))
+REASONING_V2_MODEL_ENDPOINT = os.environ.get("REASONING_V2_MODEL_ENDPOINT", get_endpoint_for_model("REASONING_V2"))
 
 # Display names: from config
-SMALL_MODEL_NAME = _loaded["small_model_name"]
-REASONING_MODEL_NAME = _loaded["reasoning_model_name"]
+SMALL_MODEL_NAME = get_model_name("SMALL")
+REASONING_MODEL_NAME = get_model_name("REASONING")
+REASONING_V2_MODEL_NAME = get_model_name("REASONING_V2")
 
 # API key: from config, overridable by env
 MODEL_API_KEY = os.environ.get("MODEL_API_KEY", _loaded["api_key"])

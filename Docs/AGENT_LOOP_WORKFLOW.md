@@ -95,9 +95,9 @@ flowchart TB
         S8 --> S9{"Model output empty?"}
         S9 -->|yes| S10["Raise ValueError - Query rewrite returned empty response"]
         S9 -->|no| S11["cleaned = output.strip"]
-        S6 -->|False| S12["_rewrite_with_regex: tokenize, stopwords, dedupe"]
+        S6 -->|False| S12["query = planner_step.strip (passthrough)"]
         S12 --> S11
-        S11 --> S13["search_code with query"]
+        S11 --> S13["_search_fn: graph_retriever first, else search_code"]
         S13 --> S14{"_is_valid_search_result?"}
         S14 -->|yes| S15["Store context: search_query_rewritten, search_results, files, snippets"]
         S15 --> S16["Return success"]
@@ -109,20 +109,32 @@ flowchart TB
 
 **Details:**
 
+- **Retrieval stack:**  
+  1. `retrieval_cache.get_cached(query)` (if `RETRIEVAL_CACHE_SIZE > 0`)  
+  2. `graph_retriever.retrieve_symbol_context(query)` when index exists at `.symbol_graph/index.sqlite`  
+  3. If no results: `vector_retriever.search_by_embedding(query)` (if `ENABLE_VECTOR_SEARCH`)  
+  4. Fallback: `search_code` (Serena MCP)  
+  - On success: `retrieval_cache.set_cached(query, results)`.
+
 - **Query rewrite (LLM)**  
   - `rewrite_query_with_context(planner_step, user_request, previous_attempts, use_llm=True)`.  
   - Model from `get_model_for_task("query rewriting")`.  
   - **No heuristic fallback**: if model returns empty → `ValueError("Query rewrite returned empty response")`.  
   - On exception in rewriter → exception propagates (no fallback).
 
-- **Query rewrite (heuristic, use_llm=False)**  
-  - `_rewrite_with_regex(planner_step)`: split identifiers → tokenize → remove stopwords → dedupe → up to 6 tokens, joined by space.
+- **Query rewrite (use_llm=False)**  
+  - Passthrough: `query = planner_step.strip()` (no tokenize/stopwords/dedupe).
 
 - **Fallback when rewrite_query_fn is None**  
   - Policy engine uses `query = description`; if still empty, `query = description` again (line 185).
 
 - **Success criteria**  
   - `_is_valid_search_result(results)`: first result has non-empty `file` and non-empty `snippet`.
+
+- **Retrieval pipeline (after search success)**  
+  - `expand_search_results` → `build_context_from_symbols` → (when `ENABLE_CONTEXT_RANKING=1`) `rank_context` → `prune_context` → `state.context["ranked_context"]`.  
+  - Ranker: **batch LLM** (one prompt for all snippets); hybrid score = 0.6×LLM + 0.2×symbol_match + 0.1×filename_match + 0.1×reference_score − **same_file_penalty** (diversity).  
+  - Pruner: max 6 snippets, 8000 chars; deduplicate by (file, symbol).
 
 - **Mutation**  
   - SEARCH uses `query_variants` conceptually (attempt loop + new rewrite each time with attempt_history). No explicit `generate_query_variants` in loop; each attempt gets a fresh LLM rewrite (or heuristic) with previous attempts in context.
@@ -137,7 +149,7 @@ flowchart TB
         E1["Policy: max_attempts 2, retry_on symbol_not_found, mutation symbol_retry"]
         E1 --> E2["symbol_retry step to steps_to_try"]
         E2 --> E3["For each step variant: _edit_fn with step and state"]
-        E3 --> E4["edit_fn: edit_path then read_file else list_files"]
+        E3 --> E4["edit_fn: plan_diff (if ENABLE_DIFF_PLANNER) else read_file/list_files"]
         E4 --> E5{"_is_failure EDIT?"}
         E5 -->|no| E6["Return success and output"]
         E5 -->|yes| E7["Next variant or exhausted"]
@@ -145,6 +157,7 @@ flowchart TB
     end
 ```
 
+- **Diff planner (ENABLE_DIFF_PLANNER=1):** `plan_diff` → `conflict_resolver` → `patch_executor` → `run_with_repair` (test repair loop). Patch application via AST patcher; max 5 files, 200 lines per patch.
 - **Mutation**: `symbol_retry(step)` → currently returns `[step]` (single variant). Placeholder for future symbol/path variants.
 - **Retry condition**: `result.error` or `result.success is False`.
 
@@ -223,6 +236,21 @@ flowchart LR
 
 ---
 
+## Context and tool memories
+
+`state.context` is updated by the policy engine on successful tool use. Two memory mechanisms:
+
+| Key | Set when | Shape | Used by |
+|-----|----------|-------|---------|
+| `ranked_context` | SEARCH succeeds (when `ENABLE_CONTEXT_RANKING=1`) | List of `{ file, symbol, snippet, type }`; ranked and pruned (max 6 snippets, 8000 chars) | EXPLAIN step: primary evidence in `_format_explain_context`. |
+| `search_memory` | SEARCH succeeds | `{ "query": str, "results": [ { "file", "snippet" } ] }`; snippets truncated to 500 chars | EXPLAIN step: fallback when `ranked_context` empty. |
+| `tool_memories` | SEARCH / EDIT / INFRA succeed | List of records, one per successful tool call. SEARCH: `{ tool, query, result_count, files, snippets_preview }`; EDIT: `{ tool, path, success }`; INFRA: `{ tool, returncode, success }`. | Available for downstream steps or logging. |
+
+- **When set:** In `ExecutionPolicyEngine`, on success path of `_execute_search`, `_execute_edit`, `_execute_infra` (via `_append_tool_memory`). SEARCH also sets legacy keys: `search_query_rewritten`, `search_results`, `files`, `snippets`.
+- **EXPLAIN:** In `step_dispatcher`, `_format_explain_context(state)` prefers `ranked_context` (when non-empty); otherwise falls back to `search_memory` and `context_snippets`.
+
+---
+
 ## Policy summary (POLICIES)
 
 | Action  | max_attempts | retry_on           | mutation      |
@@ -246,12 +274,12 @@ flowchart LR
 | `StepExecutor`         | Calls `dispatch(step, state)`; wraps result in `StepResult`. |
 | `dispatch`             | Routes by action to policy engine (SEARCH/EDIT/INFRA) or EXPLAIN. |
 | `ExecutionPolicyEngine`| Retry loop + mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn. |
-| `rewrite_query_with_context` | LLM or heuristic rewrite; **empty LLM output → raise**. |
-| `_rewrite_with_regex`  | Heuristic: tokenize planner text, stopwords, dedupe (used when use_llm=False). |
+| `rewrite_query_with_context` | LLM rewrite or passthrough (use_llm=False → planner_step.strip()); **empty LLM output → raise**. |
 | `get_model_for_task`   | Config-driven: task_models → SMALL or REASONING. |
 | `_call_chat`           | Single non-streaming chat call; extracts `choices[0].message.content`. |
 | `validate_step`        | Rules or LLM YES/NO; fallback to rules on LLM error. |
 | `replan`               | Stub: return plan of remaining steps. |
+| `context["search_memory"]` / `context["tool_memories"]` | Set in policy engine on SEARCH/EDIT/INFRA success; EXPLAIN uses `search_memory` via `_format_explain_context`. |
 
 ---
 
@@ -261,9 +289,30 @@ flowchart LR
 - **Executor**: `agent/execution/executor.py` — `StepExecutor.execute_step`, `execute_plan`.
 - **Dispatch**: `agent/execution/step_dispatcher.py` — `dispatch`, _search_fn, _edit_fn, _infra_fn, _rewrite_for_search, EXPLAIN.
 - **Policy**: `agent/execution/policy_engine.py` — POLICIES, _execute_search, _execute_edit, _execute_infra, _run_once.
-- **Query rewriter**: `agent/retrieval/query_rewriter.py` — rewrite_query_with_context, rewrite_query, _rewrite_with_regex.
+- **Query rewriter**: `agent/retrieval/query_rewriter.py` — rewrite_query_with_context, rewrite_query.
 - **Mutation**: `agent/execution/mutation_strategies.py` — symbol_retry, retry_same, generate_query_variants.
 - **Model**: `agent/models/model_client.py` — _call_chat, call_reasoning_model, call_small_model; `agent/models/model_router.py` — get_model_for_task.
 - **Validation**: `agent/orchestrator/validator.py` — validate_step, _validate_step_rules.
 - **Replan**: `agent/orchestrator/replanner.py` — replan.
 - **Planner**: `planner/planner.py` — plan.
+- **Graph retriever**: `agent/retrieval/graph_retriever.py` — retrieve_symbol_context.
+- **Vector retriever**: `agent/retrieval/vector_retriever.py` — search_by_embedding (fallback).
+- **Retrieval cache**: `agent/retrieval/retrieval_cache.py` — LRU cache for search results.
+- **Diff planner**: `editing/diff_planner.py` — plan_diff.
+- **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (full pipeline).
+
+---
+
+## Repository symbol graph (implemented)
+
+**Indexing:** `python -m repo_index.index_repo <path>` creates `.symbol_graph/index.sqlite`; optionally `.symbol_graph/embeddings/` when `INDEX_EMBEDDINGS=1`.
+
+**Retrieval flow:**
+- Cache → `graph_retriever.retrieve_symbol_context(query)` → `vector_retriever.search_by_embedding(query)` → Serena fallback
+
+**Additional modules:**
+- `repo_graph/repo_map_builder.py` — high-level architectural map
+- `repo_graph/change_detector.py` — affected callers, risk levels
+- `agent/retrieval/vector_retriever.py`, `agent/retrieval/retrieval_cache.py`
+
+**Files:** `repo_index/`, `repo_graph/`, `agent/retrieval/`, `editing/`

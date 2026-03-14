@@ -3,7 +3,7 @@
 import logging
 import sys
 
-from agent.models.model_config import REASONING_MODEL_NAME, SMALL_MODEL_NAME
+from agent.models.model_config import REASONING_MODEL_NAME, REASONING_V2_MODEL_NAME, SMALL_MODEL_NAME
 from agent.orchestrator.agent_loop import run_agent
 
 # Ensure process logs (agent steps) appear when run from CLI
@@ -20,6 +20,7 @@ def main() -> None:
     print("Active models:")
     print(f"  SMALL → {SMALL_MODEL_NAME}")
     print(f"  REASONING → {REASONING_MODEL_NAME}")
+    print(f"  REASONING_V2 → {REASONING_V2_MODEL_NAME}")
     if len(sys.argv) > 1:
         instruction = " ".join(sys.argv[1:]).strip()
     else:

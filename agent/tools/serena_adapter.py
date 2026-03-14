@@ -154,11 +154,15 @@ def _parse_serena_text_to_results(text: str) -> list[dict]:
     return results[:MAX_RESULTS]
 
 
-async def _search_via_mcp(query: str, project_dir: str | None) -> dict:
-    """Call Serena MCP find_symbol and search_for_pattern; return structured results."""
+async def _search_via_mcp(query: str, project_dir: str | None, tool_hint: str | None = None) -> dict:
+    """Call Serena MCP find_symbol and/or search_for_pattern; return structured results.
+    tool_hint: "find_symbol" | "search_for_pattern" | None (run both).
+    """
     params = _serena_server_params(project_dir)
     all_results = []
     seen = set()
+    run_find_symbol = tool_hint in (None, "find_symbol")
+    run_search_pattern = tool_hint in (None, "search_for_pattern")
 
     # Show serena stderr when SERENA_VERBOSE=1; optionally suppress only DEBUG lines
     if not _VERBOSE:
@@ -172,37 +176,37 @@ async def _search_via_mcp(query: str, project_dir: str | None) -> dict:
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
 
-                # find_symbol: name_path_pattern (required), substring_matching=True for flexible match
-                try:
-                    result = await session.call_tool(
-                        "find_symbol",
-                        arguments={"name_path_pattern": query, "substring_matching": True},
-                    )
-                    if not result.isError and result.content:
-                        text = _text_from_content(result.content)
-                        for r in _parse_serena_text_to_results(text):
-                            key = (r.get("file"), r.get("line"))
-                            if key not in seen:
-                                seen.add(key)
-                                all_results.append(r)
-                except Exception:
-                    pass
+                if run_find_symbol:
+                    try:
+                        result = await session.call_tool(
+                            "find_symbol",
+                            arguments={"name_path_pattern": query, "substring_matching": True},
+                        )
+                        if not result.isError and result.content:
+                            text = _text_from_content(result.content)
+                            for r in _parse_serena_text_to_results(text):
+                                key = (r.get("file"), r.get("line"))
+                                if key not in seen:
+                                    seen.add(key)
+                                    all_results.append(r)
+                    except Exception:
+                        pass
 
-                # search_for_pattern: substring_pattern (required)
-                try:
-                    result = await session.call_tool(
-                        "search_for_pattern",
-                        arguments={"substring_pattern": re.escape(query)},
-                    )
-                    if not result.isError and result.content:
-                        text = _text_from_content(result.content)
-                        for r in _parse_serena_text_to_results(text):
-                            key = (r.get("file"), r.get("line"))
-                            if key not in seen:
-                                seen.add(key)
-                                all_results.append(r)
-                except Exception:
-                    pass
+                if run_search_pattern:
+                    try:
+                        result = await session.call_tool(
+                            "search_for_pattern",
+                            arguments={"substring_pattern": re.escape(query)},
+                        )
+                        if not result.isError and result.content:
+                            text = _text_from_content(result.content)
+                            for r in _parse_serena_text_to_results(text):
+                                key = (r.get("file"), r.get("line"))
+                                if key not in seen:
+                                    seen.add(key)
+                                    all_results.append(r)
+                    except Exception:
+                        pass
 
         return {"results": all_results[:MAX_RESULTS], "query": query}
     finally:
@@ -212,9 +216,10 @@ async def _search_via_mcp(query: str, project_dir: str | None) -> dict:
             errlog.flush()
 
 
-def search_code(query: str) -> dict:
+def search_code(query: str, tool_hint: str | None = None) -> dict:
     """
     Search codebase via Serena MCP (find_symbol, search_for_pattern).
+    tool_hint: "find_symbol" | "search_for_pattern" | None (both).
     Returns {"results": [{"file", "symbol", "line", "snippet"}, ...]}.
     If Serena is unavailable, returns {"results": [], "error": "Serena MCP not available"}.
     """
@@ -235,7 +240,7 @@ def search_code(query: str) -> dict:
 
     try:
         project_dir = os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
-        out = asyncio.run(_search_via_mcp(query.strip(), project_dir))
+        out = asyncio.run(_search_via_mcp(query.strip(), project_dir, tool_hint=tool_hint))
     except Exception as e:
         if _VERBOSE:
             _log.info("[Serena] results: 0 (%s)", e)

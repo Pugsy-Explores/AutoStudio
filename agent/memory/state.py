@@ -11,6 +11,7 @@ class AgentState:
     current_plan: dict
     completed_steps: list = field(default_factory=list)
     step_results: list[StepResult] = field(default_factory=list)
+    # context: tool_node (str), retrieved_files, retrieved_symbols, retrieved_references, context_snippets (list)
     context: dict = field(default_factory=dict)
 
     def is_finished(self) -> bool:

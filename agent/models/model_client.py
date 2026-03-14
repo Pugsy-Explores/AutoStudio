@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Use config from same package
 from agent.models.model_config import (
+    get_endpoint_for_model,
     get_model_call_params,
     MODEL_API_KEY,
     MODEL_MAX_TOKENS,
@@ -243,18 +244,26 @@ def call_reasoning_model(
     system_prompt: Optional[str] = None,
     max_tokens: Optional[int] = None,
     task_name: Optional[str] = None,
+    model_type: Optional[str] = None,
 ) -> str:
     """
     Call the reasoning model. If system_prompt is given, send as chat with system + user;
     otherwise single user message. Returns model output text.
     When task_name is set, uses params from models_config task_params for that task.
+    When model_type is set (e.g. REASONING_V2), uses that model's endpoint; else uses
+    task_models[task_name] from config.
     """
+    from agent.models.model_config import TASK_MODELS
+
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
+    model_key = model_type or (TASK_MODELS.get(task_name or "") if task_name else None) or "REASONING"
+    endpoint = get_endpoint_for_model(model_key)
     _sys = None if system_prompt is None else (system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt)
     logger.info(
-        "call_reasoning_model: endpoint=%s task=%r prompt=%r system_prompt=%s max_tokens=%s",
-        REASONING_MODEL_ENDPOINT,
+        "call_reasoning_model: endpoint=%s model=%s task=%r prompt=%r system_prompt=%s max_tokens=%s",
+        endpoint,
+        model_key,
         task_name,
         prompt,
         _sys,
@@ -268,7 +277,7 @@ def call_reasoning_model(
     else:
         messages = [{"role": "user", "content": prompt}]
     return _call_chat(
-        REASONING_MODEL_ENDPOINT,
+        endpoint,
         messages,
         max_tokens=limit,
         temperature=params.get("temperature"),

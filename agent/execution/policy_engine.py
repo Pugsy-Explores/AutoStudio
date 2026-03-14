@@ -58,6 +58,10 @@ def _is_failure(action: str, retry_on: list[str], result: dict[str, Any]) -> boo
     return False
 
 
+# Max snippet length stored in search_memory for EXPLAIN context (avoid huge prompts)
+_SEARCH_MEMORY_SNIPPET_MAX = 500
+
+
 def _search_result_summary(raw: dict) -> str:
     """Short summary of search result for rewrite context (e.g. '0 results' or '2 results: a.py, b.py')."""
     results = raw.get("results")
@@ -73,6 +77,27 @@ def _search_result_summary(raw: dict) -> str:
     return f"{n} result(s): " + ", ".join(files)
 
 
+def _build_search_memory(query: str, raw: dict) -> dict:
+    """Structured search context for EXPLAIN: query + results (file, snippet truncated)."""
+    results = raw.get("results") or []
+    return {
+        "query": query,
+        "results": [
+            {
+                "file": (r.get("file") or r.get("path") or ""),
+                "snippet": (r.get("snippet") or "")[: _SEARCH_MEMORY_SNIPPET_MAX],
+            }
+            for r in results
+            if r
+        ],
+    }
+
+
+def _append_tool_memory(state: AgentState, entry: dict) -> None:
+    """Append one tool call to context.tool_memories (list of tool call records)."""
+    state.context.setdefault("tool_memories", []).append(entry)
+
+
 class ExecutionPolicyEngine:
     """
     Retry-capable execution: run tool via injected fns, apply policy, mutate and retry on failure.
@@ -81,7 +106,7 @@ class ExecutionPolicyEngine:
 
     def __init__(
         self,
-        search_fn: Callable[[str], dict],
+        search_fn: Callable[[str, AgentState], dict],
         edit_fn: Callable[[dict, AgentState], dict],
         infra_fn: Callable[[dict, AgentState], dict],
         *,
@@ -136,7 +161,7 @@ class ExecutionPolicyEngine:
                 else:
                     q = desc
                 print(f"[workflow] SEARCH (single) query={q!r}")
-                raw = self._search_fn(q)
+                raw = self._search_fn(q, state)
                 if isinstance(raw, dict) and _is_failure("SEARCH", ["empty_results"], raw):
                     return {"success": False, "output": {"attempt_history": []}, "error": "empty results"}
                 return {"success": True, "output": raw}
@@ -189,7 +214,7 @@ class ExecutionPolicyEngine:
                 (query[:80] + "..." if len(query) > 80 else query),
             )
             try:
-                raw = self._search_fn(query)
+                raw = self._search_fn(query, state)
             except Exception as e:
                 attempt_history.append({
                     "query": query,
@@ -218,6 +243,18 @@ class ExecutionPolicyEngine:
                 state.context["search_results"] = raw
                 state.context["files"] = [r.get("file") for r in (raw.get("results") or []) if r.get("file")]
                 state.context["snippets"] = [r.get("snippet", "") for r in (raw.get("results") or [])]
+                # Structured memory for EXPLAIN and tool_memories
+                state.context["search_memory"] = _build_search_memory(query, raw)
+                _append_tool_memory(
+                    state,
+                    {
+                        "tool": "search_code",
+                        "query": query,
+                        "result_count": result_count,
+                        "files": state.context["files"],
+                        "snippets_preview": [((r.get("snippet") or "")[:200]) for r in (raw.get("results") or [])],
+                    },
+                )
                 print("[workflow] SEARCH success")
                 logger.info("[policy] SEARCH success")
                 return {"success": True, "output": raw}
@@ -253,6 +290,10 @@ class ExecutionPolicyEngine:
                 out = raw.get("output") if isinstance(raw.get("output"), dict) else {}
                 out = dict(out)
                 out["attempt_history"] = attempt_history
+                _append_tool_memory(
+                    state,
+                    {"tool": "edit", "path": out.get("path"), "success": True},
+                )
                 logger.info("[policy] EDIT success")
                 return {"success": True, "output": out, "error": raw.get("error")}
         return {
@@ -278,12 +319,16 @@ class ExecutionPolicyEngine:
             except Exception as e:
                 attempt_history.append({"attempt": attempt_num, "returncode": -1, "error": str(e)})
                 continue
-            rc = raw.get("returncode", -1)
+            rc = (raw.get("output") or {}).get("returncode", -1)
             attempt_history.append({"attempt": attempt_num, "returncode": rc})
             if not _is_failure("INFRA", retry_on, raw):
                 out = raw.get("output") if isinstance(raw.get("output"), dict) else {}
                 out = dict(out)
                 out["attempt_history"] = attempt_history
+                _append_tool_memory(
+                    state,
+                    {"tool": "infra", "returncode": out.get("returncode", -1), "success": True},
+                )
                 logger.info("[policy] INFRA success")
                 return {"success": True, "output": out, "error": raw.get("error")}
         return {

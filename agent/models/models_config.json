@@ -1,40 +1,62 @@
 {
-  "small_model_name": "Qwen 2B",
-  "reasoning_model_name": "Qwen 9B",
-  "small_model_endpoint": "http://localhost:8001/v1/chat/completions",
-  "reasoning_model_endpoint": "http://localhost:8002/v1/chat/completions",
   "api_key": "none",
   "model_call": {
     "temperature": 0.0,
     "max_tokens": null,
-    "request_timeout_seconds": 120
+    "request_timeout_seconds": 600
+  },
+  "models": {
+    "SMALL": {
+      "name": "Qwen 2B",
+      "endpoint": "http://localhost:8001/v1/chat/completions"
+    },
+    "REASONING": {
+      "name": "Qwen 9B",
+      "endpoint": "http://localhost:8002/v1/chat/completions"
+    },
+    "REASONING_V2": {
+      "name": "Qwen 14B",
+      "endpoint": "http://localhost:8003/v1/chat/completions"
+    }
   },
   "task_models": {
     "query rewriting": "REASONING",
-    "validation": "SMALL",
-    "EXPLAIN": "REASONING",
-    "routing": "SMALL"
+    "validation": "REASONING",
+    "EXPLAIN": "REASONING_V2",
+    "routing": "REASONING",
+    "planner": "REASONING_V2",
+    "context_ranking": "REASONING_V2"
   },
   "task_params": {
     "query rewriting": {
       "temperature": 0.0,
       "max_tokens": null,
-      "request_timeout_seconds": 120
+      "request_timeout_seconds": 600
     },
     "validation": {
       "temperature": 0.0,
       "max_tokens": null,
-      "request_timeout_seconds": 60
+      "request_timeout_seconds": 600
     },
     "EXPLAIN": {
       "temperature": 0.0,
       "max_tokens": null,
-      "request_timeout_seconds": 120
+      "request_timeout_seconds": 600
     },
     "routing": {
       "temperature": 0.0,
       "max_tokens": null,
-      "request_timeout_seconds": 30
+      "request_timeout_seconds": 600
+    },
+    "planner": {
+      "temperature": 0.0,
+      "max_tokens": 1024,
+      "request_timeout_seconds": 600
+    },
+    "context_ranking": {
+      "temperature": 0.0,
+      "max_tokens": 256,
+      "request_timeout_seconds": 60
     }
   }
 }

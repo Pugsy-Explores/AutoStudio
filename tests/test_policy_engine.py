@@ -35,7 +35,7 @@ class TestExecutionPolicyEngineSearch(unittest.TestCase):
         # Mock: first two queries empty, third returns results
         call_count = 0
 
-        def mock_search(query: str):
+        def mock_search(query: str, state=None):
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
@@ -90,7 +90,7 @@ class TestExecutionPolicyEngineSearch(unittest.TestCase):
 
         search_count = 0
 
-        def mock_search(query: str):
+        def mock_search(query: str, state=None):
             nonlocal search_count
             search_count += 1
             # Succeed only on 3rd attempt
@@ -122,7 +122,7 @@ class TestExecutionPolicyEngineSearch(unittest.TestCase):
         self.assertEqual(rewrite_calls[2]["attempt_history_len"], 2, "third call sees two previous attempts")
 
     def test_search_returns_failure_with_only_attempt_history_when_exhausted(self):
-        def mock_search_empty(_query: str):
+        def mock_search_empty(_query: str, state=None):
             return {"results": [], "query": _query}
 
         engine = ExecutionPolicyEngine(

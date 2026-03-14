@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 from typing import TypedDict
 
 from agent.models.model_client import call_reasoning_model, call_small_model
@@ -31,23 +30,6 @@ class RewriteResult(TypedDict, total=False):
     tool: str
     query: str
     reason: str
-
-# More realistic filler words for engineering queries
-_STOPWORDS = {
-    "locate",
-    "find",
-    "where",
-    "code",
-    "implementation",
-    "function",
-    "logic",
-    "please",
-    "show",
-    "tell",
-    "the",
-    "in",
-    "this",
-}
 
 # Load once at module import
 _REWRITE_PROMPT = get_prompt("query_rewrite", "prompt")
@@ -101,58 +83,6 @@ def _format_attempts_for_prompt(attempts: list[SearchAttempt]) -> str:
     return "\n".join(lines) if lines else "(none yet)"
 
 
-def _split_identifiers(text: str) -> str:
-    """
-    Split camelCase and snake_case identifiers into tokens.
-    """
-    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
-    text = text.replace("_", " ")
-    return text
-
-
-def _tokenize(text: str):
-    """
-    Extract useful tokens for code search.
-    """
-    tokens = re.findall(r"[A-Za-z0-9_]+", text.lower())
-    return tokens
-
-
-def _remove_stopwords(tokens):
-    return [t for t in tokens if t not in _STOPWORDS]
-
-
-def _dedupe(tokens):
-    seen = set()
-    out = []
-    for t in tokens:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
-
-
-def _rewrite_with_regex(text: str) -> str:
-    """
-    Heuristic rewrite for code search queries.
-    """
-    if not text or not isinstance(text, str):
-        return ""
-
-    text = _split_identifiers(text)
-
-    tokens = _tokenize(text)
-
-    tokens = _remove_stopwords(tokens)
-
-    tokens = _dedupe(tokens)
-
-    # Keep query short for search tools
-    tokens = tokens[:6]
-
-    return " ".join(tokens)
-
-
 def rewrite_query_with_context(
     planner_step: str,
     user_request: str = "",
@@ -173,11 +103,7 @@ def rewrite_query_with_context(
     attempts_slice = attempts[-MAX_ATTEMPT_HISTORY_FOR_REWRITE:]
 
     if not use_llm:
-        print("[workflow] rewriter (heuristic)")
-        out = _rewrite_with_regex(planner_step)
-        print("    [workflow] rewriter planner_step:", (planner_step[:80] + "..." if len(planner_step) > 80 else planner_step))
-        print("    [workflow] rewriter output:", out)
-        return out
+        return (planner_step or "").strip()
 
     print("[workflow] rewriter (with context)")
     print("    [workflow] rewriter planner_step:", (planner_step[:80] + "..." if len(planner_step) > 80 else planner_step))
@@ -231,7 +157,7 @@ def rewrite_query(text: str, use_llm: bool = False) -> str:
         config task_models["query rewriting"] → chosen model rewrites query.
 
     Otherwise:
-        heuristic rewrite.
+        return text stripped (passthrough).
 
     For SEARCH steps with retry/feedback, use rewrite_query_with_context instead.
     """
@@ -240,11 +166,7 @@ def rewrite_query(text: str, use_llm: bool = False) -> str:
         return ""
 
     if not use_llm:
-        print("[workflow] rewriter (heuristic)")
-        out = _rewrite_with_regex(text)
-        print("    [workflow] rewriter query:", (text[:80] + "..." if len(text) > 80 else text))
-        print("    [workflow] rewriter output:", out)
-        return out
+        return text.strip()
 
     print("[workflow] rewriter")
     print("    [workflow] rewriter query:", (text[:80] + "..." if len(text) > 80 else text))
