@@ -1,5 +1,6 @@
 """Query rewriter: optimize user query for code search."""
 
+import json
 import logging
 import re
 from typing import TypedDict
@@ -7,6 +8,7 @@ from typing import TypedDict
 from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
+from agent.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,14 @@ class SearchAttempt(TypedDict, total=False):
     result_count: int
     result_summary: str
     error: str
+
+
+class RewriteResult(TypedDict, total=False):
+    """Structured output from context rewrite: tool, query, reason."""
+
+    tool: str
+    query: str
+    reason: str
 
 # More realistic filler words for engineering queries
 _STOPWORDS = {
@@ -39,73 +49,37 @@ _STOPWORDS = {
     "this",
 }
 
-_REWRITE_PROMPT = """
-You are writing/rewriting a user query for a code search system.
+# Load once at module import
+_REWRITE_PROMPT = get_prompt("query_rewrite", "prompt")
+_CTX_PROMPTS = get_prompt("query_rewrite_with_context")
+_REWRITE_WITH_CONTEXT_MAIN = _CTX_PROMPTS["main"]
+_REWRITE_WITH_CONTEXT_END = _CTX_PROMPTS["end"]
 
-Available tools:
-- find_symbol: searches for classes, functions, and variables
-- search_for_pattern: searches for text inside files
 
-Your task is to convert the natural language request into a query that
-resembles real code identifiers or filenames.
+def _parse_rewrite_json(raw: str) -> RewriteResult:
+    """Parse JSON output { tool, query, reason }; return structured result; fallback to query-only."""
+    raw = raw.strip()
+    # Strip markdown code fence if present
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw = "\n".join(lines)
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            query = (obj.get("query") or "").strip() or raw
+            return RewriteResult(
+                tool=(obj.get("tool") or "").strip() or "",
+                query=query,
+                reason=(obj.get("reason") or "").strip() or "",
+            )
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return RewriteResult(tool="", query=raw, reason="")
 
-Rules:
-1. Extract the main technical concepts from the request.
-2. Remove filler words such as: find, locate, show, where, code, implementation.
-3. Prefer identifiers over natural language phrases.
-4. Generate identifiers using common naming conventions:
-   - PascalCase for classes
-   - snake_case for functions or modules
-5. If the query refers to logic or functionality, prefer snake_case.
-6. If the query refers to a component or class, prefer PascalCase.
-7. If appropriate, generate a likely file name (example: task_scheduler.py).
-8. Identifiers should contain 1-3 meaningful words only.
-
-Valid identifier formats include:
-- PascalCase: ^[A-Z][a-zA-Z0-9]*$
-- snake_case: ^[a-z]+(_[a-z0-9]+)+$
-- filenames: ^[a-z0-9_]+\\.(py|ts|js|go|java|cpp|rs)$
-
-Do not output natural language phrases.
-
-Query:
-{text}
-
-Return only the rewritten search query.
-"""
-
-_REWRITE_WITH_CONTEXT_PROMPT = """
-You are rewriting a search query for a code search system. You have context from the planner step, the user's request, and previous search attempts.
-
-Available tools:
-- find_symbol: searches for classes, functions, and variables
-- search_for_pattern: searches for text inside files
-
-Your task: produce a single search query (identifier-style) that is likely to find the right code. If previous attempts returned no or poor results, try a different formulation—e.g. different casing (StepExecutor vs step_executor), different terms, or a filename.
-
-Rules:
-1. Prefer code identifiers: PascalCase for classes, snake_case for functions/modules.
-2. Do not repeat a query that already returned 0 results; vary the wording or try a related identifier.
-3. Use 1-3 meaningful words only; no natural language sentences.
-4. If the step asks for a "class", try PascalCase; if for "function" or "logic", try snake_case or a filename like module.py.
-
-Context:
-
-Planner step (what we are trying to find):
-{planner_step}
-
-User request (original goal):
-{user_request}
-"""
-
-_REWRITE_PREVIOUS_ATTEMPTS_BLOCK = """
-Previous search attempts (do not repeat failed queries; refine instead):
-{previous_attempts}
-"""
-
-_REWRITE_WITH_CONTEXT_END = """
-Return only the new search query, nothing else.
-"""
 
 def _format_attempts_for_prompt(attempts: list[SearchAttempt]) -> str:
     """Format previous search attempts for the rewrite prompt (last N only)."""
@@ -214,26 +188,35 @@ def rewrite_query_with_context(
         model_name = "REASONING" if model_type == ModelType.REASONING else "SMALL"
         print("    [workflow] rewriter model:", model_name)
 
-        prompt = _REWRITE_WITH_CONTEXT_PROMPT.format(
+        prompt = _REWRITE_WITH_CONTEXT_MAIN.format(
+            previous_attempts=_format_attempts_for_prompt(attempts_slice),
             planner_step=(planner_step or "").strip(),
-            user_request=(user_request or "").strip() or "(not provided)",
         )
-        if attempts_slice:
-            prompt += _REWRITE_PREVIOUS_ATTEMPTS_BLOCK.format(
-                previous_attempts=_format_attempts_for_prompt(attempts_slice),
-            )
         prompt += _REWRITE_WITH_CONTEXT_END
 
         if model_type == ModelType.REASONING:
-            out = call_reasoning_model(prompt, max_tokens=64)
+            out = call_reasoning_model(prompt, task_name="query rewriting")
         else:
-            out = call_small_model(prompt, max_tokens=64)
+            out = call_small_model(prompt, task_name="query rewriting")
 
-        cleaned = (out or "").strip()
-        if not cleaned:
+        raw = (out or "").strip()
+        if not raw:
             raise ValueError("Query rewrite returned empty response")
-        print("    [workflow] rewriter output:", cleaned)
-        return cleaned
+        result = _parse_rewrite_json(raw)
+        query = (result.get("query") or "").strip() or raw
+        tool = (result.get("tool") or "").strip()
+        reason = (result.get("reason") or "").strip()
+        print("    [workflow] rewriter tool:", tool or "(none)")
+        print("    [workflow] rewriter query:", query)
+        if reason:
+            print("    [workflow] rewriter reason:", reason)
+        logger.info(
+            "rewriter result: tool=%s query=%s reason=%s",
+            tool or "(none)",
+            query[:80] + ("..." if len(query) > 80 else ""),
+            reason[:80] + ("..." if len(reason) > 80 else "") if reason else "(none)",
+        )
+        return query
 
     except Exception as e:
         logger.warning("LLM query rewrite with context failed: %s", e)
@@ -273,9 +256,9 @@ def rewrite_query(text: str, use_llm: bool = False) -> str:
         prompt = _REWRITE_PROMPT.format(text=text.strip())
 
         if model_type == ModelType.REASONING:
-            out = call_reasoning_model(prompt, max_tokens=64)
+            out = call_reasoning_model(prompt, task_name="query rewriting")
         else:
-            out = call_small_model(prompt, max_tokens=64)
+            out = call_small_model(prompt, task_name="query rewriting")
 
         cleaned = (out or "").strip()
         if not cleaned:

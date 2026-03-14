@@ -9,35 +9,35 @@ End-to-end flow of the AutoStudio agent: instruction → plan → execute steps 
 ```mermaid
 flowchart TB
     subgraph ENTRY[" "]
-        A[User instruction] --> B[run_agent]
-        B --> C[plan(instruction)]
+        A["User instruction"] --> B["run_agent"]
+        B --> C["plan instruction"]
     end
 
     subgraph PLAN["Planner"]
-        C --> D{Planner model OK?}
-        D -->|yes| E[Parse JSON steps]
-        D -->|no / exception| F[Fallback: single EXPLAIN step]
-        E --> G[normalize_actions / validate_plan]
+        C --> D{"Planner model OK?"}
+        D -->|yes| E["Parse JSON steps"]
+        D -->|no or exception| F["Fallback: single EXPLAIN step"]
+        E --> G["normalize_actions and validate_plan"]
         F --> G
-        G --> H[Plan: steps with id, action, description, reason]
+        G --> H["Plan: steps with id, action, description, reason"]
     end
 
     subgraph STATE["State"]
-        H --> I[AgentState: instruction, current_plan, completed_steps, step_results, context]
+        H --> I["AgentState with instruction, plan, completed_steps, results, context"]
     end
 
     subgraph LOOP["Execution loop"]
-        I --> J{state.is_finished?}
-        J -->|no| K[state.next_step]
-        K --> L[StepExecutor.execute_step]
-        L --> M[dispatch(step, state)]
-        M --> N[state.record(step, result)]
-        N --> O{result.success and validate_step?}
-        O -->|no| P[replan(state)]
-        P --> Q[state.update_plan]
+        I --> J{"state.is_finished?"}
+        J -->|no| K["state.next_step"]
+        K --> L["StepExecutor.execute_step"]
+        L --> M["dispatch step and state"]
+        M --> N["state.record step and result"]
+        N --> O{"result.success and validate_step?"}
+        O -->|no| P["replan state"]
+        P --> Q["state.update_plan"]
         Q --> J
         O -->|yes| J
-        J -->|yes| R[Return state]
+        J -->|yes| R["Return state"]
     end
 ```
 
@@ -47,11 +47,11 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    M[dispatch] --> A{action}
-    A -->|SEARCH| S[Policy engine: _execute_search]
-    A -->|EDIT| E[Policy engine: _execute_edit]
-    A -->|INFRA| I[Policy engine: _execute_infra]
-    A -->|EXPLAIN or unknown| X[EXPLAIN path]
+    M["dispatch"] --> A{"action"}
+    A -->|SEARCH| S["Policy engine: _execute_search"]
+    A -->|EDIT| E["Policy engine: _execute_edit"]
+    A -->|INFRA| I["Policy engine: _execute_infra"]
+    A -->|EXPLAIN or unknown| X["EXPLAIN path"]
 ```
 
 - **SEARCH / EDIT / INFRA** → `ExecutionPolicyEngine.execute_with_policy` (retries, mutation).
@@ -65,11 +65,11 @@ Config: `models_config.json` → `task_models`. Defaults in code: `query rewriti
 
 ```mermaid
 flowchart LR
-    T[Task name] --> R[get_model_for_task]
-    R --> C{task_models[task]}
-    C -->|SMALL| S[SMALL_MODEL_ENDPOINT]
-    C -->|REASONING or missing| Re[REASONING_MODEL_ENDPOINT]
-    S --> MC[_call_chat]
+    T["Task name"] --> R["get_model_for_task"]
+    R --> C{"task_models lookup"}
+    C -->|SMALL| S["SMALL_MODEL_ENDPOINT"]
+    C -->|REASONING or missing| Re["REASONING_MODEL_ENDPOINT"]
+    S --> MC["_call_chat"]
     Re --> MC
 ```
 
@@ -84,26 +84,26 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph SEARCH["SEARCH execution"]
-        S1[Policy: max_attempts=5, retry_on=empty_results, mutation=query_variants]
-        S1 --> S2[For attempt 1..max_attempts]
-        S2 --> S3{rewrite_query_fn set?}
-        S3 -->|yes| S4[rewrite_query_with_context(description, user_request, attempt_history)]
-        S3 -->|no| S5[query = description]
-        S4 --> S6{use_llm?}
-        S6 -->|True| S7[get_model_for_task 'query rewriting']
-        S7 --> S8[call_reasoning_model or call_small_model]
-        S8 --> S9{Model output empty?}
-        S9 -->|yes| S10[Raise ValueError: Query rewrite returned empty response]
-        S9 -->|no| S11[cleaned = output.strip]
-        S6 -->|False| S12[_rewrite_with_regex: tokenize, stopwords, dedupe]
+        S1["Policy: max_attempts 5, retry_on empty_results, mutation query_variants"]
+        S1 --> S2["For attempt 1 to max_attempts"]
+        S2 --> S3{"rewrite_query_fn set?"}
+        S3 -->|yes| S4["rewrite_query_with_context with description, user_request, attempt_history"]
+        S3 -->|no| S5["query = description"]
+        S4 --> S6{"use_llm?"}
+        S6 -->|True| S7["get_model_for_task query rewriting"]
+        S7 --> S8["call_reasoning_model or call_small_model"]
+        S8 --> S9{"Model output empty?"}
+        S9 -->|yes| S10["Raise ValueError - Query rewrite returned empty response"]
+        S9 -->|no| S11["cleaned = output.strip"]
+        S6 -->|False| S12["_rewrite_with_regex: tokenize, stopwords, dedupe"]
         S12 --> S11
-        S11 --> S13[search_code(query)]
-        S13 --> S14{_is_valid_search_result?}
-        S14 -->|yes| S15[Store context: search_query_rewritten, search_results, files, snippets]
-        S15 --> S16[Return success]
-        S14 -->|no| S17[Append to attempt_history; try next query variant or attempt]
+        S11 --> S13["search_code with query"]
+        S13 --> S14{"_is_valid_search_result?"}
+        S14 -->|yes| S15["Store context: search_query_rewritten, search_results, files, snippets"]
+        S15 --> S16["Return success"]
+        S14 -->|no| S17["Append to attempt_history and try next query variant or attempt"]
         S17 --> S2
-        S2 --> S18[Exhausted] --> S19[Return success=False, error: all search attempts empty]
+        S2 --> S18["Exhausted"] --> S19["Return success False, error all search attempts empty"]
     end
 ```
 
@@ -134,14 +134,14 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph EDIT["EDIT execution"]
-        E1[Policy: max_attempts=2, retry_on=symbol_not_found, mutation=symbol_retry]
-        E1 --> E2[symbol_retry(step) → steps_to_try]
-        E2 --> E3[For each step variant: _edit_fn(step, state)]
-        E3 --> E4[edit_fn: state.context.edit_path ? read_file(path) : list_files('.')]
-        E4 --> E5{_is_failure EDIT?}
-        E5 -->|no| E6[Return success + output]
-        E5 -->|yes| E7[Next variant or exhausted]
-        E7 --> E8[Return success=False, attempt_history]
+        E1["Policy: max_attempts 2, retry_on symbol_not_found, mutation symbol_retry"]
+        E1 --> E2["symbol_retry step to steps_to_try"]
+        E2 --> E3["For each step variant: _edit_fn with step and state"]
+        E3 --> E4["edit_fn: edit_path then read_file else list_files"]
+        E4 --> E5{"_is_failure EDIT?"}
+        E5 -->|no| E6["Return success and output"]
+        E5 -->|yes| E7["Next variant or exhausted"]
+        E7 --> E8["Return success False with attempt_history"]
     end
 ```
 
@@ -155,14 +155,14 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph INFRA["INFRA execution"]
-        I1[Policy: max_attempts=2, retry_on=non_zero_exit, mutation=retry_same]
-        I1 --> I2[retry_same(step) → [step]]
-        I2 --> I3[For attempt: _infra_fn(step, state)]
-        I3 --> I4[run_command('true'), list_files('.'), returncode in output]
-        I4 --> I5{returncode == 0?}
-        I5 -->|yes| I6[Return success]
-        I5 -->|no| I7[Retry same step or exhausted]
-        I7 --> I8[Return success=False]
+        I1["Policy: max_attempts 2, retry_on non_zero_exit, mutation retry_same"]
+        I1 --> I2["retry_same step returns step"]
+        I2 --> I3["For attempt: _infra_fn with step and state"]
+        I3 --> I4["run_command true, list_files, returncode in output"]
+        I4 --> I5{"returncode equals 0?"}
+        I5 -->|yes| I6["Return success"]
+        I5 -->|no| I7["Retry same step or exhausted"]
+        I7 --> I8["Return success False"]
     end
 ```
 
@@ -175,10 +175,10 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    X[dispatch EXPLAIN] --> X1[get_model_for_task 'EXPLAIN']
-    X1 --> X2[call_reasoning_model or call_small_model]
-    X2 --> X3[out_str = output.strip or '[EXPLAIN: no model output]']
-    X3 --> X4[Return success=True, output=out_str]
+    X["dispatch EXPLAIN"] --> X1["get_model_for_task EXPLAIN"]
+    X1 --> X2["call_reasoning_model or call_small_model"]
+    X2 --> X3["out_str = output.strip or fallback string"]
+    X3 --> X4["Return success True, output out_str"]
 ```
 
 - **Fallback**: If model returns empty → `"[EXPLAIN: no model output]"` (string substitute in `step_dispatcher`).
@@ -190,17 +190,17 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    V[validate_step(step, result)] --> U{use_llm?}
-    U -->|False| R[_validate_step_rules]
-    U -->|True| L[get_model_for_task 'validation']
-    L --> M[call_reasoning_model or call_small_model]
-    M --> P["Answer YES/NO"]
-    P --> R2["'yes' in output.lower → True"]
+    V["validate_step with step and result"] --> U{"use_llm?"}
+    U -->|False| R["_validate_step_rules"]
+    U -->|True| L["get_model_for_task validation"]
+    L --> M["call_reasoning_model or call_small_model"]
+    M --> P["Answer YES or NO"]
+    P --> R2["yes in output.lower then True"]
     R2 --> R
-    R --> SEARCH_RULE[SEARCH: _is_valid_search_result]
-    R --> EDIT_RULE[EDIT: result.success]
-    R --> INFRA_RULE[INFRA: returncode == 0]
-    R --> EXPLAIN_RULE[EXPLAIN: True]
+    R --> SEARCH_RULE["SEARCH: _is_valid_search_result"]
+    R --> EDIT_RULE["EDIT: result.success"]
+    R --> INFRA_RULE["INFRA: returncode equals 0"]
+    R --> EXPLAIN_RULE["EXPLAIN: True"]
 ```
 
 - **Rule-based (default)**: SEARCH → non-empty first result with file + snippet; EDIT → success; INFRA → returncode 0; EXPLAIN → True.
@@ -212,10 +212,10 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    RP[replan(state)] --> R1[Log last step failure]
-    R1 --> R2[remaining = steps not in completed_ids]
-    R2 --> R3[Return { steps: remaining }]
-    R3 --> R4[state.update_plan(new_plan)]
+    RP["replan state"] --> R1["Log last step failure"]
+    R1 --> R2["remaining = steps not in completed_ids"]
+    R2 --> R3["Return plan with steps remaining"]
+    R3 --> R4["state.update_plan with new_plan"]
 ```
 
 - Stub: no LLM replan; plan is replaced with remaining steps only.

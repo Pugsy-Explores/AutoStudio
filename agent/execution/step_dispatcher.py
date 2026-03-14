@@ -90,9 +90,9 @@ def dispatch(step: dict, state: AgentState) -> dict:
         print("  [EXPLAIN] model from config:", model_name)
         prompt = f"Briefly explain or address this task: {description}"
         if model_type == ModelType.REASONING:
-            out = call_reasoning_model(prompt, max_tokens=256)
+            out = call_reasoning_model(prompt, task_name="EXPLAIN")
         else:
-            out = call_small_model(prompt, max_tokens=256)
+            out = call_small_model(prompt, task_name="EXPLAIN")
         out_str = (out or "").strip() or "[EXPLAIN: no model output]"
         print("  [model] output:", out_str[:120] + ("..." if len(out_str) > 120 else ""))
         return {"success": True, "output": out_str}

@@ -1,0 +1,5 @@
+prompt: |
+  Did this step succeed?
+  Step: {step}
+  Result success: {success}, output (summary): {output_summary}
+  Answer with exactly YES or NO.

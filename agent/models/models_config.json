@@ -1,11 +1,40 @@
 {
   "small_model_name": "Qwen 2B",
   "reasoning_model_name": "Qwen 9B",
-  "small_model_endpoint": "http://localhost:8081/v1/chat/completions",
+  "small_model_endpoint": "http://localhost:8001/v1/chat/completions",
   "reasoning_model_endpoint": "http://localhost:8002/v1/chat/completions",
+  "api_key": "none",
+  "model_call": {
+    "temperature": 0.0,
+    "max_tokens": null,
+    "request_timeout_seconds": 120
+  },
   "task_models": {
     "query rewriting": "REASONING",
     "validation": "SMALL",
-    "EXPLAIN": "REASONING"
+    "EXPLAIN": "REASONING",
+    "routing": "SMALL"
+  },
+  "task_params": {
+    "query rewriting": {
+      "temperature": 0.0,
+      "max_tokens": null,
+      "request_timeout_seconds": 120
+    },
+    "validation": {
+      "temperature": 0.0,
+      "max_tokens": null,
+      "request_timeout_seconds": 60
+    },
+    "EXPLAIN": {
+      "temperature": 0.0,
+      "max_tokens": null,
+      "request_timeout_seconds": 120
+    },
+    "routing": {
+      "temperature": 0.0,
+      "max_tokens": null,
+      "request_timeout_seconds": 30
+    }
   }
 }

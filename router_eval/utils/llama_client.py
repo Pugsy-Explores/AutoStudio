@@ -41,7 +41,6 @@ def llama_chat(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
-            "max_tokens": 64,
             "temperature": 0.0,
         }
         req = urllib.request.Request(
@@ -65,7 +64,6 @@ def llama_chat(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
-        max_tokens=64,
         temperature=0.0,
     )
     content = resp.choices[0].message.content if resp.choices else ""

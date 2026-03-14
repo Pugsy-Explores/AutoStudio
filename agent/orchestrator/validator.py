@@ -7,13 +7,11 @@ from agent.memory.step_result import StepResult
 from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
+from agent.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
 
-_VALIDATE_PROMPT = """Did this step succeed?
-Step: {step}
-Result success: {success}, output (summary): {output_summary}
-Answer with exactly YES or NO."""
+_VALIDATE_PROMPT = get_prompt("validate_step", "prompt")
 
 
 def _validate_step_rules(step: dict, result: StepResult) -> bool:
@@ -54,9 +52,9 @@ def validate_step(step: dict, result: StepResult, use_llm: bool = False) -> bool
             output_summary=output_summary,
         )
         if model_type == ModelType.REASONING:
-            out = call_reasoning_model(prompt, max_tokens=16)
+            out = call_reasoning_model(prompt, task_name="validation")
         else:
-            out = call_small_model(prompt, max_tokens=16)
+            out = call_small_model(prompt, task_name="validation")
         return "yes" in (out or "").strip().lower()
     except Exception as e:
         logger.warning("LLM validation failed, using rules: %s", e)
