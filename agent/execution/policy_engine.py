@@ -45,8 +45,10 @@ POLICIES = {
 }
 
 
-def _is_failure(action: str, retry_on: list[str], result: dict[str, Any]) -> bool:
+def _is_failure(action: str, retry_on: list[str], result: dict[str, Any] | None) -> bool:
     """Map retry_on to concrete checks. Returns True if result is a failure."""
+    if result is None or not isinstance(result, dict):
+        return True
     if "empty_results" in retry_on:
         results = result.get("results") if isinstance(result.get("results"), list) else None
         return not _is_valid_search_result(results)
@@ -62,8 +64,10 @@ def _is_failure(action: str, retry_on: list[str], result: dict[str, Any]) -> boo
 _SEARCH_MEMORY_SNIPPET_MAX = 500
 
 
-def _search_result_summary(raw: dict) -> str:
+def _search_result_summary(raw: dict | None) -> str:
     """Short summary of search result for rewrite context (e.g. '0 results' or '2 results: a.py, b.py')."""
+    if raw is None or not isinstance(raw, dict):
+        return "0 results"
     results = raw.get("results")
     if not results or not isinstance(results, list):
         return "0 results"
@@ -110,7 +114,7 @@ class ExecutionPolicyEngine:
         edit_fn: Callable[[dict, AgentState], dict],
         infra_fn: Callable[[dict, AgentState], dict],
         *,
-        rewrite_query_fn: Callable[[str, str, list[SearchAttempt]], str] | None = None,
+        rewrite_query_fn: Callable[[str, str, list[SearchAttempt], "AgentState | None"], str] | None = None,
         max_total_attempts: int = 10,
     ):
         self._search_fn = search_fn
@@ -157,7 +161,7 @@ class ExecutionPolicyEngine:
                 desc = (step.get("description") or "").strip()
                 user_req = getattr(state, "instruction", "") or ""
                 if self._rewrite_query_fn is not None:
-                    q = self._rewrite_query_fn(desc, user_req, [])
+                    q = self._rewrite_query_fn(desc, user_req, [], state)
                 else:
                     q = desc
                 print(f"[workflow] SEARCH (single) query={q!r}")
@@ -201,7 +205,7 @@ class ExecutionPolicyEngine:
                     }
                     for h in attempt_history
                 ]
-                query = self._rewrite_query_fn(description, user_request, attempt_slice)
+                query = self._rewrite_query_fn(description, user_request, attempt_slice, state)
             else:
                 query = description or ""
             if not query or not query.strip():
@@ -225,6 +229,9 @@ class ExecutionPolicyEngine:
                 print(f"[workflow] SEARCH attempt {attempt_num} error: {e}")
                 logger.warning("[policy] SEARCH attempt %s failed: %s", attempt_num, e)
                 continue
+
+            if raw is None or not isinstance(raw, dict):
+                raw = {"results": [], "query": query}
 
             result_count = len(raw.get("results") or [])
             result_summary = _search_result_summary(raw)

@@ -8,11 +8,12 @@ import os
 import re
 
 from agent.models.model_client import call_reasoning_model
+from agent.models.model_config import get_model_call_params
 from planner.planner_prompts import PLANNER_SYSTEM_PROMPT
 from planner.planner_utils import normalize_actions, validate_plan
 
-# Planner needs more tokens for multi-step JSON.
-PLANNER_MAX_TOKENS = int(os.environ.get("PLANNER_MAX_TOKENS", "1024"))
+# Env override when config has no max_tokens. Config (task_params.planner) takes precedence.
+_PLANNER_MAX_ENV = int(os.environ.get("PLANNER_MAX_TOKENS", "4096"))
 
 
 def _extract_json(text: str) -> str | None:
@@ -46,11 +47,13 @@ def plan(instruction: str) -> dict:
     On parse/validation failure returns {"steps": [...], "error": "..."} with a safe default.
     """
     print("[workflow] planner")
+    params = get_model_call_params("planner")
+    max_tokens = params.get("max_tokens") or _PLANNER_MAX_ENV
     try:
         response = call_reasoning_model(
             instruction,
             system_prompt=PLANNER_SYSTEM_PROMPT,
-            max_tokens=PLANNER_MAX_TOKENS,
+            max_tokens=max_tokens,
             task_name="planner",
         )
     except Exception as e:
@@ -72,9 +75,9 @@ def plan(instruction: str) -> dict:
             "steps": [
                 {
                     "id": 1,
-                    "action": "EXPLAIN",
-                    "description": "Handle instruction (no JSON in response)",
-                    "reason": "Parse failed",
+                    "action": "SEARCH",
+                    "description": f"Locate items mentioned in: {instruction[:200]}{'...' if len(instruction) > 200 else ''}",
+                    "reason": "Parse failed; fallback to search",
                 }
             ],
             "error": "No JSON found in response",

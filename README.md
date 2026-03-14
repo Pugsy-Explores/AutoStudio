@@ -32,7 +32,8 @@ flowchart TB
         User[User instruction]
     end
 
-    subgraph Planning
+    subgraph Routing
+        InstructionRouter[Instruction Router]
         Planner[Planner]
         Plan[JSON plan: steps with action, description]
     end
@@ -48,6 +49,8 @@ flowchart TB
 
     subgraph Retrieval
         GraphRetriever[GraphRetriever]
+        VectorRetriever[VectorRetriever]
+        SerenaGrep[Serena search_code]
         Expand[RetrievalExpansion]
         ContextBuilder[ContextBuilder]
         Ranker[ContextRanker]
@@ -58,7 +61,9 @@ flowchart TB
         Explain[EXPLAIN]
     end
 
-    User --> Planner
+    User --> InstructionRouter
+    InstructionRouter -->|CODE_EDIT or GENERAL| Planner
+    InstructionRouter -->|CODE_SEARCH/EXPLAIN/INFRA| Plan
     Planner --> Plan
     Plan --> Loop
     Loop --> Exec
@@ -67,14 +72,18 @@ flowchart TB
     ToolGraph --> Policy
     Policy --> Tools
     Tools --> GraphRetriever
+    Tools --> VectorRetriever
+    Tools --> SerenaGrep
     GraphRetriever --> Expand
+    VectorRetriever --> Expand
+    SerenaGrep --> Expand
     Expand --> ContextBuilder
     ContextBuilder --> Ranker
     Ranker --> Pruner
     Pruner --> Explain
 ```
 
-**High-level flow:** Instruction → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state.
+**High-level flow:** Instruction → Instruction Router (optional) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state.
 
 ---
 
@@ -197,7 +206,8 @@ AutoStudio/
 | **ToolGraph** | Per-node `allowed_tools` and `preferred_tool`; restricts transitions |
 | **ExecutionPolicyEngine** | Retry loop with mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn |
 | **validate_step** | Rule-based or LLM YES/NO; fallback to rules on error |
-| **replan** | Stub: returns plan of remaining steps on failure |
+| **replan** | LLM-based: receives failed_step, error; produces revised plan; fallback to remaining steps |
+| **instruction_router** | Classifies before planner (when ENABLE_INSTRUCTION_ROUTER=1); uses ROUTER_TYPE or inline SMALL model |
 
 ---
 
@@ -231,7 +241,7 @@ SEARCH
 ```
 
 - **Retrieval stack:** Graph retriever → vector search → Serena fallback. Graph uses `.symbol_graph/index.sqlite`; vector uses `.symbol_graph/embeddings/` (ChromaDB).
-- **Query rewrite:** `rewrite_query_with_context(planner_step, user_request, attempt_history)` — LLM or passthrough
+- **Query rewrite:** `rewrite_query_with_context(planner_step, user_request, attempt_history, state)` — LLM returns `{tool, query, reason}`; wires `chosen_tool` for retrieval order; prompts include Serena and filesystem rules
 - **Retrieval expansion:** Expands search results into `read_symbol_body` / `read_file` actions (capped at 5 files)
 - **Context builder:** Deduplicates symbols, references, files; limits total chars
 - **Context ranker:** Hybrid score = 0.6×LLM + 0.2×symbol_match + 0.1×filename_match + 0.1×reference_score − same_file_penalty; **batch LLM** (one prompt for all snippets); **diversity penalty** (−0.1 per duplicate from same file); caps at 20 candidates
@@ -244,13 +254,19 @@ EDIT
   → diff_planner.plan_diff(instruction, context)
   → conflict_resolver.resolve_conflicts() — same symbol, same file, semantic overlap
   → patch_generator.to_structured_patches()
-  → patch_executor.execute_patch() — AST patching, rollback on failure
+  → patch_executor.execute_patch()
+      → ast_patcher.apply_patch() — Tree-sitter AST edits (insert/replace/delete)
+      → patch_validator.validate_patch() — compile + AST reparse
+      → write on success; rollback on failure
   → repo_index.update_index_for_file() on success
 ```
 
 - **Diff planner:** Identifies affected symbols, queries graph for callers.
 - **Conflict resolver:** Splits conflicting edits into sequential groups.
-- **Patch executor:** Applies validated patches; max 5 files, 200 lines per patch.
+- **Patch generator:** Converts plan to structured patches (symbol, action, target_node, code).
+- **AST patcher:** Symbol-level (function_body_start, function_body, class_body) and statement-level edits; preserves relative indentation.
+- **Patch validator:** Ensures code compiles and AST reparse succeeds before write.
+- **Patch executor:** Applies validated patches; max 5 files, 200 lines per patch; rollback on invalid syntax, validation failure, or apply error.
 
 ### EXPLAIN
 
@@ -268,10 +284,10 @@ EDIT
 instruction
   → build_repo_map() — high-level architectural map
   → search_similar_tasks() — vector index of past tasks (optional)
-  → planner.plan(instruction)
+  → _get_plan() — instruction router (if enabled) or planner.plan()
   → while task_not_complete:
         step = next_step()
-        if SEARCH: dispatch (graph → vector → Serena)
+        if SEARCH: dispatch (retrieve_graph → retrieve_vector → retrieve_grep → Serena)
         if EDIT: plan_diff → conflict_resolver → run_with_repair → change_detector → update_index
         validate step; if failure: replan
   → save_task() — persist to .agent_memory/tasks/
@@ -280,9 +296,11 @@ instruction
 
 **Safety limits:** max 5 files edited, 200 lines per patch, 15 min task runtime.
 
+**Failure handling:** On step failure or validation failure, the agent replans (up to 5 attempts) using an LLM-based replanner that receives the failed step and error. SEARCH exhausts fallback chain (retrieve_graph → retrieve_vector → retrieve_grep → Serena) and retries with rewritten queries. EDIT failures trigger rollback before any files are written; patch validator ensures syntax and AST integrity.
+
 **Test repair loop:** After patch execution, runs tests (pytest); on failure, plans repair and retries (max 3 attempts). Supports flaky test detection and compile step before tests.
 
-**Trace logging:** Events stored in `.agent_memory/traces/`.
+**Trace logging:** Events stored in `.agent_memory/traces/`. Each trace includes plan, tool calls (step_executed with chosen tool), patch results, errors, and task_complete summary. See `agent/observability/trace_logger.py`.
 
 ---
 
@@ -323,6 +341,8 @@ instruction
 
 | Variable | Purpose |
 |----------|---------|
+| `ENABLE_INSTRUCTION_ROUTER` | 1 or 0 (default) — route instruction before planner; CODE_SEARCH/CODE_EXPLAIN/INFRA skip planner |
+| `ROUTER_TYPE` | baseline, fewshot, ensemble, or final — use router from registry when instruction router enabled |
 | `SMALL_MODEL_ENDPOINT` | Override small model URL |
 | `REASONING_MODEL_ENDPOINT` | Override reasoning model URL |
 | `MODEL_API_KEY` | API key for model endpoints |
@@ -333,11 +353,12 @@ instruction
 | `ENABLE_TOOL_GRAPH` | 1 (default) or 0 — restrict tools by graph |
 | `ENABLE_CONTEXT_RANKING` | 1 (default) or 0 — rank and prune context before EXPLAIN |
 | `ENABLE_VECTOR_SEARCH` | 1 (default) or 0 — use embedding search when graph returns nothing |
-| `RETRIEVAL_CACHE_SIZE` | LRU cache size for search results (default 100); 0 to disable |
+| `RETRIEVAL_CACHE_SIZE` | LRU cache size for search results (default 100); 0 to disable. Read at runtime from env. |
 | `INDEX_EMBEDDINGS` | 1 (default) or 0 — build ChromaDB embedding index during index_repo |
 | `INDEX_PARALLEL_WORKERS` | Parallel file parsing workers (default 8) |
 | `SERENA_PROJECT_DIR` | Project root for Serena MCP |
 | `SERENA_USE_PLACEHOLDER` | 1 to disable Serena (return empty results) |
+| `SERENA_GREP_FALLBACK` | 1 (default) or 0 — use ripgrep when Serena MCP unavailable |
 | `SERENA_VERBOSE` | 1 for Serena debug logs |
 | `PLANNER_MAX_TOKENS` | Max tokens for planner (default 1024) |
 | `ENABLE_DIFF_PLANNER` | 1 (default) or 0 — EDIT returns planned changes vs read_file |
@@ -361,7 +382,7 @@ instruction
 | `run_command` | terminal_adapter | Execute shell command |
 | `lookup_docs` | context7_adapter | Optional doc lookup |
 
-**Serena MCP:** Requires `mcp` package and Serena installed (e.g. `uvx serena start-mcp-server`). When unavailable, `search_code` returns empty results.
+**Serena MCP:** Requires `mcp` package and Serena installed (e.g. `uvx serena start-mcp-server`). When unavailable, `search_code` falls back to ripgrep (unless `SERENA_GREP_FALLBACK=0`). Query rewrite prompts (`query_rewrite.yaml`, `query_rewrite_with_context.yaml`) encode Serena rules (find_symbol name_path, search_for_pattern regex) and filesystem rules (list_dir paths within project).
 
 **Repository indexing:** Build a symbol graph for instant graph-based retrieval:
 
@@ -369,7 +390,7 @@ instruction
 python -m repo_index.index_repo /path/to/repo
 ```
 
-Creates `.symbol_graph/index.sqlite` and `symbols.json`. SEARCH uses graph retriever when index exists.
+Creates `.symbol_graph/index.sqlite` and `symbols.json`. SEARCH uses graph retriever when index exists. Programmatic use supports `include_dirs` to index only specific subdirs (e.g. `("agent", "editing")`).
 
 ---
 
@@ -379,14 +400,57 @@ Creates `.symbol_graph/index.sqlite` and `symbols.json`. SEARCH uses graph retri
 # From workspace root (parent of AutoStudio)
 python -m pytest AutoStudio/tests/ -v
 
+# End-to-end agent pipeline (mocked LLM, deterministic)
+python -m pytest AutoStudio/tests/test_agent_e2e.py -v
+
 # Specific suites
 python -m pytest AutoStudio/tests/test_context_ranker.py -v
 python -m pytest AutoStudio/tests/test_tool_graph.py -v
 python -m pytest AutoStudio/tests/test_policy_engine.py -v
+python -m pytest AutoStudio/tests/test_agent_robustness.py -v  # failure scenarios, replan, fallback, no corruption
+python -m pytest AutoStudio/tests/test_agent_trajectory.py -v --mock  # complex trajectories: multi-search, conflict resolver, repair loop
+python -m pytest AutoStudio/tests/test_observability.py -v  # trace creation, plan, tool calls, errors, patch results
 python -m pytest AutoStudio/tests/test_indexer.py AutoStudio/tests/test_symbol_graph.py -v  # repo index + graph
+INDEX_EMBEDDINGS=0 python -m pytest AutoStudio/tests/test_retrieval_pipeline.py AutoStudio/tests/test_graph_retriever.py -v  # retrieval pipeline
+
+# Repo index/graph with debug logging (when failures occur)
+INDEX_EMBEDDINGS=0 python -m pytest AutoStudio/tests/test_indexer.py AutoStudio/tests/test_symbol_graph.py -v --log-cli-level=DEBUG
 ```
 
-Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `call_reasoning_model`).
+**E2E tests** (`test_agent_e2e.py`): default tries real LLM; if unreachable, warns and falls back to mock. Use `--mock` to force mock mode and skip the probe.
+
+```bash
+python -m pytest tests/test_agent_e2e.py -v          # default: try LLM, fallback to mock
+python -m pytest tests/test_agent_e2e.py -v --mock  # always use mock (fast, deterministic)
+```
+
+| Scenario | Flow | Assertions |
+|----------|------|------------|
+| Explain code | plan → search → retrieval → explain | No errors, task memory saved |
+| Code edit | plan → search → diff planner → patch → index update | Patches applied, index updated, task memory saved |
+| Multi-file change | conflict resolver → sequential patch groups | Patches applied to all files, task memory saved |
+
+Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `call_reasoning_model`). See [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md#testing-and-validation) for indexing validation details.
+
+**Agent trajectory** (`test_agent_trajectory.py`): Complex-task tests for long agent runs (task: "Add logging to all executor classes"):
+
+| Scenario | Verification |
+|----------|--------------|
+| Multiple search steps | ≥2 SEARCH steps hit retriever (use `RETRIEVAL_CACHE_SIZE=0`) |
+| Conflict resolver | Invoked when multiple edits target same file |
+| Repair loop | `run_with_repair` invoked when `TEST_REPAIR_ENABLED=1` |
+| No infinite loop | Stops after `MAX_REPLAN_ATTEMPTS` on repeated failure |
+| Runtime | Completes within 15 minutes |
+
+**Agent robustness** (`test_agent_robustness.py`): Failure-scenario tests ensure the agent replans, triggers fallback search, and avoids repository corruption:
+
+| Scenario | Expected behavior |
+|----------|-------------------|
+| Nonexistent symbol search | Policy retries with rewritten query; falls back to vector → Serena; returns failure with `attempt_history` when exhausted |
+| Invalid edit instruction | Patch validator rejects; rollback restores files; no corruption |
+| Patch validator failure | Rollback restores all modified files |
+| Graph lookup empty | Fallback to vector search, then Serena |
+| Search exception | Caught by policy engine; no unhandled crash |
 
 ---
 
@@ -400,9 +464,11 @@ Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `cal
 
 ### Router Eval
 
-- Phased router evaluation harness
+- Phased router evaluation harness; categories: EDIT, SEARCH, EXPLAIN, INFRA, GENERAL
 - Swap routers by changing import in `router_eval.py`
 - Run: `python -m router_eval.router_eval`
+- Production integration: set `ROUTER_TYPE=baseline|fewshot|ensemble|final` to use router_eval routers in production
+- Run with production router: `python -m router_eval.run_all_routers --production`
 
 ### Optional: ChromaDB and embeddings
 
@@ -434,7 +500,8 @@ See [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md) for detai
 | Doc | Description |
 |-----|--------------|
 | [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md) | Step dispatch, SEARCH/EDIT/INFRA/EXPLAIN flows, policy engine, model routing |
-| [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md) | Full pipeline: run_controller, safety limits, test repair, task memory |
+| [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md) | Full pipeline: run_controller, instruction router, safety limits, test repair, task memory |
+| [Docs/ROUTING_ARCHITECTURE_REPORT.md](Docs/ROUTING_ARCHITECTURE_REPORT.md) | Routing architecture: instruction router, tool graph, categories, replanner |
 | [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md) | Symbol graph, repo map, change detector, vector search |
 | [Docs/CODING_AGENT_ARCHITECTURE_GUIDE.md](Docs/CODING_AGENT_ARCHITECTURE_GUIDE.md) | Architecture patterns, anti-patterns, production practices |
 

@@ -1,16 +1,58 @@
-"""Replanner: on failure return remaining steps. Stub; TODO: LLM-based replan with history."""
+"""Replanner: on failure, use LLM to produce revised plan. Fallback to remaining steps."""
 
+import json
 import logging
+import re
 
 from agent.memory.state import AgentState
+from agent.models.model_client import call_reasoning_model, call_small_model
+from agent.models.model_router import get_model_for_task
+from agent.models.model_types import ModelType
+from agent.prompts import get_prompt
+from planner.planner_utils import normalize_actions, validate_plan
 
 logger = logging.getLogger(__name__)
 
+REPLANNER_SYSTEM_PROMPT = get_prompt("replanner_system", "system_prompt")
 
-def replan(state: AgentState) -> dict:
+
+def _extract_json(text: str) -> str | None:
+    """Strip markdown code fences and return the first JSON object string, or None."""
+    if not text or not text.strip():
+        return None
+    text = text.strip()
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    if match:
+        text = match.group(1).strip()
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _fallback_remaining(state: AgentState) -> dict:
+    """Return plan with only remaining (not yet completed) steps."""
+    steps = state.current_plan.get("steps") or []
+    completed_ids = {s.get("id") for s in state.completed_steps}
+    remaining = [s for s in steps if isinstance(s, dict) and s.get("id") not in completed_ids]
+    return {"steps": remaining}
+
+
+def replan(
+    state: AgentState,
+    failed_step: dict | None = None,
+    error: str | None = None,
+) -> dict:
     """
-    On failure, return plan with only remaining (not yet completed) steps.
-    Stub: log failure and return remaining steps unchanged.
+    On failure, use LLM to produce a revised plan. Fallback to remaining steps if LLM fails.
     """
     print("[workflow] replanner")
     last = state.step_results[-1] if state.step_results else None
@@ -22,7 +64,77 @@ def replan(state: AgentState) -> dict:
             last.success,
             last.error,
         )
-    steps = state.current_plan.get("steps") or []
-    completed_ids = {s.get("id") for s in state.completed_steps}
-    remaining = [s for s in steps if isinstance(s, dict) and s.get("id") not in completed_ids]
-    return {"steps": remaining}
+
+    if not failed_step and not error:
+        return _fallback_remaining(state)
+
+    instruction = getattr(state, "instruction", "") or ""
+    current_plan = state.current_plan
+    steps_json = json.dumps(current_plan.get("steps") or [], indent=2)
+    failed_desc = json.dumps(failed_step, indent=2) if failed_step else "{}"
+    error_msg = (error or "").strip() or "Unknown error"
+
+    user_prompt = f"""Original instruction:
+{instruction}
+
+Current plan (JSON):
+{steps_json}
+
+Failed step:
+{failed_desc}
+
+Error message:
+{error_msg}
+
+Produce a revised plan (JSON with "steps" array). Address the failure. Return only valid JSON."""
+
+    try:
+        model_type = get_model_for_task("replanner")
+        if model_type == ModelType.SMALL:
+            full_prompt = f"{REPLANNER_SYSTEM_PROMPT}\n\n{user_prompt}"
+            response = call_small_model(full_prompt, task_name="replanner", max_tokens=2048)
+        else:
+            response = call_reasoning_model(
+                user_prompt,
+                system_prompt=REPLANNER_SYSTEM_PROMPT,
+                max_tokens=2048,
+                task_name="replanner",
+            )
+    except Exception as e:
+        logger.warning("[replanner] LLM call failed: %s, using fallback", e)
+        return _fallback_remaining(state)
+
+    raw_json = _extract_json(response)
+    if not raw_json:
+        logger.warning("[replanner] No JSON in response, using fallback")
+        return _fallback_remaining(state)
+
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError as e:
+        logger.warning("[replanner] Invalid JSON: %s, using fallback", e)
+        return _fallback_remaining(state)
+
+    if not isinstance(data, dict) or "steps" not in data:
+        logger.warning("[replanner] Missing steps in response, using fallback")
+        return _fallback_remaining(state)
+
+    steps = data.get("steps")
+    if not isinstance(steps, list):
+        return _fallback_remaining(state)
+
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            steps[i] = {"id": i + 1, "action": "EXPLAIN", "description": "Invalid", "reason": "Malformed"}
+            continue
+        step.setdefault("id", i + 1)
+        step.setdefault("action", "EXPLAIN")
+        step.setdefault("description", "")
+        step.setdefault("reason", "")
+
+    data = normalize_actions(data)
+    if not validate_plan(data):
+        logger.warning("[replanner] Validation failed, using fallback")
+        return _fallback_remaining(state)
+
+    return data

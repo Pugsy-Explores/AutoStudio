@@ -37,3 +37,16 @@ def test_validate_patch_malformed_fails():
     # Unclosed string can sometimes compile in exec mode; use a clear syntax error
     result = validate_patch("test.py", "def x(\n    pass")
     assert result["valid"] is False
+
+
+def test_validate_patch_code_compiles():
+    """validate_patch ensures code compiles (exec mode)."""
+    result = validate_patch("mod.py", "def foo():\n    x = 1\n    return x\n")
+    assert result["valid"] is True
+
+
+def test_validate_patch_ast_reparse_succeeds():
+    """validate_patch ensures AST re-parse succeeds via tree-sitter."""
+    code = "def bar():\n    logger.info('called')\n    return 42\n"
+    result = validate_patch("mod.py", code)
+    assert result["valid"] is True

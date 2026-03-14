@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TypedDict
 
 # Categories used by all routers; must match eval dataset labels.
-CATEGORIES = ("EDIT", "SEARCH", "DOCS", "GENERAL", "INFRA")
+CATEGORIES = ("EDIT", "SEARCH", "EXPLAIN", "INFRA", "GENERAL")
 
 
 class DatasetItem(TypedDict):
@@ -104,27 +104,27 @@ def _builtin_dataset() -> list[DatasetItem]:
         },
 
 
-        # ---------------- DOCS ----------------
+        # ---------------- EXPLAIN ----------------
 
         {
             "instruction": "What functions does the auth service expose to other modules?",
-            "expected_category": "DOCS",
+            "expected_category": "EXPLAIN",
         },
         {
             "instruction": "Explain what parameters the createOrder API expects.",
-            "expected_category": "DOCS",
+            "expected_category": "EXPLAIN",
         },
         {
             "instruction": "What does the storage client return when an upload succeeds?",
-            "expected_category": "DOCS",
+            "expected_category": "EXPLAIN",
         },
         {
             "instruction": "List the public methods available in the payment service client.",
-            "expected_category": "DOCS",
+            "expected_category": "EXPLAIN",
         },
         {
             "instruction": "What environment variables are required by the worker service?",
-            "expected_category": "DOCS",
+            "expected_category": "EXPLAIN",
         },
 
 

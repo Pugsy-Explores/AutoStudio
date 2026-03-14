@@ -5,7 +5,9 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
+from pathlib import Path
 
 # Optional MCP client; fallback to placeholder if unavailable
 try:
@@ -17,6 +19,7 @@ except ImportError:
 MAX_RESULTS = 5
 _VERBOSE = os.environ.get("SERENA_VERBOSE", "").lower() in ("1", "true", "yes")
 _SUPPRESS_SERENA_DEBUG = os.environ.get("SERENA_SUPPRESS_DEBUG", "1").lower() in ("1", "true", "yes")
+_ENABLE_GREP_FALLBACK = os.environ.get("SERENA_GREP_FALLBACK", "1").lower() in ("1", "true", "yes")
 _log = logging.getLogger(__name__)
 
 
@@ -93,6 +96,57 @@ def _text_from_content(content: list) -> str:
         else:
             parts.append(str(block))
     return "\n".join(parts)
+
+
+def _grep_fallback(query: str, project_dir: str | None) -> dict:
+    """
+    Fallback search using ripgrep when Serena MCP is unavailable.
+    Returns {"results": [...], "query": query} in same format as search_code.
+    """
+    if not query or not query.strip():
+        return {"results": [], "query": query}
+    root = Path(project_dir or os.getcwd()).resolve()
+    if not root.is_dir():
+        return {"results": [], "query": query}
+    # Extract search pattern: use first token that looks like identifier
+    pattern = query.strip()
+    tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", pattern)
+    if tokens:
+        pattern = tokens[0] if len(tokens[0]) >= 2 else pattern
+    try:
+        proc = subprocess.run(
+            ["rg", "-n", "--max-count", "1", "-g", "*.py", re.escape(pattern), str(root)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=str(root),
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {"results": [], "query": query}
+    results = []
+    seen: set[tuple[str, int]] = set()
+    for line in (proc.stdout or "").splitlines()[:MAX_RESULTS * 2]:
+        m = re.match(r"^([^:]+):(\d+):(.*)$", line)
+        if m:
+            path, ln, content = m.group(1), int(m.group(2)), m.group(3)
+            try:
+                rel = str(Path(path).relative_to(root))
+            except ValueError:
+                rel = path
+            key = (rel, ln)
+            if key not in seen:
+                seen.add(key)
+                # Use absolute path for consistency with graph_retriever (read_file resolves)
+                abs_path = str((root / path).resolve())
+                results.append({
+                    "file": abs_path,
+                    "symbol": "",
+                    "line": ln,
+                    "snippet": (content or "").strip()[:300],
+                })
+                if len(results) >= MAX_RESULTS:
+                    break
+    return {"results": results, "query": query}
 
 
 def _parse_serena_json_results(text: str) -> list[dict]:
@@ -228,24 +282,35 @@ def search_code(query: str, tool_hint: str | None = None) -> dict:
     if not query or not query.strip():
         return {"results": [], "query": query}
 
+    project_dir = os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+
     if not _MCP_AVAILABLE:
         if _VERBOSE:
             _log.info("[Serena] results: 0 (MCP not available)")
+        if _ENABLE_GREP_FALLBACK:
+            return _grep_fallback(query, project_dir)
         return {"results": [], "error": "Serena MCP not available", "query": query}
 
     if os.environ.get("SERENA_USE_PLACEHOLDER", "").lower() in ("1", "true", "yes"):
         if _VERBOSE:
             _log.info("[Serena] results: 0 (placeholder mode)")
+        if _ENABLE_GREP_FALLBACK:
+            return _grep_fallback(query, project_dir)
         return {"results": [], "query": query}
 
     try:
-        project_dir = os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
         out = asyncio.run(_search_via_mcp(query.strip(), project_dir, tool_hint=tool_hint))
     except Exception as e:
         if _VERBOSE:
             _log.info("[Serena] results: 0 (%s)", e)
+        if _ENABLE_GREP_FALLBACK:
+            return _grep_fallback(query, project_dir)
         return {"results": [], "error": str(e), "query": query}
 
+    results = out.get("results", [])
+    if not results and _ENABLE_GREP_FALLBACK:
+        return _grep_fallback(query, project_dir)
+
     if _VERBOSE:
-        _log.info("[Serena] results: %d", len(out.get("results", [])))
+        _log.info("[Serena] results: %d", len(results))
     return out

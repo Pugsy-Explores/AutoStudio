@@ -16,9 +16,11 @@ from planner.planner import plan
 
 logger = logging.getLogger(__name__)
 
+ENABLE_INSTRUCTION_ROUTER = os.environ.get("ENABLE_INSTRUCTION_ROUTER", "0").lower() in ("1", "true", "yes")
 MAX_FILES_EDITED = 5
 MAX_PATCH_SIZE = 200
 MAX_TASK_RUNTIME_SECONDS = 15 * 60  # 15 minutes
+MAX_REPLAN_ATTEMPTS = 5  # Prevent infinite replan loop when same step keeps failing
 
 
 def run_controller(
@@ -51,7 +53,7 @@ def run_controller(
         except Exception as e:
             logger.debug("[agent_controller] task_index search skipped: %s", e)
 
-        plan_result = plan(instruction)
+        plan_result = _get_plan(instruction, trace_id)
         log_event(trace_id, "planner_decision", {"plan": plan_result})
 
         state = AgentState(
@@ -78,11 +80,13 @@ def run_controller(
         patches_applied: list = []
         files_modified: list = []
         errors_encountered: list = []
+        replan_count = 0
 
         while not state.is_finished():
             if time.perf_counter() - start_time > MAX_TASK_RUNTIME_SECONDS:
                 logger.warning("[agent_controller] max task runtime exceeded")
                 errors_encountered.append("max_task_runtime_exceeded")
+                log_event(trace_id, "error", {"type": "max_task_runtime_exceeded"})
                 break
 
             step = state.next_step()
@@ -92,12 +96,23 @@ def run_controller(
             step_id = step.get("id", "?")
             action = (step.get("action") or "EXPLAIN").upper()
             logger.info("[agent_controller] step executed step_id=%s action=%s", step_id, action)
-            log_event(trace_id, "step_executed", {"step_id": step_id, "action": action})
 
             if action == "EDIT":
                 result = _run_edit_flow(step, state)
             else:
                 result = dispatch(step, state)
+
+            chosen_tool = state.context.get("chosen_tool", "")
+            log_event(
+                trace_id,
+                "step_executed",
+                {
+                    "step_id": step_id,
+                    "action": action,
+                    "tool": chosen_tool,
+                    "success": result.get("success", False),
+                },
+            )
 
             success = result.get("success", False)
             if success:
@@ -110,19 +125,43 @@ def run_controller(
                     elif isinstance(pm, int):
                         patches_applied.append(pm)
                     files_modified.extend(out.get("files_modified", []) or [])
+                    if pm or out.get("files_modified"):
+                        log_event(
+                            trace_id,
+                            "patch_result",
+                            {
+                                "step_id": step_id,
+                                "patches_applied": pm if isinstance(pm, int) else len(pm) if isinstance(pm, list) else 0,
+                                "files_modified": out.get("files_modified", []),
+                            },
+                        )
             else:
-                errors_encountered.append(result.get("error", "unknown"))
-                new_plan = replan(state)
+                err = result.get("error", "unknown")
+                errors_encountered.append(err)
+                log_event(trace_id, "error", {"step_id": step_id, "action": action, "error": str(err)})
+                replan_count += 1
+                if replan_count >= MAX_REPLAN_ATTEMPTS:
+                    logger.warning("[agent_controller] max replan attempts exceeded, stopping")
+                    log_event(trace_id, "error", {"type": "max_replan_attempts_exceeded"})
+                    break
+                new_plan = replan(state, failed_step=step, error=result.get("error", ""))
                 state.update_plan(new_plan)
                 continue
 
             step_result = _result_to_step_result(step, result)
             if not validate_step(step, step_result):
-                new_plan = replan(state)
+                replan_count += 1
+                if replan_count >= MAX_REPLAN_ATTEMPTS:
+                    logger.warning("[agent_controller] max replan attempts exceeded, stopping")
+                    log_event(trace_id, "error", {"type": "max_replan_attempts_exceeded"})
+                    break
+                err = getattr(step_result, "error", None) or result.get("error", "")
+                new_plan = replan(state, failed_step=step, error=str(err) if err else "Validation failed")
                 state.update_plan(new_plan)
                 continue
 
             state.record(step, step_result)
+            replan_count = 0  # Reset on success so next step gets fresh replan budget
 
         save_task(
             task_id=task_id,
@@ -135,8 +174,22 @@ def run_controller(
             results={"completed_steps": len(completed_steps)},
             project_root=str(root),
         )
-        log_event(trace_id, "task_complete", {"task_id": task_id})
+        log_event(
+            trace_id,
+            "task_complete",
+            {
+                "task_id": task_id,
+                "completed_steps": len(completed_steps),
+                "errors": errors_encountered,
+                "patches_applied": len(patches_applied),
+                "files_modified": list(dict.fromkeys(files_modified)),
+            },
+        )
         logger.info("[agent_controller] task complete")
+    except Exception as e:
+        log_event(trace_id, "error", {"type": "exception", "error": str(e)})
+        logger.exception("[agent_controller] task failed")
+        raise
     finally:
         finish_trace(trace_id)
 
@@ -147,6 +200,57 @@ def run_controller(
         "files_modified": list(dict.fromkeys(files_modified)),
         "errors": errors_encountered,
     }
+
+
+def _get_plan(instruction: str, trace_id: str | None = None) -> dict:
+    """Get plan: use instruction router when enabled, else planner."""
+    if not ENABLE_INSTRUCTION_ROUTER:
+        return plan(instruction)
+
+    from agent.routing.instruction_router import route_instruction
+
+    decision = route_instruction(instruction)
+    category = decision.category
+    if trace_id:
+        log_event(trace_id, "instruction_router", {"category": category, "confidence": decision.confidence})
+
+    if category == "CODE_SEARCH":
+        return {
+            "steps": [
+                {
+                    "id": 1,
+                    "action": "SEARCH",
+                    "description": instruction,
+                    "reason": "Routed by instruction router",
+                }
+            ],
+        }
+    if category == "CODE_EXPLAIN":
+        return {
+            "steps": [
+                {
+                    "id": 1,
+                    "action": "EXPLAIN",
+                    "description": instruction,
+                    "reason": "Routed by instruction router",
+                }
+            ],
+        }
+    if category == "INFRA":
+        return {
+            "steps": [
+                {
+                    "id": 1,
+                    "action": "INFRA",
+                    "description": instruction,
+                    "reason": "Routed by instruction router",
+                }
+            ],
+        }
+    if category == "CODE_EDIT" or category == "GENERAL":
+        return plan(instruction)
+
+    return plan(instruction)
 
 
 def _result_to_step_result(step: dict, result: dict):

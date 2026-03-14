@@ -33,7 +33,7 @@ flowchart TB
         L --> M["dispatch step and state"]
         M --> N["state.record step and result"]
         N --> O{"result.success and validate_step?"}
-        O -->|no| P["replan state"]
+        O -->|no| P["replan state with failed_step and error"]
         P --> Q["state.update_plan"]
         Q --> J
         O -->|yes| J
@@ -87,7 +87,7 @@ flowchart TB
         S1["Policy: max_attempts 5, retry_on empty_results, mutation query_variants"]
         S1 --> S2["For attempt 1 to max_attempts"]
         S2 --> S3{"rewrite_query_fn set?"}
-        S3 -->|yes| S4["rewrite_query_with_context with description, user_request, attempt_history"]
+        S3 -->|yes| S4["rewrite_query_with_context(planner_step, user_request, attempts, state)"]
         S3 -->|no| S5["query = description"]
         S4 --> S6{"use_llm?"}
         S6 -->|True| S7["get_model_for_task query rewriting"]
@@ -97,7 +97,7 @@ flowchart TB
         S9 -->|no| S11["cleaned = output.strip"]
         S6 -->|False| S12["query = planner_step.strip (passthrough)"]
         S12 --> S11
-        S11 --> S13["_search_fn: graph_retriever first, else search_code"]
+        S11 --> S13["_search_fn: chosen_tool order retrieve_graph/vector/grep/list_dir, else search_code"]
         S13 --> S14{"_is_valid_search_result?"}
         S14 -->|yes| S15["Store context: search_query_rewritten, search_results, files, snippets"]
         S15 --> S16["Return success"]
@@ -109,18 +109,20 @@ flowchart TB
 
 **Details:**
 
-- **Retrieval stack:**  
+- **Retrieval stack (respects chosen_tool from tool graph or rewriter):**  
   1. `retrieval_cache.get_cached(query)` (if `RETRIEVAL_CACHE_SIZE > 0`)  
-  2. `graph_retriever.retrieve_symbol_context(query)` when index exists at `.symbol_graph/index.sqlite`  
-  3. If no results: `vector_retriever.search_by_embedding(query)` (if `ENABLE_VECTOR_SEARCH`)  
-  4. Fallback: `search_code` (Serena MCP)  
+  2. Order by `chosen_tool`: `retrieve_graph` → graph; `retrieve_vector` → vector; `retrieve_grep` → Serena `search_for_pattern`; `list_dir` → `list_files(path)`  
+  3. Fallback chain if chosen returns nothing: try remaining retrievers  
+  4. Final fallback: `search_code` (Serena MCP)  
   - On success: `retrieval_cache.set_cached(query, results)`.
 
 - **Query rewrite (LLM)**  
-  - `rewrite_query_with_context(planner_step, user_request, previous_attempts, use_llm=True)`.  
+  - `rewrite_query_with_context(planner_step, user_request, previous_attempts, use_llm=True, state=state)`.  
+  - Returns JSON: `{ "tool": "retrieve_graph"|"retrieve_vector"|"retrieve_grep"|"list_dir", "query": "", "reason": "" }`.  
+  - **Rewriter wires tool choice:** when tool is valid, sets `state.context["chosen_tool"]` so retrieval order prefers it.  
   - Model from `get_model_for_task("query rewriting")`.  
   - **No heuristic fallback**: if model returns empty → `ValueError("Query rewrite returned empty response")`.  
-  - On exception in rewriter → exception propagates (no fallback).
+  - Prompts: `query_rewrite_with_context.yaml` (Serena rules, filesystem rules, tool graph).
 
 - **Query rewrite (use_llm=False)**  
   - Passthrough: `query = planner_step.strip()` (no tokenize/stopwords/dedupe).
@@ -157,7 +159,7 @@ flowchart TB
     end
 ```
 
-- **Diff planner (ENABLE_DIFF_PLANNER=1):** `plan_diff` → `conflict_resolver` → `patch_executor` → `run_with_repair` (test repair loop). Patch application via AST patcher; max 5 files, 200 lines per patch.
+- **Diff planner (ENABLE_DIFF_PLANNER=1):** `plan_diff` → `conflict_resolver` → `patch_generator.to_structured_patches` → `patch_executor.execute_patch` (ast_patcher + patch_validator) → `run_with_repair` (test repair loop). Validation: compile + AST reparse before write; rollback on invalid syntax, >200 lines, >5 files, or apply error. Max 5 files, 200 lines per patch.
 - **Mutation**: `symbol_retry(step)` → currently returns `[step]` (single variant). Placeholder for future symbol/path variants.
 - **Retry condition**: `result.error` or `result.success is False`.
 
@@ -225,13 +227,17 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    RP["replan state"] --> R1["Log last step failure"]
-    R1 --> R2["remaining = steps not in completed_ids"]
-    R2 --> R3["Return plan with steps remaining"]
-    R3 --> R4["state.update_plan with new_plan"]
+    RP["replan state, failed_step, error"] --> R1["Log last step failure"]
+    R1 --> R2["LLM call with instruction, plan, failed_step, error"]
+    R2 --> R3{"Valid JSON plan?"}
+    R3 -->|yes| R4["Return revised plan"]
+    R3 -->|no| R5["Fallback: remaining steps"]
+    R4 --> R6["state.update_plan with new_plan"]
+    R5 --> R6
 ```
 
-- Stub: no LLM replan; plan is replaced with remaining steps only.
+- LLM-based: receives `failed_step` and `error`; produces revised plan via `call_reasoning_model` (task_models["replanner"]).
+- Fallback: if LLM fails or returns invalid JSON, returns remaining steps only.
 - Loop continues with `state.next_step()` (next remaining step).
 
 ---
@@ -274,11 +280,11 @@ flowchart LR
 | `StepExecutor`         | Calls `dispatch(step, state)`; wraps result in `StepResult`. |
 | `dispatch`             | Routes by action to policy engine (SEARCH/EDIT/INFRA) or EXPLAIN. |
 | `ExecutionPolicyEngine`| Retry loop + mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn. |
-| `rewrite_query_with_context` | LLM rewrite or passthrough (use_llm=False → planner_step.strip()); **empty LLM output → raise**. |
+| `rewrite_query_with_context` | LLM returns `{tool, query, reason}`; wires `chosen_tool` when valid; prompts: Serena rules, filesystem rules; **empty LLM output → raise**. |
 | `get_model_for_task`   | Config-driven: task_models → SMALL or REASONING. |
 | `_call_chat`           | Single non-streaming chat call; extracts `choices[0].message.content`. |
 | `validate_step`        | Rules or LLM YES/NO; fallback to rules on LLM error. |
-| `replan`               | Stub: return plan of remaining steps. |
+| `replan`               | LLM-based: receives failed_step, error; produces revised plan; fallback to remaining steps. |
 | `context["search_memory"]` / `context["tool_memories"]` | Set in policy engine on SEARCH/EDIT/INFRA success; EXPLAIN uses `search_memory` via `_format_explain_context`. |
 
 ---
@@ -289,7 +295,7 @@ flowchart LR
 - **Executor**: `agent/execution/executor.py` — `StepExecutor.execute_step`, `execute_plan`.
 - **Dispatch**: `agent/execution/step_dispatcher.py` — `dispatch`, _search_fn, _edit_fn, _infra_fn, _rewrite_for_search, EXPLAIN.
 - **Policy**: `agent/execution/policy_engine.py` — POLICIES, _execute_search, _execute_edit, _execute_infra, _run_once.
-- **Query rewriter**: `agent/retrieval/query_rewriter.py` — rewrite_query_with_context, rewrite_query.
+- **Query rewriter**: `agent/retrieval/query_rewriter.py` — rewrite_query_with_context (wires chosen_tool), rewrite_query; prompts: `agent/prompts/query_rewrite.yaml`, `query_rewrite_with_context.yaml`.
 - **Mutation**: `agent/execution/mutation_strategies.py` — symbol_retry, retry_same, generate_query_variants.
 - **Model**: `agent/models/model_client.py` — _call_chat, call_reasoning_model, call_small_model; `agent/models/model_router.py` — get_model_for_task.
 - **Validation**: `agent/orchestrator/validator.py` — validate_step, _validate_step_rules.
@@ -299,7 +305,10 @@ flowchart LR
 - **Vector retriever**: `agent/retrieval/vector_retriever.py` — search_by_embedding (fallback).
 - **Retrieval cache**: `agent/retrieval/retrieval_cache.py` — LRU cache for search results.
 - **Diff planner**: `editing/diff_planner.py` — plan_diff.
-- **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (full pipeline).
+- **Patch pipeline**: `editing/patch_generator.py` — to_structured_patches; `editing/ast_patcher.py` — apply_patch; `editing/patch_validator.py` — validate_patch; `editing/patch_executor.py` — execute_patch (rollback on failure).
+- **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (full pipeline); _get_plan (instruction router + planner).
+- **Instruction router**: `agent/routing/instruction_router.py` — route_instruction (when ENABLE_INSTRUCTION_ROUTER=1).
+- **Router registry**: `agent/routing/router_registry.py` — get_router, get_router_raw (ROUTER_TYPE integration).
 
 ---
 
@@ -308,7 +317,7 @@ flowchart LR
 **Indexing:** `python -m repo_index.index_repo <path>` creates `.symbol_graph/index.sqlite`; optionally `.symbol_graph/embeddings/` when `INDEX_EMBEDDINGS=1`.
 
 **Retrieval flow:**
-- Cache → `graph_retriever.retrieve_symbol_context(query)` → `vector_retriever.search_by_embedding(query)` → Serena fallback
+- Cache → chosen_tool order (retrieve_graph → retrieve_vector → retrieve_grep → list_dir) → Serena fallback; rewriter can set chosen_tool
 
 **Additional modules:**
 - `repo_graph/repo_map_builder.py` — high-level architectural map

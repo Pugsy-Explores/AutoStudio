@@ -22,7 +22,7 @@ Modify or write source code.
 SEARCH
 Locate files, functions, classes, or usages in the codebase.
 
-DOCS
+EXPLAIN
 Explain APIs, modules, or documentation.
 
 GENERAL
@@ -54,7 +54,7 @@ Categories:
 
 EDIT = modify or write code
 SEARCH = locate code or files
-DOCS = documentation or API explanation
+EXPLAIN = documentation or API explanation
 GENERAL = conceptual explanation or discussion
 INFRA = environment configuration or deployment
 
@@ -74,10 +74,10 @@ Instruction: Where is the API key validated?
 Reply: SEARCH
 
 Instruction: What does the auth module export?
-Reply: DOCS
+Reply: EXPLAIN
 
 Instruction: What arguments does createUser accept?
-Reply: DOCS
+Reply: EXPLAIN
 
 Instruction: Explain how the authentication pipeline works
 Reply: GENERAL
@@ -109,7 +109,7 @@ Categories:
 
 EDIT → modify or write source code
 SEARCH → locate files, functions, or usages
-DOCS → explain APIs or documentation
+EXPLAIN → explain APIs or documentation
 GENERAL → explain programming concepts
 INFRA → configuration or deployment setup
 
@@ -124,7 +124,7 @@ Tools:
 
 EDIT → change or write code
 SEARCH → search the repository
-DOCS → answer documentation questions
+EXPLAIN → answer documentation questions
 GENERAL → general explanation
 INFRA → configuration or deployment tasks
 
@@ -139,7 +139,7 @@ Categories:
 
 EDIT
 SEARCH
-DOCS
+EXPLAIN
 GENERAL
 INFRA
 
@@ -147,7 +147,7 @@ Definitions:
 
 EDIT = modify code
 SEARCH = locate code
-DOCS = documentation or API explanation
+EXPLAIN = documentation or API explanation
 GENERAL = conceptual explanation
 INFRA = environment/configuration tasks
 

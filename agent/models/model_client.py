@@ -6,6 +6,7 @@ No other module should call models directly.
 import json
 import logging
 import os
+import sys
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,10 @@ def _raw_response_repr(resp_obj) -> str:
 
 def _debug_empty_response(resp_obj) -> None:
     """Log response structure when content is empty to debug server/API issues."""
+    if resp_obj is None:
+        print("    [workflow] model response (debug): stream completed with no content")
+        logger.warning("[model_client] stream completed with no content")
+        return
     raw_repr = _raw_response_repr(resp_obj)
     _raw_max_log = 4000
     raw_for_log = raw_repr if len(raw_repr) <= _raw_max_log else raw_repr[:_raw_max_log] + "\n... (truncated)"
@@ -118,6 +123,36 @@ def _debug_empty_response(resp_obj) -> None:
         print("    [workflow] model response (debug): failed to inspect:", e)
 
 
+def _extract_content_from_response(resp_obj, is_dict: bool) -> str:
+    """
+    Extract content from response message.content.
+    When finish_reason=length, appends truncation hint.
+    """
+    if is_dict:
+        choices = resp_obj.get("choices", [])
+        if not choices:
+            return ""
+        c0 = choices[0]
+        msg = c0.get("message") or {}
+        content = (msg.get("content") or "").strip()
+        finish_reason = c0.get("finish_reason")
+    else:
+        choices = resp_obj.choices or []
+        if not choices:
+            return ""
+        c0 = choices[0]
+        msg = getattr(c0, "message", None)
+        content = ((getattr(msg, "content", None) or "") or "").strip()
+        finish_reason = getattr(c0, "finish_reason", None)
+
+    if finish_reason == "length":
+        if content:
+            content = content + "\n[Response truncated - consider increasing max_tokens]"
+        logger.warning("[model_client] finish_reason=length; %s", "response truncated" if content else "no content (consider increasing max_tokens)")
+
+    return content
+
+
 def _pretty_print_response(content: str, raw_response=None) -> None:
     """Pretty-print model response for workflow visibility."""
     print("    [workflow] model response:")
@@ -134,6 +169,13 @@ def _pretty_print_response(content: str, raw_response=None) -> None:
         for line in lines:
             print("    " + line)
     print("    " + "─" * _PRETTY_WIDTH)
+
+
+def _stream_chunk_to_terminal(text: str) -> None:
+    """Write a chunk to stdout immediately for real-time streaming."""
+    if text:
+        sys.stdout.write(text)
+        sys.stdout.flush()
 
 
 def _call_chat(
@@ -170,19 +212,55 @@ def _call_chat(
         from openai import OpenAI
     except ImportError:
         import urllib.request
+
+        payload_stream = {**payload, "stream": True}
         req = urllib.request.Request(
             endpoint,
-            data=json.dumps(payload).encode("utf-8"),
+            data=json.dumps(payload_stream).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {MODEL_API_KEY}",
             },
             method="POST",
         )
+        content_parts: list[str] = []
+        print("    [workflow] model response (streaming):")
+        print("    " + "─" * _PRETTY_WIDTH)
+        done = False
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        content = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
-        _pretty_print_response(content, data if not content else None)
+            buf = ""
+            for line in resp:
+                if done:
+                    break
+                buf += line.decode("utf-8", errors="replace")
+                while "\n" in buf or "\r\n" in buf:
+                    sep = "\r\n" if "\r\n" in buf else "\n"
+                    raw_line, buf = buf.split(sep, 1)
+                    if raw_line.startswith("data: "):
+                        data = raw_line[6:].strip()
+                        if data == "[DONE]":
+                            done = True
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+                        d = choices[0].get("delta") or {}
+                        reasoning = d.get("reasoning_content")
+                        delta = d.get("content")
+                        if reasoning:
+                            _stream_chunk_to_terminal(reasoning)
+                        if delta:
+                            content_parts.append(delta)
+                            _stream_chunk_to_terminal(delta)
+        print()
+        print("    " + "─" * _PRETTY_WIDTH)
+        content = "".join(content_parts).strip()
+        if not content:
+            _debug_empty_response(None)
         return content
 
     base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/")
@@ -195,13 +273,49 @@ def _call_chat(
             "model": "default",
             "messages": messages,
             "temperature": temp,
+            "stream": True,
         }
         if max_tokens is not None:
             create_kwargs["max_tokens"] = max_tokens
-        resp = client.chat.completions.create(**create_kwargs)
-        content = (resp.choices[0].message.content if resp.choices else "") or ""
-        content = content.strip()
-        _pretty_print_response(content, resp if not content else None)
+        stream = client.chat.completions.create(**create_kwargs)
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        finish_reason = None
+        print("    [workflow] model response (streaming):")
+        print("    " + "─" * _PRETTY_WIDTH)
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta is None:
+                continue
+            # Stream reasoning_content (o1-style models) to terminal
+            reasoning = (
+                getattr(delta, "reasoning_content", None)
+                if not isinstance(delta, dict)
+                else delta.get("reasoning_content")
+            )
+            if reasoning:
+                reasoning_parts.append(reasoning)
+                _stream_chunk_to_terminal(reasoning)
+            # Stream main content to terminal
+            text = (
+                getattr(delta, "content", None)
+                if not isinstance(delta, dict)
+                else delta.get("content")
+            )
+            if text:
+                content_parts.append(text)
+                _stream_chunk_to_terminal(text)
+            finish_reason = getattr(chunk.choices[0], "finish_reason", None)
+        print()  # newline after stream
+        print("    " + "─" * _PRETTY_WIDTH)
+        content = "".join(content_parts).strip()
+        if finish_reason == "length" and content:
+            content = content + "\n[Response truncated - consider increasing max_tokens]"
+            logger.warning("[model_client] finish_reason=length; response truncated")
+        if not content and not reasoning_parts:
+            _debug_empty_response(None)
         return content
     except Exception as e:
         err_msg = str(e)

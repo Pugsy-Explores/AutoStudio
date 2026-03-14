@@ -99,9 +99,10 @@ The edit must go through a structured pipeline.
 
 - **editing/diff_planner.py** — `plan_diff(instruction, context)` returns planned changes; identifies affected symbols and callers from graph
 - **editing/conflict_resolver.py** — same symbol, same file, semantic overlap; returns sequential groups
-- **editing/patch_generator.py** — `to_structured_patches`
-- **editing/patch_executor.py** — AST patching, rollback on failure; max 5 files, 200 lines per patch
-- **editing/patch_validator.py** — validate patches before execution
+- **editing/patch_generator.py** — `to_structured_patches(plan, instruction, context)` → structured patches
+- **editing/ast_patcher.py** — Tree-sitter AST edits (insert/replace/delete at function_body, statement, block level); preserves relative indentation
+- **editing/patch_validator.py** — compile + AST reparse before write
+- **editing/patch_executor.py** — apply → validate → write; rollback on invalid syntax, validation failure, or apply error; max 5 files, 200 lines per patch
 - **editing/test_repair_loop.py** — run tests after patch; repair on failure (max 3 attempts); flaky detection; compile step
 
 ---
@@ -132,8 +133,8 @@ Systems in production treat tool failures as **normal events** and allow the age
 
 - Policy engine
 - Retry logic
-- Fallback search
-- Replanning
+- Fallback search (retrieve_graph → retrieve_vector → retrieve_grep → Serena)
+- LLM-based replanner (receives failed_step and error; produces revised plan)
 
 ---
 
@@ -190,6 +191,8 @@ repo map
 graph retrieval
   ↓
 context ranking
+  ↓
+instruction router (optional; CODE_SEARCH/EXPLAIN/INFRA skip planner)
   ↓
 planner
   ↓

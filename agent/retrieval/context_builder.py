@@ -77,6 +77,8 @@ def build_context_from_symbols(
         if snip and total_chars + len(snip) <= max_context_chars:
             snippets.append(snip)
             total_chars += len(snip)
+        else:
+            snippets.append("")  # keep files/snippets aligned when over char limit
 
     logger.info("[context_builder] %d symbols, %d references, %d files, %d snippets", len(symbols), len(references), len(files), len(snippets))
     return {

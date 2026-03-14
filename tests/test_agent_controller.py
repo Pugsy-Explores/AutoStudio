@@ -52,3 +52,25 @@ def test_run_controller_edit_flow_mocked(tmp_path):
 
     assert "task_id" in result
     assert mock_edit.called
+
+
+def test_run_controller_with_instruction_router_skips_planner_for_search(tmp_path):
+    """When instruction router is enabled and routes to CODE_SEARCH, planner is not called."""
+    from agent.routing.instruction_router import RouterDecision
+
+    with patch("agent.orchestrator.agent_controller.ENABLE_INSTRUCTION_ROUTER", True):
+        with patch("agent.routing.instruction_router.route_instruction") as mock_route:
+            mock_route.return_value = RouterDecision(category="CODE_SEARCH", confidence=0.9)
+            with patch("agent.orchestrator.agent_controller.plan") as mock_plan:
+                with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
+                    mock_dispatch.return_value = {
+                        "success": True,
+                        "output": {"results": [{"file": "a.py", "snippet": "x"}]},
+                    }
+                    result = run_controller(
+                        "Find where password hashing is implemented",
+                        project_root=str(tmp_path),
+                    )
+    assert mock_route.called
+    assert not mock_plan.called
+    assert "task_id" in result

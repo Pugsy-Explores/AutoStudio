@@ -10,6 +10,6 @@ from router_eval.utils.parsing import parse_category
 
 
 def route(instruction: str) -> str:
-    """Route instruction to one of EDIT, SEARCH, DOCS, GENERAL, INFRA."""
+    """Route instruction to one of EDIT, SEARCH, EXPLAIN, INFRA, GENERAL."""
     response = llama_chat(BASELINE_SYSTEM, instruction)
     return parse_category(response)

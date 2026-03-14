@@ -2,7 +2,10 @@
 
 import json
 import logging
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from agent.memory.state import AgentState
 
 from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
@@ -63,6 +66,24 @@ def _parse_rewrite_json(raw: str) -> RewriteResult:
     return RewriteResult(tool="", query=raw, reason="")
 
 
+# Common filler words to strip in heuristic (no-LLM) mode for token-like queries
+_HEURISTIC_FILLER_WORDS = frozenset(
+    {"find", "where", "the", "is", "a", "an", "to", "of", "for", "in", "on", "at"}
+)
+
+
+def _heuristic_rewrite_no_llm(text: str) -> str:
+    """Strip filler words to produce token-like query for code search (no LLM)."""
+    if not text or not isinstance(text, str):
+        return ""
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    tokens = stripped.split()
+    filtered = [t for t in tokens if t.lower() not in _HEURISTIC_FILLER_WORDS]
+    return " ".join(filtered) if filtered else stripped
+
+
 def _format_attempts_for_prompt(attempts: list[SearchAttempt]) -> str:
     """Format previous search attempts for the rewrite prompt (last N only)."""
     if not attempts:
@@ -88,6 +109,7 @@ def rewrite_query_with_context(
     user_request: str = "",
     previous_attempts: list[SearchAttempt] | None = None,
     use_llm: bool = True,
+    state: "AgentState | None" = None,
 ) -> str:
     """
     Rewrite the planner step into a search query using full execution context.
@@ -103,7 +125,7 @@ def rewrite_query_with_context(
     attempts_slice = attempts[-MAX_ATTEMPT_HISTORY_FOR_REWRITE:]
 
     if not use_llm:
-        return (planner_step or "").strip()
+        return _heuristic_rewrite_no_llm(planner_step)
 
     print("[workflow] rewriter (with context)")
     print("    [workflow] rewriter planner_step:", (planner_step[:80] + "..." if len(planner_step) > 80 else planner_step))
@@ -142,6 +164,9 @@ def rewrite_query_with_context(
             query[:80] + ("..." if len(query) > 80 else ""),
             reason[:80] + ("..." if len(reason) > 80 else "") if reason else "(none)",
         )
+        # Wire rewriter tool choice to chosen_tool for retrieval order
+        if state and tool and tool in ("retrieve_graph", "retrieve_vector", "retrieve_grep", "list_dir"):
+            state.context["chosen_tool"] = tool
         return query
 
     except Exception as e:

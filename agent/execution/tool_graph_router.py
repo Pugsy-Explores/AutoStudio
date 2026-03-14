@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 # For START node only: action → preferred tool (START has no single preferred, depends on action)
 ACTION_TO_PREFERRED_TOOL: dict[str, str] = {
-    "SEARCH": "search_for_pattern",
+    "SEARCH": "retrieve_graph",
     "EDIT": "edit",
     "INFRA": "list_dir",
     "EXPLAIN": "explain",

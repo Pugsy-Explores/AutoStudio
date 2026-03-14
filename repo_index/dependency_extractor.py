@@ -269,6 +269,7 @@ def extract_edges(
 
     for file_path, tree in ast_trees.items():
         if tree is None or tree.root_node is None:
+            logger.debug("[dependency_extractor] skipping %s: no valid tree", file_path)
             continue
         try:
             path = Path(file_path)
@@ -281,4 +282,5 @@ def extract_edges(
 
         _walk_and_collect(tree.root_node, source_bytes, file_path, symbol_map, symbols, edges)
 
+    logger.debug("[dependency_extractor] extracted %d edges from %d files", len(edges), len(ast_trees))
     return edges

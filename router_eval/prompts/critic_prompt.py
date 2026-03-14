@@ -16,7 +16,7 @@ Modify or write source code.
 SEARCH
 Locate files, functions, classes, or usages in a codebase.
 
-DOCS
+EXPLAIN
 Explain APIs, modules, or documentation.
 
 GENERAL

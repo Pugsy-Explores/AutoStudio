@@ -25,6 +25,7 @@ def start_trace(task_id: str, project_root: str | None = None) -> str:
     Start a new trace. Returns trace_id.
     """
     trace_id = f"{task_id}_{int(time.time())}"
+    logger.info("[trace] started trace_id=%s task_id=%s", trace_id, task_id)
     _trace_state[trace_id] = {
         "task_id": task_id,
         "started_at": time.time(),
@@ -69,4 +70,5 @@ def finish_trace(trace_id: str) -> str | None:
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, default=str)
 
+    logger.info("[trace] finished trace_id=%s path=%s events=%d", trace_id, file_path, len(state.get("events", [])))
     return str(file_path)

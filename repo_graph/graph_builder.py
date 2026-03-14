@@ -15,6 +15,7 @@ def build_graph(symbols: list[dict], edges: list[dict], output_path: str) -> Non
     edges: [{source_symbol, target_symbol, relation_type}]
     """
     storage = GraphStorage(output_path)
+    storage._connect()  # Ensure schema exists even when symbols is empty
     name_to_id: dict[str, int] = {}
 
     # Add all symbol nodes
@@ -42,4 +43,8 @@ def build_graph(symbols: list[dict], edges: list[dict], output_path: str) -> Non
             edge_count += 1
 
     logger.info("[graph_builder] nodes=%d edges=%d", len(symbols), edge_count)
+    if len(symbols) == 0:
+        logger.warning("[graph_builder] no nodes added")
+    if edge_count == 0 and edges:
+        logger.warning("[graph_builder] edges provided but none added (name resolution may have failed)")
     storage.close()

@@ -1,7 +1,9 @@
 """
 Router evaluation harness. Swap router by changing the import below.
+Run with --mock to use a stub router (no LLM server required).
 """
 
+import argparse
 import time
 from collections import defaultdict
 
@@ -9,15 +11,13 @@ from router_eval.dataset import CATEGORIES, load_dataset
 
 
 # --- Swap router here ---
-# from router_eval.routers.baseline_router import route, ROUTER_NAME
+from router_eval.routers.baseline_router import route, ROUTER_NAME
 # from router_eval.routers.fewshot_router import route, ROUTER_NAME
 # from router_eval.routers.ensemble_router import route, ROUTER_NAME
 # from router_eval.routers.confidence_router import route, ROUTER_NAME
 # from router_eval.routers.dual_router import route, ROUTER_NAME
 # from router_eval.routers.critic_router import route, ROUTER_NAME
 # from router_eval.routers.final_router import route, ROUTER_NAME
-# from router_eval.routers.logit_router import route, ROUTER_NAME
-from router_eval.routers.fewshot_logit_router import route, ROUTER_NAME
 
 def _extract_category(result) -> str:
     """Support both route() -> str and route() -> dict with 'category' key."""
@@ -189,5 +189,32 @@ def _plot_metrics(
     plt.show()
 
 
+def _mock_route(instruction: str) -> str:
+    """Stub router for --mock mode: returns EDIT for all (no LLM call)."""
+    return "EDIT"
+
+
 if __name__ == "__main__":
-    run_eval()
+    parser = argparse.ArgumentParser(description="Router evaluation harness")
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Use stub router (no LLM server required); verifies dataset load and metrics.",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="Path to JSON/JSONL dataset; default uses built-in dataset.",
+    )
+    args = parser.parse_args()
+
+    if args.mock:
+        run_eval(
+            dataset_path=args.dataset,
+            verbose=True,
+            route_fn=_mock_route,
+            router_name="mock",
+        )
+    else:
+        run_eval(dataset_path=args.dataset)

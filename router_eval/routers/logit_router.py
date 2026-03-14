@@ -11,7 +11,7 @@ from agent.prompts import get_prompt
 from router_eval.utils.llama_client import DEFAULT_API_KEY, DEFAULT_BASE_URL, DEFAULT_MODEL
 
 # Candidate categories; must match dataset
-CATEGORIES = ("EDIT", "SEARCH", "DOCS", "GENERAL", "INFRA")
+CATEGORIES = ("EDIT", "SEARCH", "EXPLAIN", "INFRA", "GENERAL")
 _CATEGORIES_SET = {c.upper() for c in CATEGORIES}
 
 _DEFAULT_SYSTEM = get_prompt("router_logit_system", "system_prompt")

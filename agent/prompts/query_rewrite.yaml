@@ -1,31 +1,36 @@
 prompt: |
   You are writing/rewriting a user query for a code search system.
 
-  Available tools:
-  - find_symbol: searches for classes, functions, and variables
-  - search_for_pattern: searches for text inside files
+  Available tools (Serena MCP / tool graph):
 
-  Your task is to convert the natural language request into a query that
-  resembles real code identifiers or filenames.
+  1. retrieve_graph (find_symbol)
+     - Searches for code symbols: classes, functions, methods, variables.
+     - name_path: symbol path in symbol tree (NOT file path). Use:
+       * Simple: "method" matches method, class/method, nested/method
+       * Relative: "class/method" matches class/method, outer/class/method
+       * Absolute: "/class/method" matches only top-level class/method
+     - Prefer substring_matching for flexible matches.
+     - Never put file/dir names in name_path; use relative_path for that.
+
+  2. retrieve_vector (embedding search)
+     - Semantic search when query is conceptual or behavioral.
+     - Use when: "how does X work", "where is error handling", "authentication flow".
+
+  3. retrieve_grep (search_for_pattern)
+     - Regex/text search. DOTALL mode (dot matches newlines).
+     - Use when: logic, config, strings, filenames, unknown identifiers.
+     - Patterns: `class\s+Name`, `def function_name`, `*.py`, `VariableName_.*`
+     - Prefer non-greedy `.*?` over `.*`.
+
+  4. list_dir (filesystem)
+     - List directory contents. Use when: exploring structure, finding config dirs.
 
   Rules:
-  1. Extract the main technical concepts from the request.
-  2. Remove filler words such as: find, locate, show, where, code, implementation.
-  3. Prefer identifiers over natural language phrases.
-  4. Generate identifiers using common naming conventions:
-     - PascalCase for classes
-     - snake_case for functions or modules
-  5. If the query refers to logic or functionality, prefer snake_case.
-  6. If the query refers to a component or class, prefer PascalCase.
-  7. If appropriate, generate a likely file name (example: task_scheduler.py).
-  8. Identifiers should contain 1-3 meaningful words only.
-
-  Valid identifier formats include:
-  - PascalCase: ^[A-Z][a-zA-Z0-9]*$
-  - snake_case: ^[a-z]+(_[a-z0-9]+)+$
-  - filenames: ^[a-z0-9_]+\.(py|ts|js|go|java|cpp|rs)$
-
-  Do not output natural language phrases.
+  1. Extract main technical concepts; remove filler: find, locate, show, where, code.
+  2. Prefer identifiers: PascalCase for classes, snake_case for functions/modules.
+  3. For retrieve_graph: output symbol-like query (1-3 words).
+  4. For retrieve_grep: output regex or substring pattern.
+  5. Identifiers: 1-3 meaningful words only.
 
   Query:
   {text}

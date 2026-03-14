@@ -46,3 +46,22 @@ def parse_file(file_path: str) -> "Tree | None":
     except Exception as e:
         logger.debug("[parser] parse error %s: %s", file_path, e)
         return None
+
+
+def parse_source(source: str | bytes) -> "tuple[Tree, bytes] | None":
+    """
+    Parse Python source (str or bytes) and return (tree, source_bytes).
+    Returns None on parse error or if tree-sitter is unavailable.
+    """
+    parser, _ = _get_parser()
+    if parser is None:
+        return None
+    try:
+        source_bytes = source.encode("utf-8") if isinstance(source, str) else source
+        tree = parser.parse(source_bytes)
+        if tree is None:
+            return None
+        return tree, source_bytes
+    except Exception as e:
+        logger.debug("[parser] parse_source error: %s", e)
+        return None

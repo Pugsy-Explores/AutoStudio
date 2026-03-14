@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 # Categories must match dataset.py; avoid circular import by defining here
-CATEGORIES = ("EDIT", "SEARCH", "DOCS", "GENERAL", "INFRA")
+CATEGORIES = ("EDIT", "SEARCH", "EXPLAIN", "INFRA", "GENERAL")
 
 _CATEGORIES_SET = set(c.upper() for c in CATEGORIES)
 

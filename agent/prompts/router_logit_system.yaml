@@ -1,2 +1,2 @@
 system_prompt: |
-  Reply with exactly one category word: EDIT, SEARCH, DOCS, GENERAL, or INFRA.
+  Reply with exactly one category word: EDIT, SEARCH, EXPLAIN, INFRA, or GENERAL.

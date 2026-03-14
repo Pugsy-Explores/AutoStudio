@@ -1,6 +1,6 @@
 # Router Eval
 
-Phased router evolution and evaluation harness. Same dataset for all phases; swap router by changing one import in `router_eval.py`.
+Phased router evolution and evaluation harness. Same dataset for all phases; swap router by changing one import in `router_eval.py`. Categories: EDIT, SEARCH, EXPLAIN, INFRA, GENERAL.
 
 ## Run evaluation
 
@@ -10,7 +10,31 @@ From the **AutoStudio** project root:
 python -m router_eval.router_eval
 ```
 
-Optional: set `ROUTER_LLM_BASE_URL` and `ROUTER_LLM_MODEL` to point at your LLM (OpenAI-compatible API).
+Use `--mock` to run without an LLM server (stub router; verifies dataset load and metrics):
+
+```bash
+python -m router_eval.router_eval --mock
+```
+
+Run all routers (or `--mock` for no LLM):
+
+```bash
+python -m router_eval.run_all_routers
+python -m router_eval.run_all_routers --mock
+```
+
+Run with production router integration (uses `ROUTER_TYPE` from env):
+
+```bash
+python -m router_eval.run_all_routers --production
+```
+
+**Config:** Reads from `agent/models/models_config.json`:
+- `task_models.routing` → model key (e.g. SMALL)
+- `models.SMALL.endpoint` → LLM endpoint (e.g. `http://localhost:8081/v1/chat/completions`)
+- `task_params.routing` → temperature, max_tokens, request_timeout_seconds
+
+Override with env: `ROUTER_LLM_BASE_URL`, `ROUTER_LLM_API_KEY` (when agent package not importable).
 
 ## Swap router
 

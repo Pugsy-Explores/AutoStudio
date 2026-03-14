@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 
-from editing.ast_patcher import apply_patch, generate_code, load_ast
+from editing.ast_patcher import apply_patch, generate_code, load_ast, load_ast_from_source
 from editing.patch_validator import validate_patch
 
 logger = logging.getLogger(__name__)
@@ -34,12 +34,13 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
     if not changes:
         return {"success": True, "files_modified": [], "patches_applied": 0}
 
-    # Safeguards
-    if len(changes) > MAX_FILES_PER_EDIT:
+    # Safeguard: count unique files (multiple patches per file allowed)
+    unique_files = len({c.get("file", "") for c in changes if c.get("file")})
+    if unique_files > MAX_FILES_PER_EDIT:
         return {
             "success": False,
             "error": "safeguard_exceeded",
-            "reason": f"max files exceeded ({len(changes)} > {MAX_FILES_PER_EDIT})",
+            "reason": f"max files exceeded ({unique_files} > {MAX_FILES_PER_EDIT})",
             "file": changes[0].get("file", ""),
         }
     for c in changes:
@@ -54,7 +55,7 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
             }
 
     originals: dict[str, str] = {}
-    pending: list[tuple[Path, str]] = []
+    patched_content: dict[str, str] = {}
 
     for change in changes:
         file_path = change.get("file", "")
@@ -63,6 +64,7 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
             continue
 
         abs_path = _resolve_path(file_path, project_root)
+        abs_path_str = str(abs_path)
         logger.info("[patch_executor] applying patch file=%s", abs_path)
 
         try:
@@ -71,26 +73,31 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                     "success": False,
                     "error": "patch_failed",
                     "reason": f"file not found: {abs_path}",
-                    "file": str(abs_path),
+                    "file": abs_path_str,
                 }
 
-            original = abs_path.read_text(encoding="utf-8")
-            originals[str(abs_path)] = original
+            # Use patched content if we've already applied patches to this file
+            if abs_path_str in patched_content:
+                current_source = patched_content[abs_path_str]
+                loaded = load_ast_from_source(current_source)
+            else:
+                original = abs_path.read_text(encoding="utf-8")
+                originals[abs_path_str] = original
+                loaded = load_ast(str(abs_path))
 
-            loaded = load_ast(str(abs_path))
             if loaded is None:
                 return {
                     "success": False,
                     "error": "patch_failed",
                     "reason": f"failed to parse: {abs_path}",
-                    "file": str(abs_path),
+                    "file": abs_path_str,
                 }
 
             tree, source_bytes = loaded
             new_bytes = apply_patch(tree, source_bytes, patch)
             new_code = generate_code(tree, new_bytes)
 
-            result = validate_patch(str(abs_path), new_code)
+            result = validate_patch(abs_path_str, new_code)
             if not result.get("valid", True):
                 logger.warning("[patch_executor] validation failed for %s: %s", abs_path, result.get("errors"))
                 logger.info("[patch_executor] rollback triggered")
@@ -100,11 +107,11 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                     "success": False,
                     "error": "patch_failed",
                     "reason": "; ".join(result.get("errors", ["validation failed"])),
-                    "file": str(abs_path),
+                    "file": abs_path_str,
                 }
 
             logger.info("[patch_executor] validation passed")
-            pending.append((abs_path, new_code))
+            patched_content[abs_path_str] = new_code
 
         except ValueError as e:
             logger.warning("[patch_executor] apply_patch error: %s", e)
@@ -115,7 +122,7 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                 "success": False,
                 "error": "patch_failed",
                 "reason": str(e),
-                "file": str(abs_path),
+                "file": abs_path_str,
             }
         except Exception as e:
             logger.exception("[patch_executor] unexpected error: %s", e)
@@ -126,17 +133,17 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                 "success": False,
                 "error": "patch_failed",
                 "reason": str(e),
-                "file": str(abs_path),
+                "file": abs_path_str,
             }
 
     # All valid: write files
-    for abs_path, new_code in pending:
-        abs_path.write_text(new_code, encoding="utf-8")
+    for abs_path_str, new_code in patched_content.items():
+        Path(abs_path_str).write_text(new_code, encoding="utf-8")
 
-    files_modified = [str(p) for p, _ in pending]
+    files_modified = list(patched_content.keys())
     logger.info("[patch_executor] files_modified=%d", len(files_modified))
     return {
         "success": True,
         "files_modified": files_modified,
-        "patches_applied": len(pending),
+        "patches_applied": len(changes),
     }

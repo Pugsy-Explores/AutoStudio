@@ -15,6 +15,8 @@ def to_structured_patches(plan: dict, instruction: str, context: dict) -> dict:
     changes: list[dict] = []
 
     for c in raw_changes:
+        if not isinstance(c, dict):
+            continue
         file_path = c.get("file", "")
         symbol = c.get("symbol", "")
         action = c.get("action", "modify")
@@ -56,6 +58,8 @@ def _looks_like_code(text: str) -> bool:
         or "=" in t
         or t.startswith("#")
         or "\n" in t
+        or "logger." in t
+        or "print(" in t
     )
 
 

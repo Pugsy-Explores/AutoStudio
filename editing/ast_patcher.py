@@ -10,7 +10,7 @@ Supports:
 import logging
 from pathlib import Path
 
-from repo_index.parser import parse_file
+from repo_index.parser import parse_file, parse_source
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +48,23 @@ def _get_base_indent(source_bytes: bytes, body_node) -> str:
 
 
 def _indent_code(code: str, base_indent: str) -> str:
-    """Add base_indent to each line of code (except empty lines)."""
+    """Add base_indent to each line of code (except empty lines).
+    Preserves relative indentation: strips common leading indent, then adds base_indent."""
     lines = code.strip().split("\n")
+    if not lines:
+        return ""
+    # Find minimum indent of non-empty lines
+    min_indent = float("inf")
+    for line in lines:
+        if line.strip():
+            indent_len = len(line) - len(line.lstrip())
+            min_indent = min(min_indent, indent_len)
+    min_indent = int(min_indent) if min_indent != float("inf") else 0
     result = []
     for line in lines:
         if line.strip():
-            result.append(base_indent + line)
+            dedented = line[min_indent:] if len(line) >= min_indent else line.lstrip()
+            result.append(base_indent + dedented)
         else:
             result.append("")
     return "\n".join(result) + "\n" if result else ""
@@ -129,6 +140,14 @@ def load_ast(file_path: str) -> tuple | None:
     except Exception as e:
         logger.debug("[ast_patcher] load_ast error %s: %s", file_path, e)
         return None
+
+
+def load_ast_from_source(source: str | bytes) -> tuple | None:
+    """
+    Parse Python source and return (tree, source_bytes).
+    Returns None on parse error.
+    """
+    return parse_source(source)
 
 
 def _get_body_statements(body) -> list:
@@ -296,7 +315,9 @@ def apply_patch(ast_tree, source_bytes: bytes, patch: dict) -> bytes:
     if action == "insert":
         if target_node in ("function_body_start", "class_body_start"):
             lines = code.strip().split("\n")
-            insert_lines = [indent + line if line.strip() else "" for line in lines]
+            # Use base_indent so nested bodies (e.g. method inside class) get correct indent
+            insert_indent = base_indent
+            insert_lines = [insert_indent + line if line.strip() else "" for line in lines]
             line_start = source_bytes.rfind(b"\n", 0, body.start_byte) + 1
             insert_at = line_start
             insert_text = "\n".join(insert_lines) + "\n"
@@ -310,8 +331,10 @@ def apply_patch(ast_tree, source_bytes: bytes, patch: dict) -> bytes:
     elif action == "replace":
         if target_node in ("function_body", "class_body"):
             replace_text = _indent_code(code, base_indent)
+            # Replace from line start (include indent) so replacement aligns correctly
+            line_start = source_bytes.rfind(b"\n", 0, body.start_byte) + 1
             new_bytes = (
-                source_bytes[: body.start_byte]
+                source_bytes[:line_start]
                 + replace_text.encode("utf-8")
                 + source_bytes[body.end_byte :]
             )

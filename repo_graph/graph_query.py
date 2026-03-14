@@ -16,7 +16,10 @@ def find_symbol(symbol_name: str, storage: GraphStorage) -> dict | None:
     if node:
         return dict(node)
     matches = storage.get_symbols_like(symbol_name, limit=1)
-    return matches[0] if matches else None
+    result = matches[0] if matches else None
+    if result is None:
+        logger.debug("[graph_query] find_symbol('%s') not found", symbol_name)
+    return result
 
 
 def expand_neighbors(symbol_id: int, depth: int = 2, storage: GraphStorage | None = None) -> list[dict]:
@@ -25,6 +28,7 @@ def expand_neighbors(symbol_id: int, depth: int = 2, storage: GraphStorage | Non
     Returns list of node dicts (including the start node).
     """
     if storage is None or depth < 1:
+        logger.debug("[graph_query] expand_neighbors: storage=%s depth=%s", storage is not None, depth)
         return []
 
     visited: set[int] = {symbol_id}
@@ -32,6 +36,8 @@ def expand_neighbors(symbol_id: int, depth: int = 2, storage: GraphStorage | Non
     start = storage.get_symbol(symbol_id)
     if start:
         result.append(dict(start))
+    else:
+        logger.debug("[graph_query] expand_neighbors: symbol_id=%d not found in storage", symbol_id)
 
     queue: deque[tuple[int, int]] = deque([(symbol_id, 0)])
     while queue:

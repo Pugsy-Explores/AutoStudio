@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 
 from agent.execution.policy_engine import ExecutionPolicyEngine
 from agent.execution.tool_graph import ToolGraph
@@ -64,7 +65,24 @@ def _build_candidates_from_context(built: dict) -> list[dict]:
 
 
 ENABLE_VECTOR_SEARCH = os.environ.get("ENABLE_VECTOR_SEARCH", "1").lower() in ("1", "true", "yes")
-RETRIEVAL_CACHE_SIZE = int(os.environ.get("RETRIEVAL_CACHE_SIZE", "100"))
+
+
+def _get_retrieval_cache_size() -> int:
+    """Read at runtime so RETRIEVAL_CACHE_SIZE env is respected in tests."""
+    return int(os.environ.get("RETRIEVAL_CACHE_SIZE", "100"))
+
+
+def _get_retrieval_order(chosen_tool: str | None) -> list[str]:
+    """Return retrieval order based on chosen_tool from graph. Puts preferred retriever first."""
+    default = ["retrieve_graph", "retrieve_vector", "retrieve_grep"]
+    valid = ("retrieve_graph", "retrieve_vector", "retrieve_grep", "list_dir")
+    if not chosen_tool or chosen_tool not in valid:
+        return default
+    order = [chosen_tool]
+    for r in default:
+        if r not in order:
+            order.append(r)
+    return order
 
 
 def _search_fn(query: str, state: AgentState):
@@ -74,7 +92,8 @@ def _search_fn(query: str, state: AgentState):
     if project_root is None:
         project_root = os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
 
-    if RETRIEVAL_CACHE_SIZE > 0:
+    cache_size = _get_retrieval_cache_size()
+    if cache_size > 0:
         try:
             from agent.retrieval.retrieval_cache import get_cached, set_cached
 
@@ -84,33 +103,67 @@ def _search_fn(query: str, state: AgentState):
         except Exception as e:
             logger.debug("[workflow] cache lookup failed: %s", e)
 
+    tool_hint = state.context.get("chosen_tool") if state else None
+    retrieval_order = _get_retrieval_order(tool_hint)
+
     result = None
-    try:
-        from agent.retrieval.graph_retriever import retrieve_symbol_context
+    for retriever in retrieval_order:
+        if retriever == "list_dir":
+            try:
+                path = query.strip() or "."
+                root = Path(project_root or ".")
+                resolved = (root / path).resolve() if path != "." else root
+                if resolved.is_dir():
+                    entries = list_files(str(resolved))
+                    result = {
+                        "results": [
+                            {"file": str(resolved / e), "symbol": "", "line": 0, "snippet": e}
+                            for e in entries[:20]
+                        ],
+                        "query": query,
+                    }
+                    break
+            except Exception as e:
+                logger.debug("[workflow] list_dir fallback: %s", e)
+        elif retriever == "retrieve_graph":
+            try:
+                from agent.retrieval.graph_retriever import retrieve_symbol_context
 
-        graph_result = retrieve_symbol_context(query, project_root)
-        if graph_result and graph_result.get("results"):
-            result = graph_result
-    except Exception as e:
-        logger.debug("[workflow] graph retriever fallback: %s", e)
+                graph_result = retrieve_symbol_context(query, project_root)
+                if graph_result and graph_result.get("results"):
+                    result = graph_result
+                    break
+            except Exception as e:
+                logger.debug("[workflow] graph retriever fallback: %s", e)
+        elif retriever == "retrieve_vector" and ENABLE_VECTOR_SEARCH:
+            try:
+                from agent.retrieval.vector_retriever import search_by_embedding
 
-    if result is None and ENABLE_VECTOR_SEARCH:
-        try:
-            from agent.retrieval.vector_retriever import search_by_embedding
-
-            vector_result = search_by_embedding(query, project_root, top_k=5)
-            if vector_result and vector_result.get("results"):
-                result = vector_result
-        except Exception as e:
-            logger.debug("[workflow] vector retriever fallback: %s", e)
+                vector_result = search_by_embedding(query, project_root, top_k=5)
+                if vector_result and vector_result.get("results"):
+                    result = vector_result
+                    break
+            except Exception as e:
+                logger.debug("[workflow] vector retriever fallback: %s", e)
+        elif retriever == "retrieve_grep":
+            try:
+                grep_result = search_code(query, tool_hint="search_for_pattern")
+                if grep_result and grep_result.get("results"):
+                    result = grep_result
+                    break
+            except Exception as e:
+                logger.debug("[workflow] grep retriever fallback: %s", e)
 
     if result is None:
-        tool_hint = state.context.get("chosen_tool") if state else None
-        if tool_hint not in ("find_symbol", "search_for_pattern"):
-            tool_hint = None
+        chosen = state.context.get("chosen_tool") if state else None
+        # Map graph tool names to serena adapter's expected hints
+        tool_hint = "find_symbol" if chosen == "retrieve_graph" else "search_for_pattern" if chosen == "retrieve_grep" else None
         result = search_code(query, tool_hint=tool_hint)
 
-    if RETRIEVAL_CACHE_SIZE > 0 and result:
+    if result is None or not isinstance(result, dict):
+        result = {"results": [], "query": query or ""}
+
+    if cache_size > 0 and result:
         try:
             from agent.retrieval.retrieval_cache import set_cached
 
@@ -194,13 +247,16 @@ def _infra_fn(step: dict, state: AgentState) -> dict:
         return {"success": False, "output": {"returncode": -1}, "error": str(e)}
 
 
-def _rewrite_for_search(description: str, user_request: str, attempt_history: list) -> str:
-    """Rewrite planner step into a search query using execution context (attempt history)."""
+def _rewrite_for_search(
+    description: str, user_request: str, attempt_history: list, state: AgentState | None = None
+) -> str:
+    """Rewrite planner step into a search query; wires rewriter tool choice to state.context['chosen_tool']."""
     return rewrite_query_with_context(
         planner_step=description,
         user_request=user_request,
         previous_attempts=attempt_history,
         use_llm=True,
+        state=state,
     )
 
 

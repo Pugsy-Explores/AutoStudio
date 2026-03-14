@@ -1,6 +1,10 @@
 """
 Run all routers on the evaluation dataset and print a summary table.
+Use --mock to use stub routers (no LLM server required).
+Use --production to also run the production router from agent.routing.router_registry.
 """
+
+import argparse
 
 from router_eval.router_eval import run_eval
 from router_eval.routers import baseline_router
@@ -22,10 +26,48 @@ ROUTERS = [
 ]
 
 
+def _mock_route(instruction: str) -> str:
+    """Stub router for --mock mode."""
+    return "EDIT"
+
+
 def main():
-    dataset_path = None
+    parser = argparse.ArgumentParser(description="Run all routers on evaluation dataset")
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Use stub router for all (no LLM server required).",
+    )
+    parser.add_argument(
+        "--production",
+        action="store_true",
+        help="Also run production router from agent.routing.router_registry.",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="Path to JSON/JSONL dataset.",
+    )
+    args = parser.parse_args()
+
+    dataset_path = args.dataset
+    route_fn_override = _mock_route if args.mock else None
+    routers_to_run = [(name, route_fn_override or fn) for name, fn in ROUTERS]
+
+    if args.production and not args.mock:
+        try:
+            from agent.routing.router_registry import get_router_raw
+
+            router_type = os.environ.get("ROUTER_TYPE", "final").strip().lower()
+            prod_fn = get_router_raw(router_type)
+            if prod_fn is not None:
+                routers_to_run.append((f"production_{router_type}", prod_fn))
+        except ImportError:
+            pass
+
     results = []
-    for name, route_fn in ROUTERS:
+    for name, route_fn in routers_to_run:
         print(f"Running {name}...", flush=True)
         try:
             metrics = run_eval(

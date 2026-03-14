@@ -41,14 +41,25 @@ def scan_repo(root_dir: str) -> list[dict]:
     return symbols
 
 
-def _scan_repo_with_trees(root_dir: str) -> tuple[list[dict], dict]:
-    """Scan repo and return (symbols, ast_trees). Uses parallel workers when INDEX_PARALLEL_WORKERS > 1."""
+def _scan_repo_with_trees(root_dir: str, include_dirs: tuple[str, ...] | None = None) -> tuple[list[dict], dict]:
+    """Scan repo and return (symbols, ast_trees). Uses parallel workers when INDEX_PARALLEL_WORKERS > 1.
+    include_dirs: if set, only scan these subdirs of root_dir (e.g. ("agent", "editing"))."""
     root = Path(root_dir).resolve()
     if not root.is_dir():
         logger.warning("[indexer] not a directory: %s", root_dir)
         return [], {}
 
-    py_files = list(root.rglob("*.py"))
+    if include_dirs:
+        py_files: list[Path] = []
+        for sub in include_dirs:
+            d = root / sub
+            if d.is_dir():
+                py_files.extend(d.rglob("*.py"))
+    else:
+        py_files = list(root.rglob("*.py"))
+    logger.debug("[indexer] scan_repo found %d Python files in %s", len(py_files), root)
+    if not py_files:
+        logger.warning("[indexer] no Python files found in %s", root)
     all_symbols: list[dict] = []
     ast_trees: dict[str, "Tree"] = {}
     workers = max(1, min(INDEX_PARALLEL_WORKERS, 16))
@@ -142,17 +153,22 @@ def _build_embedding_index(root_dir: str, symbols: list[dict], out_path: Path) -
         logger.warning("[indexer] embedding index failed: %s", e)
 
 
-def index_repo(root_dir: str, output_dir: str | None = None) -> tuple[list[dict], str]:
+def index_repo(
+    root_dir: str,
+    output_dir: str | None = None,
+    include_dirs: tuple[str, ...] | None = None,
+) -> tuple[list[dict], str]:
     """
     Scan repo, extract symbols and dependencies, build graph, write to output.
     Returns (symbols, output_path).
+    include_dirs: if set, only index these subdirs (e.g. ("agent", "editing")).
     """
     root = Path(root_dir).resolve()
     out = output_dir or str(root / SYMBOL_GRAPH_DIR)
     out_path = Path(out)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    symbols, ast_trees = _scan_repo_with_trees(root_dir)
+    symbols, ast_trees = _scan_repo_with_trees(root_dir, include_dirs=include_dirs)
     edges = extract_edges(symbols, ast_trees, str(root))
 
     # Write symbols JSON
@@ -170,7 +186,13 @@ def index_repo(root_dir: str, output_dir: str | None = None) -> tuple[list[dict]
 
     _build_embedding_index(root_dir, symbols, out_path)
 
-    logger.info("[indexer] wrote %d symbols to %s", len(symbols), json_path)
+    logger.info(
+        "[indexer] wrote %d symbols, %d edges to %s (db=%s)",
+        len(symbols),
+        len(edges),
+        json_path,
+        db_path,
+    )
     return symbols, str(db_path)
 
 
@@ -258,9 +280,13 @@ def update_index_for_file(file_path: str, root_dir: str | None = None) -> int:
             )
             if src_id is None:
                 node = storage.get_symbol_by_name(src_name)
+                if node is None and "." in src_name:
+                    node = storage.get_symbol_by_name(src_name.split(".")[-1])
                 src_id = node.get("id") if node else None
             if tgt_id is None:
                 node = storage.get_symbol_by_name(tgt_name)
+                if node is None and "." in tgt_name:
+                    node = storage.get_symbol_by_name(tgt_name.split(".")[-1])
                 tgt_id = node.get("id") if node else None
             if src_id and tgt_id and src_id != tgt_id:
                 storage.add_edge(src_id, tgt_id, rel)
