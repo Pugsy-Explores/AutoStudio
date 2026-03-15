@@ -1,0 +1,1802 @@
+[
+  {
+    "id": "fm_bf_001",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_002",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_003",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_004",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_005",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_006",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_007",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_008",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_009",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_010",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_011",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_012",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_013",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_014",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_015",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_016",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_017",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_018",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_019",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_020",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_021",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_022",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_023",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_024",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_025",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_026",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_027",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_028",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_029",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_030",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_031",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_032",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_033",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_034",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_035",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_036",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_037",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_038",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_039",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_040",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_041",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_042",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_043",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_044",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_045",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_046",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_047",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_048",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_049",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_050",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_051",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_052",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_053",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_054",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_055",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_056",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_057",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_058",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_059",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_060",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_061",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_062",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_063",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_064",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_065",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_066",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_067",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_068",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_069",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_070",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_071",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_072",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_073",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_074",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_075",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_076",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_077",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_078",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_079",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_080",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_081",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_082",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_083",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_084",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_085",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_086",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_087",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_088",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_089",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_090",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_091",
+    "task_type": "bug_fixing",
+    "goal": "Fix any missing import in tests/conftest.py if one exists.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_092",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_093",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_094",
+    "task_type": "bug_fixing",
+    "goal": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_095",
+    "task_type": "bug_fixing",
+    "goal": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_096",
+    "task_type": "bug_fixing",
+    "goal": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_097",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_098",
+    "task_type": "bug_fixing",
+    "goal": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_099",
+    "task_type": "bug_fixing",
+    "goal": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_bf_100",
+    "task_type": "bug_fixing",
+    "goal": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_001",
+    "task_type": "refactoring",
+    "goal": "Rename a local variable for clarity in one function in agent/execution/step_dispatcher.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_002",
+    "task_type": "refactoring",
+    "goal": "Extract the plan validation logic from planner/planner_eval.py into a separate function.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_003",
+    "task_type": "refactoring",
+    "goal": "Extract trace stage logging into a helper in agent/observability/trace_logger.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_004",
+    "task_type": "refactoring",
+    "goal": "Rename the classify_failure function in agent/execution/policy_engine.py to classify_step_failure for clarity.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_005",
+    "task_type": "refactoring",
+    "goal": "Move the action normalization logic from planner_eval into a shared planner utility module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_006",
+    "task_type": "refactoring",
+    "goal": "Rename class StepResult across agent/memory/step_result.py and all its import sites.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_007",
+    "task_type": "refactoring",
+    "goal": "Extract the retrieval pipeline stage order into a config constant.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_008",
+    "task_type": "refactoring",
+    "goal": "Refactor agent/orchestrator/replanner.py to use a configurable MAX_REPLAN constant from config.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_009",
+    "task_type": "refactoring",
+    "goal": "Move the diff parsing logic from editing/patch_executor.py into a separate module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_010",
+    "task_type": "refactoring",
+    "goal": "Rename context_builder to context_builder_v2 everywhere and deprecate the old context_builder.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_011",
+    "task_type": "refactoring",
+    "goal": "Rename a local variable for clarity in one function in agent/execution/step_dispatcher.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_012",
+    "task_type": "refactoring",
+    "goal": "Extract the plan validation logic from planner/planner_eval.py into a separate function.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_013",
+    "task_type": "refactoring",
+    "goal": "Extract trace stage logging into a helper in agent/observability/trace_logger.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_014",
+    "task_type": "refactoring",
+    "goal": "Rename the classify_failure function in agent/execution/policy_engine.py to classify_step_failure for clarity.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_015",
+    "task_type": "refactoring",
+    "goal": "Move the action normalization logic from planner_eval into a shared planner utility module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_016",
+    "task_type": "refactoring",
+    "goal": "Rename class StepResult across agent/memory/step_result.py and all its import sites.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_017",
+    "task_type": "refactoring",
+    "goal": "Extract the retrieval pipeline stage order into a config constant.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_018",
+    "task_type": "refactoring",
+    "goal": "Refactor agent/orchestrator/replanner.py to use a configurable MAX_REPLAN constant from config.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_019",
+    "task_type": "refactoring",
+    "goal": "Move the diff parsing logic from editing/patch_executor.py into a separate module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_020",
+    "task_type": "refactoring",
+    "goal": "Rename context_builder to context_builder_v2 everywhere and deprecate the old context_builder.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_021",
+    "task_type": "refactoring",
+    "goal": "Rename a local variable for clarity in one function in agent/execution/step_dispatcher.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_022",
+    "task_type": "refactoring",
+    "goal": "Extract the plan validation logic from planner/planner_eval.py into a separate function.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_023",
+    "task_type": "refactoring",
+    "goal": "Extract trace stage logging into a helper in agent/observability/trace_logger.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_024",
+    "task_type": "refactoring",
+    "goal": "Rename the classify_failure function in agent/execution/policy_engine.py to classify_step_failure for clarity.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_025",
+    "task_type": "refactoring",
+    "goal": "Move the action normalization logic from planner_eval into a shared planner utility module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_026",
+    "task_type": "refactoring",
+    "goal": "Rename class StepResult across agent/memory/step_result.py and all its import sites.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_027",
+    "task_type": "refactoring",
+    "goal": "Extract the retrieval pipeline stage order into a config constant.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_028",
+    "task_type": "refactoring",
+    "goal": "Refactor agent/orchestrator/replanner.py to use a configurable MAX_REPLAN constant from config.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_029",
+    "task_type": "refactoring",
+    "goal": "Move the diff parsing logic from editing/patch_executor.py into a separate module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_030",
+    "task_type": "refactoring",
+    "goal": "Rename context_builder to context_builder_v2 everywhere and deprecate the old context_builder.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_031",
+    "task_type": "refactoring",
+    "goal": "Rename a local variable for clarity in one function in agent/execution/step_dispatcher.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_032",
+    "task_type": "refactoring",
+    "goal": "Extract the plan validation logic from planner/planner_eval.py into a separate function.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_033",
+    "task_type": "refactoring",
+    "goal": "Extract trace stage logging into a helper in agent/observability/trace_logger.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_034",
+    "task_type": "refactoring",
+    "goal": "Rename the classify_failure function in agent/execution/policy_engine.py to classify_step_failure for clarity.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_035",
+    "task_type": "refactoring",
+    "goal": "Move the action normalization logic from planner_eval into a shared planner utility module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_036",
+    "task_type": "refactoring",
+    "goal": "Rename class StepResult across agent/memory/step_result.py and all its import sites.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_037",
+    "task_type": "refactoring",
+    "goal": "Extract the retrieval pipeline stage order into a config constant.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_038",
+    "task_type": "refactoring",
+    "goal": "Refactor agent/orchestrator/replanner.py to use a configurable MAX_REPLAN constant from config.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_039",
+    "task_type": "refactoring",
+    "goal": "Move the diff parsing logic from editing/patch_executor.py into a separate module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_040",
+    "task_type": "refactoring",
+    "goal": "Rename context_builder to context_builder_v2 everywhere and deprecate the old context_builder.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_041",
+    "task_type": "refactoring",
+    "goal": "Rename a local variable for clarity in one function in agent/execution/step_dispatcher.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_042",
+    "task_type": "refactoring",
+    "goal": "Extract the plan validation logic from planner/planner_eval.py into a separate function.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_043",
+    "task_type": "refactoring",
+    "goal": "Extract trace stage logging into a helper in agent/observability/trace_logger.py.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_044",
+    "task_type": "refactoring",
+    "goal": "Rename the classify_failure function in agent/execution/policy_engine.py to classify_step_failure for clarity.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_045",
+    "task_type": "refactoring",
+    "goal": "Move the action normalization logic from planner_eval into a shared planner utility module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_046",
+    "task_type": "refactoring",
+    "goal": "Rename class StepResult across agent/memory/step_result.py and all its import sites.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_047",
+    "task_type": "refactoring",
+    "goal": "Extract the retrieval pipeline stage order into a config constant.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_048",
+    "task_type": "refactoring",
+    "goal": "Refactor agent/orchestrator/replanner.py to use a configurable MAX_REPLAN constant from config.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_049",
+    "task_type": "refactoring",
+    "goal": "Move the diff parsing logic from editing/patch_executor.py into a separate module.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_rf_050",
+    "task_type": "refactoring",
+    "goal": "Rename context_builder to context_builder_v2 everywhere and deprecate the old context_builder.",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_fa_001",
+    "task_type": "feature_addition",
+    "goal": "Add a docstring to the load_dataset function in planner/planner_eval.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_002",
+    "task_type": "feature_addition",
+    "goal": "Add a type hint to the route_instruction function return type in config/router_config.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_003",
+    "task_type": "feature_addition",
+    "goal": "Add logging to the execute_step function in agent/execution/executor.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_004",
+    "task_type": "feature_addition",
+    "goal": "Add retry configuration constant to config/router_config.py and document it.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_005",
+    "task_type": "feature_addition",
+    "goal": "Add input validation to the dispatch function in agent/execution/step_dispatcher.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_006",
+    "task_type": "feature_addition",
+    "goal": "Add a try/except block around the main logic in agent/execution/executor.py execute_step.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_007",
+    "task_type": "feature_addition",
+    "goal": "Add debug logging to the policy engine execute_with_policy method.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_008",
+    "task_type": "feature_addition",
+    "goal": "Add retry limit constant to config/router_config.py and use it in agent/execution/policy_engine.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_009",
+    "task_type": "feature_addition",
+    "goal": "Add error handling for empty context in the context builder.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_010",
+    "task_type": "feature_addition",
+    "goal": "Add a CLI flag --limit to scripts/replay_trace.py to limit number of events displayed.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_011",
+    "task_type": "feature_addition",
+    "goal": "Add config validation for MAX_STEPS in config/agent_config.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_012",
+    "task_type": "feature_addition",
+    "goal": "Add retry limit to the repair loop in editing if it exists.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_013",
+    "task_type": "feature_addition",
+    "goal": "Add retry logic to SEARCH step in policy engine",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_fa_014",
+    "task_type": "feature_addition",
+    "goal": "Implement missing feature stub in agent/memory",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_015",
+    "task_type": "feature_addition",
+    "goal": "Add a docstring to the load_dataset function in planner/planner_eval.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_016",
+    "task_type": "feature_addition",
+    "goal": "Add a type hint to the route_instruction function return type in config/router_config.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_017",
+    "task_type": "feature_addition",
+    "goal": "Add logging to the execute_step function in agent/execution/executor.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_018",
+    "task_type": "feature_addition",
+    "goal": "Add retry configuration constant to config/router_config.py and document it.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_019",
+    "task_type": "feature_addition",
+    "goal": "Add input validation to the dispatch function in agent/execution/step_dispatcher.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_020",
+    "task_type": "feature_addition",
+    "goal": "Add a try/except block around the main logic in agent/execution/executor.py execute_step.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_021",
+    "task_type": "feature_addition",
+    "goal": "Add debug logging to the policy engine execute_with_policy method.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_022",
+    "task_type": "feature_addition",
+    "goal": "Add retry limit constant to config/router_config.py and use it in agent/execution/policy_engine.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_023",
+    "task_type": "feature_addition",
+    "goal": "Add error handling for empty context in the context builder.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_024",
+    "task_type": "feature_addition",
+    "goal": "Add a CLI flag --limit to scripts/replay_trace.py to limit number of events displayed.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_025",
+    "task_type": "feature_addition",
+    "goal": "Add config validation for MAX_STEPS in config/agent_config.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_026",
+    "task_type": "feature_addition",
+    "goal": "Add retry limit to the repair loop in editing if it exists.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_027",
+    "task_type": "feature_addition",
+    "goal": "Add retry logic to SEARCH step in policy engine",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_fa_028",
+    "task_type": "feature_addition",
+    "goal": "Implement missing feature stub in agent/memory",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_029",
+    "task_type": "feature_addition",
+    "goal": "Add a docstring to the load_dataset function in planner/planner_eval.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_030",
+    "task_type": "feature_addition",
+    "goal": "Add a type hint to the route_instruction function return type in config/router_config.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_031",
+    "task_type": "feature_addition",
+    "goal": "Add logging to the execute_step function in agent/execution/executor.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_032",
+    "task_type": "feature_addition",
+    "goal": "Add retry configuration constant to config/router_config.py and document it.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_033",
+    "task_type": "feature_addition",
+    "goal": "Add input validation to the dispatch function in agent/execution/step_dispatcher.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_034",
+    "task_type": "feature_addition",
+    "goal": "Add a try/except block around the main logic in agent/execution/executor.py execute_step.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_035",
+    "task_type": "feature_addition",
+    "goal": "Add debug logging to the policy engine execute_with_policy method.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_036",
+    "task_type": "feature_addition",
+    "goal": "Add retry limit constant to config/router_config.py and use it in agent/execution/policy_engine.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_037",
+    "task_type": "feature_addition",
+    "goal": "Add error handling for empty context in the context builder.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_038",
+    "task_type": "feature_addition",
+    "goal": "Add a CLI flag --limit to scripts/replay_trace.py to limit number of events displayed.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_039",
+    "task_type": "feature_addition",
+    "goal": "Add config validation for MAX_STEPS in config/agent_config.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_040",
+    "task_type": "feature_addition",
+    "goal": "Add retry limit to the repair loop in editing if it exists.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_041",
+    "task_type": "feature_addition",
+    "goal": "Add retry logic to SEARCH step in policy engine",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "fm_fa_042",
+    "task_type": "feature_addition",
+    "goal": "Implement missing feature stub in agent/memory",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_043",
+    "task_type": "feature_addition",
+    "goal": "Add a docstring to the load_dataset function in planner/planner_eval.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_044",
+    "task_type": "feature_addition",
+    "goal": "Add a type hint to the route_instruction function return type in config/router_config.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_045",
+    "task_type": "feature_addition",
+    "goal": "Add logging to the execute_step function in agent/execution/executor.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_046",
+    "task_type": "feature_addition",
+    "goal": "Add retry configuration constant to config/router_config.py and document it.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_047",
+    "task_type": "feature_addition",
+    "goal": "Add input validation to the dispatch function in agent/execution/step_dispatcher.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_048",
+    "task_type": "feature_addition",
+    "goal": "Add a try/except block around the main logic in agent/execution/executor.py execute_step.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_049",
+    "task_type": "feature_addition",
+    "goal": "Add debug logging to the policy engine execute_with_policy method.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_fa_050",
+    "task_type": "feature_addition",
+    "goal": "Add retry limit constant to config/router_config.py and use it in agent/execution/policy_engine.py.",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "fm_nav_001",
+    "task_type": "navigation",
+    "goal": "Find where the patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_002",
+    "task_type": "navigation",
+    "goal": "Explain what AgentState contains and how it is used",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_003",
+    "task_type": "navigation",
+    "goal": "Find all callers of execute_step",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_004",
+    "task_type": "navigation",
+    "goal": "Locate the symbol graph builder",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_005",
+    "task_type": "navigation",
+    "goal": "Find where planner steps are validated",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_006",
+    "task_type": "navigation",
+    "goal": "Find where retry logic exists in the codebase",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_007",
+    "task_type": "navigation",
+    "goal": "Explain how StepExecutor works",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_008",
+    "task_type": "navigation",
+    "goal": "Explain what the retrieval_pipeline does and its stage order",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_009",
+    "task_type": "navigation",
+    "goal": "Explain what context_ranker does",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_010",
+    "task_type": "navigation",
+    "goal": "Explain what the replanner does when a step fails",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_011",
+    "task_type": "navigation",
+    "goal": "Find where Find retry logic bug is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_012",
+    "task_type": "navigation",
+    "goal": "Find where Locate patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_013",
+    "task_type": "navigation",
+    "goal": "Find where Find symbol graph builder is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_014",
+    "task_type": "navigation",
+    "goal": "Find where Find configuration loader is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_015",
+    "task_type": "navigation",
+    "goal": "Find where Locate dependency extractor is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_016",
+    "task_type": "navigation",
+    "goal": "Find where Find context ranker is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_017",
+    "task_type": "navigation",
+    "goal": "Find where Locate dispatcher is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_018",
+    "task_type": "navigation",
+    "goal": "Find where Find planner is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_019",
+    "task_type": "navigation",
+    "goal": "Find where Locate anchor detector is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_020",
+    "task_type": "navigation",
+    "goal": "Find where Find context pruner is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_021",
+    "task_type": "navigation",
+    "goal": "Find where the patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_022",
+    "task_type": "navigation",
+    "goal": "Explain what AgentState contains and how it is used",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_023",
+    "task_type": "navigation",
+    "goal": "Find all callers of execute_step",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_024",
+    "task_type": "navigation",
+    "goal": "Locate the symbol graph builder",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_025",
+    "task_type": "navigation",
+    "goal": "Find where planner steps are validated",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_026",
+    "task_type": "navigation",
+    "goal": "Find where retry logic exists in the codebase",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_027",
+    "task_type": "navigation",
+    "goal": "Explain how StepExecutor works",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_028",
+    "task_type": "navigation",
+    "goal": "Explain what the retrieval_pipeline does and its stage order",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_029",
+    "task_type": "navigation",
+    "goal": "Explain what context_ranker does",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_030",
+    "task_type": "navigation",
+    "goal": "Explain what the replanner does when a step fails",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_031",
+    "task_type": "navigation",
+    "goal": "Find where Find retry logic bug is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_032",
+    "task_type": "navigation",
+    "goal": "Find where Locate patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_033",
+    "task_type": "navigation",
+    "goal": "Find where Find symbol graph builder is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_034",
+    "task_type": "navigation",
+    "goal": "Find where Find configuration loader is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_035",
+    "task_type": "navigation",
+    "goal": "Find where Locate dependency extractor is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_036",
+    "task_type": "navigation",
+    "goal": "Find where Find context ranker is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_037",
+    "task_type": "navigation",
+    "goal": "Find where Locate dispatcher is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_038",
+    "task_type": "navigation",
+    "goal": "Find where Find planner is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_039",
+    "task_type": "navigation",
+    "goal": "Find where Locate anchor detector is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_040",
+    "task_type": "navigation",
+    "goal": "Find where Find context pruner is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_041",
+    "task_type": "navigation",
+    "goal": "Find where the patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_042",
+    "task_type": "navigation",
+    "goal": "Explain what AgentState contains and how it is used",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_043",
+    "task_type": "navigation",
+    "goal": "Find all callers of execute_step",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_044",
+    "task_type": "navigation",
+    "goal": "Locate the symbol graph builder",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_045",
+    "task_type": "navigation",
+    "goal": "Find where planner steps are validated",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_046",
+    "task_type": "navigation",
+    "goal": "Find where retry logic exists in the codebase",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_047",
+    "task_type": "navigation",
+    "goal": "Explain how StepExecutor works",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_048",
+    "task_type": "navigation",
+    "goal": "Explain what the retrieval_pipeline does and its stage order",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_049",
+    "task_type": "navigation",
+    "goal": "Explain what context_ranker does",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_050",
+    "task_type": "navigation",
+    "goal": "Explain what the replanner does when a step fails",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_051",
+    "task_type": "navigation",
+    "goal": "Find where Find retry logic bug is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_052",
+    "task_type": "navigation",
+    "goal": "Find where Locate patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_053",
+    "task_type": "navigation",
+    "goal": "Find where Find symbol graph builder is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_054",
+    "task_type": "navigation",
+    "goal": "Find where Find configuration loader is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_055",
+    "task_type": "navigation",
+    "goal": "Find where Locate dependency extractor is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_056",
+    "task_type": "navigation",
+    "goal": "Find where Find context ranker is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_057",
+    "task_type": "navigation",
+    "goal": "Find where Locate dispatcher is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_058",
+    "task_type": "navigation",
+    "goal": "Find where Find planner is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_059",
+    "task_type": "navigation",
+    "goal": "Find where Locate anchor detector is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_060",
+    "task_type": "navigation",
+    "goal": "Find where Find context pruner is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_061",
+    "task_type": "navigation",
+    "goal": "Find where the patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_062",
+    "task_type": "navigation",
+    "goal": "Explain what AgentState contains and how it is used",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_063",
+    "task_type": "navigation",
+    "goal": "Find all callers of execute_step",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_064",
+    "task_type": "navigation",
+    "goal": "Locate the symbol graph builder",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_065",
+    "task_type": "navigation",
+    "goal": "Find where planner steps are validated",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_066",
+    "task_type": "navigation",
+    "goal": "Find where retry logic exists in the codebase",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_067",
+    "task_type": "navigation",
+    "goal": "Explain how StepExecutor works",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_068",
+    "task_type": "navigation",
+    "goal": "Explain what the retrieval_pipeline does and its stage order",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_069",
+    "task_type": "navigation",
+    "goal": "Explain what context_ranker does",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_070",
+    "task_type": "navigation",
+    "goal": "Explain what the replanner does when a step fails",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_071",
+    "task_type": "navigation",
+    "goal": "Find where Find retry logic bug is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_072",
+    "task_type": "navigation",
+    "goal": "Find where Locate patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_073",
+    "task_type": "navigation",
+    "goal": "Find where Find symbol graph builder is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_074",
+    "task_type": "navigation",
+    "goal": "Find where Find configuration loader is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_075",
+    "task_type": "navigation",
+    "goal": "Find where Locate dependency extractor is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_076",
+    "task_type": "navigation",
+    "goal": "Find where Find context ranker is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_077",
+    "task_type": "navigation",
+    "goal": "Find where Locate dispatcher is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_078",
+    "task_type": "navigation",
+    "goal": "Find where Find planner is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_079",
+    "task_type": "navigation",
+    "goal": "Find where Locate anchor detector is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_080",
+    "task_type": "navigation",
+    "goal": "Find where Find context pruner is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_081",
+    "task_type": "navigation",
+    "goal": "Find where the patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_082",
+    "task_type": "navigation",
+    "goal": "Explain what AgentState contains and how it is used",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_083",
+    "task_type": "navigation",
+    "goal": "Find all callers of execute_step",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_084",
+    "task_type": "navigation",
+    "goal": "Locate the symbol graph builder",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_085",
+    "task_type": "navigation",
+    "goal": "Find where planner steps are validated",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_086",
+    "task_type": "navigation",
+    "goal": "Find where retry logic exists in the codebase",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_087",
+    "task_type": "navigation",
+    "goal": "Explain how StepExecutor works",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_088",
+    "task_type": "navigation",
+    "goal": "Explain what the retrieval_pipeline does and its stage order",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_089",
+    "task_type": "navigation",
+    "goal": "Explain what context_ranker does",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_090",
+    "task_type": "navigation",
+    "goal": "Explain what the replanner does when a step fails",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_091",
+    "task_type": "navigation",
+    "goal": "Find where Find retry logic bug is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_092",
+    "task_type": "navigation",
+    "goal": "Find where Locate patch validator is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_093",
+    "task_type": "navigation",
+    "goal": "Find where Find symbol graph builder is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_094",
+    "task_type": "navigation",
+    "goal": "Find where Find configuration loader is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_095",
+    "task_type": "navigation",
+    "goal": "Find where Locate dependency extractor is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_096",
+    "task_type": "navigation",
+    "goal": "Find where Find context ranker is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_097",
+    "task_type": "navigation",
+    "goal": "Find where Locate dispatcher is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_098",
+    "task_type": "navigation",
+    "goal": "Find where Find planner is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_099",
+    "task_type": "navigation",
+    "goal": "Find where Locate anchor detector is implemented",
+    "success_criteria": "explanation_complete"
+  },
+  {
+    "id": "fm_nav_100",
+    "task_type": "navigation",
+    "goal": "Find where Find context pruner is implemented",
+    "success_criteria": "explanation_complete"
+  }
+]
