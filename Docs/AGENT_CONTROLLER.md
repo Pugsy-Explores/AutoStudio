@@ -1,6 +1,6 @@
 # Agent Controller — Full Pipeline
 
-The **agent controller** (`run_controller`) orchestrates the complete development workflow: instruction → plan → retrieval → edit → conflict resolution → patch execution → change detection → test repair → task memory. It does not modify `agent_loop` or `StepExecutor`; it uses `dispatch` for non-EDIT steps and a custom `_run_edit_flow` for EDIT.
+The **agent controller** (`run_controller`) orchestrates the complete development workflow: instruction → plan → retrieval → edit → conflict resolution → patch execution → change detection → test repair → task memory. All tool execution goes through `dispatch(step, state)`; EDIT steps use the full pipeline inside the dispatcher's `_edit_fn`. Mode routing: `deterministic` (default), `autonomous`, or `multi_agent`.
 
 ---
 
@@ -25,6 +25,18 @@ autostudio trace <task_id>   # View trace (print mode)
 autostudio debug last-run   # Interactive trace viewer for most recent run
 ```
 
+**Phase 12 — Developer workflow:**
+
+```bash
+autostudio issue "Fix retry logic in StepExecutor"   # Full workflow: parse issue → solve → PR → CI → review
+autostudio fix "add logging to execute_step"         # Multi-agent solve only (no PR/CI/review)
+autostudio pr                                       # Generate PR from last workflow run
+autostudio review                                   # Review last patch
+autostudio ci                                       # Run CI (pytest, ruff) on project root
+```
+
+The `issue` and `fix` commands persist the last workflow result to `.agent_memory/last_workflow.json`; `pr` and `review` load from that file.
+
 ---
 
 ## Entry Point (Programmatic)
@@ -35,6 +47,7 @@ from agent.orchestrator.agent_controller import run_controller
 result = run_controller(
     instruction="Add a retry decorator to the fetch function",
     project_root="/path/to/repo",
+    mode="deterministic",  # default; use "autonomous" or "multi_agent" for other modes
 )
 # Returns: { task_id, instruction, completed_steps, files_modified, errors, retrieved_symbols }
 ```
@@ -43,23 +56,25 @@ result = run_controller(
 
 ## Pipeline Flow
 
+**Mode routing:** `mode="deterministic"` (default) runs the loop below; `mode="autonomous"` delegates to `run_autonomous`; `mode="multi_agent"` delegates to `run_multi_agent`.
+
 ```
 instruction
+  → [if mode != deterministic] _run_controller_by_mode → run_autonomous or run_multi_agent
   → build_repo_map() — spec format {modules, symbols, calls} → repo_map.json
   → search_similar_tasks() — vector index of past tasks (optional)
-  → get_plan(instruction)
-       → [if ENABLE_INSTRUCTION_ROUTER=1 (default)] route_instruction() → category
-       → if CODE_SEARCH/CODE_EXPLAIN/INFRA: single-step plan, skip planner
-       → if CODE_EDIT/GENERAL: planner.plan(instruction)
-       → [if ENABLE_INSTRUCTION_ROUTER=0] planner.plan(instruction) directly
-  → AgentState with plan, context
-  → while not state.is_finished():
-        step = state.next_step()
-        if action == EDIT:
-            _run_edit_flow(step, state)
-        else:
-            dispatch(step, state)
-        validate_step; on failure → replan(state, failed_step=step, error=...)
+  → run_deterministic(instruction, project_root, trace_id, similar_tasks)
+       → get_plan(instruction)
+            → [if ENABLE_INSTRUCTION_ROUTER=1 (default)] route_instruction() → category
+            → if CODE_SEARCH/CODE_EXPLAIN/INFRA: single-step plan, skip planner
+            → if CODE_EDIT/GENERAL: planner.plan(instruction)
+            → [if ENABLE_INSTRUCTION_ROUTER=0] planner.plan(instruction) directly
+       → AgentState with plan, context
+       → while not state.is_finished():
+            step = state.next_step()
+            result = dispatch(step, state)   # ALL steps via dispatch (including EDIT)
+            validate_step; on failure → replan(state, failed_step=step, error=...)
+            state.record(step, step_result)
   → save_task() — persist to .agent_memory/tasks/
   → finish_trace()
   → return task summary
@@ -197,7 +212,8 @@ python -m pytest tests/test_agent_e2e.py -v --mock   # always use mock
 
 ## File Reference
 
-- **Controller:** `agent/orchestrator/agent_controller.py` — `run_controller`, `get_plan` (from plan_resolver), `_run_edit_flow`
+- **Controller:** `agent/orchestrator/agent_controller.py` — `run_controller`, `_run_controller_by_mode` (routes to autonomous/multi_agent)
+- **Deterministic runner:** `agent/orchestrator/deterministic_runner.py` — `run_deterministic` (plan → dispatch loop)
 - **CLI:** `agent/cli/entrypoint.py` — autostudio subcommands; `agent/cli/session.py` — chat REPL; `agent/cli/command_parser.py` — slash-commands
 - **Instruction router:** `agent/routing/instruction_router.py` — `route_instruction`
 - **Task memory:** `agent/memory/task_memory.py`

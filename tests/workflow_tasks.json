@@ -1,0 +1,50 @@
+[
+  {
+    "id": "wf_001",
+    "task_type": "fix_failing_test",
+    "goal": "Fix failing test in tests/conftest.py if one exists",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "wf_002",
+    "task_type": "fix_failing_test",
+    "goal": "Fix any broken test in tests/test_planner_eval.py",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "wf_003",
+    "task_type": "implement_feature",
+    "goal": "Add a config constant for max retry limit in config and use it in retry logic",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "wf_004",
+    "task_type": "implement_feature",
+    "goal": "Add input validation to the dispatch function in agent/execution/step_dispatcher.py",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "wf_005",
+    "task_type": "refactor_module",
+    "goal": "Extract repeated validation logic into a helper function in agent/execution",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "wf_006",
+    "task_type": "refactor_module",
+    "goal": "Rename classify_failure to classify_step_failure in policy_engine",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "wf_007",
+    "task_type": "add_logging",
+    "goal": "Add logging to the execute_step function in agent/execution/executor.py",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "wf_008",
+    "task_type": "add_logging",
+    "goal": "Add debug logging to the policy engine execute_with_policy method",
+    "success_criteria": "no_syntax_errors"
+  }
+]

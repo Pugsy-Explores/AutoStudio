@@ -33,6 +33,8 @@ Task-to-model mapping is defined in [`agent/models/models_config.json`](../agent
 |--------|-----------------|------------|----------|-------|
 | planner_system | [agent/prompts/planner_system.yaml](../agent/prompts/planner_system.yaml) | `system_prompt` | [planner/planner.py](../planner/planner.py) | REASONING |
 | replanner_system | [agent/prompts/replanner_system.yaml](../agent/prompts/replanner_system.yaml) | `system_prompt` | [agent/orchestrator/replanner.py](../agent/orchestrator/replanner.py) | REASONING |
+| critic_system | [agent/prompts/critic_system.yaml](../agent/prompts/critic_system.yaml) | `system_prompt` | [agent/meta/critic.py](../agent/meta/critic.py) | SMALL |
+| retry_planner_system | [agent/prompts/retry_planner_system.yaml](../agent/prompts/retry_planner_system.yaml) | `system_prompt` | [agent/meta/retry_planner.py](../agent/meta/retry_planner.py) | REASONING |
 | query_rewrite | [agent/prompts/query_rewrite.yaml](../agent/prompts/query_rewrite.yaml) | `prompt` | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
 | query_rewrite_with_context | [agent/prompts/query_rewrite_with_context.yaml](../agent/prompts/query_rewrite_with_context.yaml) | `main`, `end` | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
 | validate_step | [agent/prompts/validate_step.yaml](../agent/prompts/validate_step.yaml) | `prompt` | [agent/orchestrator/validator.py](../agent/orchestrator/validator.py) | REASONING |

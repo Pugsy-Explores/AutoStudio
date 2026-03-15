@@ -107,6 +107,107 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_issue(args: argparse.Namespace) -> int:
+    """Parse issue and run full workflow (issue -> task -> agent -> PR -> CI -> review)."""
+    from agent.workflow.workflow_controller import run_workflow
+
+    issue_text = " ".join(getattr(args, "issue_text", []) or args.remainder or [])
+    if not issue_text:
+        print("Usage: autostudio issue <issue_text>", file=sys.stderr)
+        return 1
+    root = str(args.project_root or _project_root())
+    result = run_workflow(issue_text, root)
+    _print_workflow_result(result)
+    return 0 if result.get("goal_success") else 1
+
+
+def cmd_fix(args: argparse.Namespace) -> int:
+    """Run multi-agent solve only (no PR/CI/review)."""
+    from agent.roles.supervisor_agent import run_multi_agent
+    from agent.roles.workspace import AgentWorkspace
+    from agent.workflow.pr_generator import generate_pr
+    from agent.workflow.workflow_controller import _save_last_workflow
+
+    instruction = " ".join(getattr(args, "instruction", []) or args.remainder or [])
+    if not instruction:
+        print("Usage: autostudio fix <instruction>", file=sys.stderr)
+        return 1
+    root = str(args.project_root or _project_root())
+    result = run_multi_agent(instruction, project_root=root)
+    ws = AgentWorkspace.from_goal(instruction, root, "")
+    ws.goal = instruction
+    ws.plan = result.get("plan", {})
+    ws.patches = result.get("patches", [])
+    ws.test_results = result.get("test_results")
+    pr_data = generate_pr(ws, ws.patches, ws.test_results)
+    _save_last_workflow(
+        {
+            "task_id": "",
+            "trace_id": "",
+            "task": {"description": instruction},
+            "goal_success": result.get("goal_success", False),
+            "pr": pr_data,
+            "ci": {"passed": False, "failures": [], "runtime_sec": 0},
+            "review": {"valid": False, "issues": [], "summary": ""},
+            "patches": result.get("patches", []),
+            "agents_used": result.get("agents_used", []),
+            "test_results": result.get("test_results"),
+        },
+        root,
+    )
+    _print_workflow_result(result)
+    return 0 if result.get("goal_success") else 1
+
+
+def cmd_pr(args: argparse.Namespace) -> int:
+    """Generate PR from last workflow run."""
+    from agent.workflow.workflow_controller import load_last_workflow
+
+    root = str(args.project_root or _project_root())
+    last = load_last_workflow(root)
+    if not last or not last.get("pr"):
+        print("No previous workflow found. Run 'autostudio issue <text>' first.", file=sys.stderr)
+        return 1
+    pr = last["pr"]
+    print(f"\n--- PR: {pr.get('title', '?')} ---")
+    print(pr.get("description", ""))
+    print(f"\nFiles modified: {pr.get('files_modified', [])}")
+    return 0
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """Review last patch."""
+    from agent.workflow.code_review_agent import review_patch
+    from agent.workflow.workflow_controller import load_last_workflow
+
+    root = str(args.project_root or _project_root())
+    last = load_last_workflow(root)
+    if not last or not last.get("patches"):
+        print("No previous workflow with patches found. Run 'autostudio issue <text>' or 'autostudio fix <instruction>' first.", file=sys.stderr)
+        return 1
+    result = review_patch(last["patches"], last.get("test_results"))
+    print(f"\n--- Review ---")
+    print(f"Valid: {result.get('valid', False)}")
+    print(f"Summary: {result.get('summary', '')}")
+    if result.get("issues"):
+        print("Issues:", result["issues"])
+    return 0 if result.get("valid") else 1
+
+
+def cmd_ci(args: argparse.Namespace) -> int:
+    """Run CI on project root."""
+    from agent.workflow.ci_runner import run_ci
+
+    root = str(args.project_root or _project_root())
+    result = run_ci(root)
+    print(f"\n--- CI ---")
+    print(f"Passed: {result.get('passed', False)}")
+    print(f"Runtime: {result.get('runtime_sec', 0)}s")
+    if result.get("failures"):
+        print("Failures:", result["failures"])
+    return 0 if result.get("passed") else 1
+
+
 def _print_result(result: dict) -> None:
     """Print controller result summary."""
     print(f"\n--- Task {result.get('task_id', '?')} ---")
@@ -115,6 +216,23 @@ def _print_result(result: dict) -> None:
         print(f"Files modified: {result['files_modified']}")
     if result.get("errors"):
         print(f"Errors: {result['errors']}")
+
+
+def _print_workflow_result(result: dict) -> None:
+    """Print workflow result summary."""
+    print(f"\n--- Workflow {result.get('task_id', '?')} ---")
+    print(f"Goal success: {result.get('goal_success', False)}")
+    if result.get("pr", {}).get("title"):
+        print(f"PR title: {result['pr']['title']}")
+    if result.get("ci"):
+        ci = result["ci"]
+        print(f"CI passed: {ci.get('passed', False)}")
+    if result.get("review", {}).get("summary"):
+        print(f"Review: {result['review']['summary']}")
+    if result.get("agents_used"):
+        print(f"Agents used: {result['agents_used']}")
+    if result.get("error"):
+        print(f"Error: {result['error']}")
 
 
 def main() -> int:
@@ -152,6 +270,24 @@ def main() -> int:
     p_run = subparsers.add_parser("run", help="Single-shot run (legacy)")
     p_run.add_argument("instruction", nargs="*", help="Instruction to run")
     p_run.set_defaults(cmd=cmd_run)
+
+    # Phase 12 workflow commands
+    p_issue = subparsers.add_parser("issue", help="Parse issue and run full workflow")
+    p_issue.add_argument("issue_text", nargs="*", help="Issue text or ID")
+    p_issue.set_defaults(cmd=cmd_issue)
+
+    p_fix = subparsers.add_parser("fix", help="Run multi-agent solve only")
+    p_fix.add_argument("instruction", nargs="*", help="Instruction to fix")
+    p_fix.set_defaults(cmd=cmd_fix)
+
+    p_pr = subparsers.add_parser("pr", help="Generate PR from last workflow")
+    p_pr.set_defaults(cmd=cmd_pr)
+
+    p_review = subparsers.add_parser("review", help="Review last patch")
+    p_review.set_defaults(cmd=cmd_review)
+
+    p_ci = subparsers.add_parser("ci", help="Run CI on project root")
+    p_ci.set_defaults(cmd=cmd_ci)
 
     args = parser.parse_args()
 

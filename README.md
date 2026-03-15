@@ -66,6 +66,7 @@ flowchart TB
 
     subgraph PostSearch["Post-SEARCH pipeline"]
         AnchorDetector2[AnchorDetector]
+        LocalizationEngine[LocalizationEngine]
         SymbolExpander[SymbolExpander]
         Expand[RetrievalExpansion]
         ContextBuilder[ContextBuilder]
@@ -95,7 +96,8 @@ flowchart TB
     SearchPipeline --> VectorRetriever
     SearchPipeline --> SerenaGrep
     Dispatch -->|SEARCH success| AnchorDetector2
-    AnchorDetector2 --> SymbolExpander
+    AnchorDetector2 --> LocalizationEngine
+    LocalizationEngine --> SymbolExpander
     AnchorDetector2 --> Expand
     SymbolExpander --> ContextBuilder
     Expand --> ContextBuilder
@@ -134,15 +136,14 @@ flowchart TB
        ▼               ▼
 ┌──────────────┐  ┌─────────────────────────────┐
 │ SEARCH path  │  │ Post-SEARCH pipeline         │
-│ RepoMapLookup│  │ AnchorDetector ──► SymbolExp │
-│ ──► Anchor  │  │ ──► Expand ──► ContextBuilder│
-│ ──► Search   │  │ ──► Ranker ──► Pruner        │
+│ RepoMapLookup│  │ AnchorDetector ──► Localization│
+│ ──► Anchor  │  │ ──► SymbolExp ──► Expand     │
+│ ──► Search   │  │ ──► ContextBuilder ──► Ranker ──► Pruner │
 │   Pipeline   │  └─────────────────────────────┘
-│ ──► Graph/   │
-│   Vector/    │  ┌─────────────────────────────┐
-│   SerenaGrep│  │ EXPLAIN path                  │
-└──────────────┘  │ ExplainGate ──► ContextBuilderV2
-                  │ ──► EXPLAIN model call        │
+│ ──► Graph/   │  ┌─────────────────────────────┐
+│   Vector/    │  │ EXPLAIN path                  │
+│   SerenaGrep│  │ ExplainGate ──► ContextBuilderV2
+└──────────────┘  │ ──► EXPLAIN model call        │
                   └─────────────────────────────┘
 ```
 
@@ -182,12 +183,20 @@ autostudio chat --live             # Session with live step visualization
 autostudio trace <task_id>         # View trace by task_id
 autostudio debug last-run          # Interactive trace viewer for most recent run
 
+# Phase 12 — Developer workflow (issue → task → agent → PR → CI → review)
+autostudio issue "Fix retry logic in StepExecutor"   # Full workflow: parse issue → solve → PR → CI → review
+autostudio fix "add logging to execute_step"        # Multi-agent solve only (no PR/CI/review)
+autostudio pr                                      # Generate PR from last workflow run
+autostudio review                                  # Review last patch
+autostudio ci                                      # Run CI (pytest, ruff) on project root
+
 # Or run directly without installing:
 python -m agent.cli.entrypoint explain StepExecutor
 python -m agent.cli.entrypoint chat
 
-# Mode 2 — Autonomous loop (goal-driven; Phase 7)
+# Mode 2 — Autonomous loop (goal-driven; Phase 7/8)
 python -c "from agent.autonomous import run_autonomous; run_autonomous('Fix failing test', project_root='.')"
+# With self-improving retries (Phase 8): max_retries=3, success_criteria='tests_pass'
 
 # Legacy — standard agent loop (plan → execute steps)
 python -m agent "Find where the StepExecutor class is defined"
@@ -227,15 +236,40 @@ AutoStudio/
 │   ├── router_config.py      # Instruction router
 │   ├── tool_graph_config.py # Tool graph enable
 │   ├── repo_graph_config.py # Symbol graph paths
+│   ├── repo_intelligence_config.py # Phase 10: repo scan, architecture, impact, context limits
 │   ├── observability_config.py # Trace settings
 │   ├── logging_config.py    # Log level/format
 │   └── config_validator.py  # Startup validation
 ├── agent/                    # Core agent package
-│   ├── autonomous/           # Mode 2: goal-driven loop (Phase 7)
-│   │   ├── goal_manager.py   # Goal tracking, limit checks (max_steps, max_tool_calls, max_runtime, max_edits)
+│   ├── autonomous/           # Mode 2: goal-driven loop (Phase 7/8)
+│   │   ├── goal_manager.py   # Goal tracking, limit checks; reset_for_retry (Phase 8)
 │   │   ├── state_observer.py # ObservationBundle from repo_map, trace, retrieval
 │   │   ├── action_selector.py # Small-model structured action selection (SEARCH/EDIT/EXPLAIN/INFRA)
-│   │   └── agent_loop.py     # run_autonomous(goal, project_root)
+│   │   └── agent_loop.py     # run_autonomous(goal, max_retries=3); meta loop: evaluate→critic→retry
+│   ├── workflow/             # Phase 12: developer workflow (issue → task → PR → CI → review)
+│   │   ├── issue_parser.py         # Parse GitHub/GitLab issues into structured tasks
+│   │   ├── pr_generator.py         # Generate PR title and description from workspace/patches
+│   │   ├── ci_runner.py            # Run pytest, ruff; MAX_CI_RUNTIME_SECONDS
+│   │   ├── code_review_agent.py    # Review patch: style, security, large diffs, missing tests
+│   │   ├── developer_feedback.py   # Apply feedback via critic → retry planner → improved patch
+│   │   └── workflow_controller.py  # Orchestrate: issue → parse → run_multi_agent → PR → CI → review
+│   ├── intelligence/         # Phase 11: solution memory, task embeddings, experience retrieval, developer model, repo learning
+│   │   ├── solution_memory.py      # Persist successful solutions to .agent_memory/solutions/
+│   │   ├── task_embeddings.py      # ChromaDB vector index for solution patterns (.agent_memory/intelligence_index/)
+│   │   ├── experience_retriever.py # Pre-task retrieval: similar_solutions, developer_profile, repo_knowledge, suggested_files
+│   │   ├── developer_model.py      # developer_profile.json: preferences from accepted solutions
+│   │   └── repo_learning.py        # repo_knowledge.json: frequent_bug_areas, refactor_patterns, architecture_constraints
+│   ├── repo_intelligence/    # Phase 10: repository-scale intelligence
+│   │   ├── repo_summary_graph.py   # build_repo_summary_graph: modules, entrypoints, key_classes, dependencies
+│   │   ├── architecture_map.py    # build_architecture_map: controllers, services, data_layers, utilities
+│   │   ├── impact_analyzer.py      # analyze_impact: BFS from edited file to affected files/symbols
+│   │   ├── context_compressor.py   # compress_context: summaries when ranked_context exceeds budget
+│   │   └── long_horizon_planner.py # plan_long_horizon: architecture-aware multi-module planning
+│   ├── meta/                 # Reflection layer (Phase 8)
+│   │   ├── evaluator.py      # SUCCESS/FAILURE/PARTIAL from step results
+│   │   ├── critic.py         # Diagnose failure (retrieval_miss, bad_plan, bad_patch, etc.)
+│   │   ├── retry_planner.py  # Retry hints: rewrite_query, expand_scope, new_plan, etc.
+│   │   └── trajectory_store.py # Persist attempts under .agent_memory/trajectories/
 │   ├── cli/                  # CLI entry points (Phase 6)
 │   │   ├── entrypoint.py     # autostudio: explain, edit, trace, chat, debug, run
 │   │   ├── run_agent.py      # Single-shot (legacy); --live for step visualization
@@ -260,10 +294,12 @@ AutoStudio/
 │   │   └── ux_metrics.py     # Session metrics: interaction_latency, steps_per_task, patch_success (Phase 6)
 │   ├── orchestrator/         # Agent loop, controller, validation
 │   │   ├── agent_loop.py     # run_agent (Mode 1: standard loop; per-step timeout Phase 7)
-│   │   └── agent_controller.py # run_controller (full pipeline)
+│   │   ├── agent_controller.py # run_controller (mode routing; deterministic/autonomous/multi_agent)
+│   │   └── deterministic_runner.py # run_deterministic (plan → dispatch loop; single source for Mode 1)
 │   ├── retrieval/            # Query rewrite, context building, ranking
 │   │   ├── search_pipeline.py  # Hybrid parallel retrieval (graph + vector + grep); uses repo_map anchor when present
-│   │   ├── retrieval_pipeline.py  # run_retrieval_pipeline: anchor → symbol_expander + expand → read → build_context
+│   │   ├── retrieval_pipeline.py  # run_retrieval_pipeline: anchor → localization → symbol_expander + expand → read → build_context
+│   │   ├── localization/       # Phase 10.5: graph-guided localization (dependency_traversal, execution_path_analyzer, symbol_ranker, localization_engine)
 │   │   ├── repo_map_lookup.py  # lookup_repo_map: tokenize query → match symbols → anchor candidates
 │   │   ├── anchor_detector.py  # detect_anchors (search results); detect_anchor (query + repo_map)
 │   │   ├── symbol_expander.py  # expand_from_anchors: graph depth=2 → fetch bodies → rank → prune (max 15 symbols, 6 snippets)
@@ -277,7 +313,7 @@ AutoStudio/
 │   │   ├── context_ranker.py
 │   │   └── context_pruner.py
 │   ├── tools/                # Tool adapters
-│   └── prompts/              # YAML prompts
+│   └── prompts/              # YAML prompts (planner, replanner, critic, retry_planner)
 ├── repo_index/               # Repository indexing (Tree-sitter)
 │   ├── index_repo.py         # CLI: index_repo (--verbose, --no-gitignore)
 │   ├── indexer.py            # scan_repo, index_repo (parallel, .gitignore, optional embeddings)
@@ -306,6 +342,11 @@ AutoStudio/
 ├── scripts/                  # Evaluation and utilities
 │   ├── run_principal_engineer_suite.py  # Phase 3/4 scenario eval, failure mining, stress
 │   ├── run_capability_eval.py            # Phase 5: dev_tasks.json → reports/eval_report.json
+│   ├── run_autonomous_eval.py            # Phase 8: autonomous_tasks.json → reports/autonomous_eval_report.json
+│   ├── run_multi_agent_eval.py           # Phase 9: multi_agent_tasks.json → reports/multi_agent_eval_report.json
+│   ├── run_repository_eval.py            # Phase 10: repository_tasks.json → reports/repository_eval_report.json
+│   ├── run_localization_eval.py          # Phase 10.5: localization_tasks.json → reports/localization_report.json
+│   ├── run_workflow_eval.py              # Phase 12: workflow_tasks.json → reports/workflow_eval_report.json
 │   ├── evaluate_agent.py                 # Legacy: agent_eval.json
 │   ├── replay_trace.py                   # Trace replay
 │   └── verify_phase2_exit.py             # Phase 2 verification
@@ -315,6 +356,11 @@ AutoStudio/
 └── tests/
     ├── agent_scenarios.json   # 40 scenarios (G1–G8)
     ├── dev_tasks.json         # 40 developer tasks (Phase 5 capability eval)
+    ├── autonomous_tasks.json  # 7 tasks, 5 types (Phase 8: bug_fixing, feature_addition, refactoring, test_repair, configuration_updates)
+    ├── multi_agent_tasks.json # 30 tasks (Phase 9: fix_test_suite, multi_file_refactor, feature_addition)
+    ├── repository_tasks.json  # 40 tasks (Phase 10: refactor_architecture, rename_api, multi_service_feature, config_update)
+    ├── localization_tasks.json # 10 tasks (Phase 10.5: file/function localization; retry logic, patch validator, symbol graph, etc.)
+    ├── workflow_tasks.json     # 8 tasks (Phase 12: fix_failing_test, implement_feature, refactor_module, add_logging)
     ├── test_multifile_edits.py # Multi-file patch pipeline
     └── ...
 ```
@@ -365,12 +411,14 @@ SEARCH
       → retrieval_cache.set_cached() on success
   → run_retrieval_pipeline(results, state, query)
       → anchor_detector.detect_anchors()  # filter to symbol/class/def matches; fallback top N
+      → localization_engine.localize_issue() [Phase 10.5: when ENABLE_LOCALIZATION_ENGINE; dependency traversal → execution paths → symbol ranking → prepend to candidates]
       → symbol_expander.expand_from_anchors() [when graph exists; anchor → expand depth=2 → fetch bodies → rank → prune to 6]
       → retrieval_expander.expand_search_results() [capped at MAX_SYMBOL_EXPANSION]
       → read_symbol_body / read_file → find_referencing_symbols
       → context_builder.build_context_from_symbols()
       → context_ranker.rank_context() [when ENABLE_CONTEXT_RANKING=1]
       → context_pruner.prune_context() [max 6 snippets, 8000 chars]
+      → context_compressor.compress_context() [Phase 10: when repo_summary present; summaries if over budget]
   → state.context["ranked_context"], context_snippets (list of {file, symbol, snippet})
 ```
 
@@ -382,14 +430,16 @@ SEARCH
 - **Context ranker:** Hybrid score = 0.6×LLM + 0.2×symbol_match + 0.1×filename_match + 0.1×reference_score − same_file_penalty; batch LLM; caps at 20 candidates.
 - **Context pruner:** Max 6 snippets, 8000 chars; deduplicate by (file, symbol).
 
-### EDIT pipeline (when ENABLE_DIFF_PLANNER=1)
+### EDIT pipeline (inside dispatcher `_edit_fn`)
+
+All EDIT execution goes through `dispatch(step, state)`. The dispatcher's `_edit_fn` runs:
 
 ```
-EDIT
+EDIT (via dispatch)
   → diff_planner.plan_diff(instruction, context)
   → conflict_resolver.resolve_conflicts() — same symbol, same file, semantic overlap
   → patch_generator.to_structured_patches()
-  → patch_executor.execute_patch()
+  → test_repair_loop.run_with_repair() — execute_patch + run tests + repair on failure
       → ast_patcher.apply_patch() — Tree-sitter AST edits (insert/replace/delete)
       → patch_validator.validate_patch() — compile + AST reparse
       → write on success; rollback on failure
@@ -416,23 +466,26 @@ EDIT
 
 ## Agent Controller (Full Pipeline)
 
-`run_controller(instruction, project_root)` orchestrates the complete development workflow without modifying `agent_loop` or `StepExecutor`:
+`run_controller(instruction, project_root, mode="deterministic")` orchestrates the complete development workflow. All tool execution goes through `dispatch(step, state)`. Mode routing: `deterministic` (default), `autonomous`, or `multi_agent`.
 
 ```
 instruction
+  → [if mode != deterministic] route to run_autonomous or run_multi_agent
   → build_repo_map() — high-level architectural map
   → search_similar_tasks() — vector index of past tasks (optional)
-  → get_plan() — instruction router (default) or planner.plan()
-  → while task_not_complete:
-        step = next_step()
-        if SEARCH: dispatch (hybrid_retrieve or retrieve_graph → retrieve_vector → retrieve_grep → Serena)
-        if EDIT: plan_diff → conflict_resolver → run_with_repair → change_detector → update_index
-        validate step; if failure: replan
+  → run_deterministic(instruction, project_root)
+       → get_plan() — instruction router (default) or planner.plan()
+       → while task_not_complete:
+            step = next_step()
+            result = dispatch(step, state)   # ALL steps via dispatch (SEARCH, EDIT, INFRA, EXPLAIN)
+            validate step; if failure: replan
   → save_task() — persist to .agent_memory/tasks/
   → return task summary
 ```
 
-**Safety limits:** max 5 files edited, 200 lines per patch. Task runtime: agent_loop 60s (Phase 4); agent_controller 15 min (configurable via `MAX_TASK_RUNTIME_SECONDS`). **Phase 7 reliability:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`), pre-dispatch tool validation (`validate_step_input`), context guardrail (`MAX_CONTEXT_CHARS`). **Mode 2 (autonomous):** `run_autonomous(goal)` — goal-driven loop with observe → select → dispatch; reuses dispatcher, retrieval, editing pipeline; limits: max_steps, max_tool_calls, max_runtime, max_edits.
+**EDIT pipeline (inside dispatcher):** When action is EDIT, `_edit_fn` runs plan_diff → resolve_conflicts → to_structured_patches → run_with_repair → update_index.
+
+**Safety limits:** max 5 files edited, 200 lines per patch. Task runtime: agent_loop 60s (Phase 4); agent_controller 15 min (configurable via `MAX_TASK_RUNTIME_SECONDS`). **Phase 7 reliability:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`), pre-dispatch tool validation (`validate_step_input`), context guardrail (`MAX_CONTEXT_CHARS`). **Mode 2 (autonomous):** `run_autonomous(goal, max_retries=3)` — goal-driven loop with observe → select → dispatch; when max_retries>1, wraps with evaluator → critic → retry_planner meta loop (Phase 8); reuses dispatcher, retrieval, editing pipeline; limits: max_steps, max_tool_calls, max_runtime, max_edits. **Phase 9 (multi-agent):** `run_multi_agent(goal, project_root)` — supervisor → planner → localization → edit → test → critic (on failure); same infrastructure; limits: max_agent_steps=30, max_patch_attempts=3, max_runtime=120s, max_file_edits=10. **Phase 10 (repo intelligence):** Before planner, supervisor builds repo_summary_graph and architecture_map; planner uses plan_long_horizon when architecture_map present; after edit, impact_analyzer predicts affected files; retrieval pipeline optionally compresses context when repo_summary present; limits: max_repo_scan_files=200, max_architecture_nodes=500, max_context_tokens=8192, max_impact_depth=3. **Phase 11 (intelligence layer):** Before each autonomous run, experience_retriever fetches similar past solutions (task_embeddings), developer_profile, and repo_knowledge; injects experience_hints into state.context for planner adaptation; on success, stores solution to solution_memory, task_embeddings, repo_learning, developer_model. **Phase 12 (developer workflow):** `agent/workflow/` — issue_parser (GitHub/GitLab issues → structured tasks), pr_generator (workspace/patches → PR title/description), ci_runner (pytest, ruff; MAX_CI_RUNTIME_SECONDS), code_review_agent (style, security, large diffs, missing tests), developer_feedback (critic → retry planner → improved patch), workflow_controller (orchestrate full flow); CLI: `autostudio issue`, `autostudio fix`, `autostudio pr`, `autostudio review`, `autostudio ci`; safety: MAX_FILES_PER_PR=10, MAX_PATCH_LINES=500.
 
 **Failure handling:** On step failure or validation failure, the agent replans. agent_loop: up to 3 replans, 2 step retries before replan; agent_controller: up to 5 replans (configurable). SEARCH exhausts fallback chain (retrieve_graph → retrieve_vector → retrieve_grep → file_search) and retries with rewritten queries. EDIT failures trigger rollback before any files are written; patch validator ensures syntax and AST integrity.
 
@@ -456,7 +509,11 @@ All configuration values are centralized under `config/`. See [Docs/CONFIGURATIO
     "REASONING_V2": { "name": "Qwen 14B", "endpoint": "http://localhost:8003/v1/chat/completions" }
   },
     "task_models": {
+    "experience_retrieval": "SMALL",
     "action_selection": "SMALL",
+    "evaluation": "SMALL",
+    "critique": "SMALL",
+    "retry_planning": "REASONING",
     "query rewriting": "REASONING",
     "validation": "REASONING",
     "EXPLAIN": "REASONING_V2",
@@ -511,6 +568,17 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `ENABLE_DIFF_PLANNER` | 1 (default) or 0 — EDIT returns planned changes vs read_file |
 | `TEST_REPAIR_ENABLED` | 1 (default) or 0 — run tests after patch; 0 = patch only |
 | `COMPILE_BEFORE_TEST` | 1 (default) or 0 — run py_compile before tests |
+| `MAX_REPO_SCAN_FILES` | Phase 10: cap repo scan (default 200) |
+| `MAX_ARCHITECTURE_NODES` | Phase 10: cap architecture map (default 500) |
+| `MAX_CONTEXT_TOKENS` | Phase 10: context budget for compressor (default 8192) |
+| `MAX_IMPACT_DEPTH` | Phase 10: BFS depth for impact analyzer (default 3) |
+| `ENABLE_LOCALIZATION_ENGINE` | Phase 10.5: 1 (default) or 0 — graph-guided localization (dependency traversal, execution paths, symbol ranking) |
+| `MAX_GRAPH_DEPTH` | Phase 10.5: dependency traversal depth (default 3) |
+| `MAX_DEPENDENCY_NODES` | Phase 10.5: cap on graph nodes (default 100) |
+| `MAX_EXECUTION_PATHS` | Phase 10.5: cap on execution path chains (default 10) |
+| `MAX_FILES_PER_PR` | Phase 12: max files per PR (default 10) |
+| `MAX_PATCH_LINES` | Phase 12: max patch lines (default 500) |
+| `MAX_CI_RUNTIME_SECONDS` | Phase 12: CI timeout in seconds (default 600) |
 
 ---
 
@@ -559,6 +627,9 @@ python -m pytest AutoStudio/tests/test_context_ranker.py -v
 python -m pytest AutoStudio/tests/test_explain_gate.py -v   # Context gate: ensure_context_before_explain
 python -m pytest AutoStudio/tests/test_tool_graph.py -v      # Step→tool mapping (SEARCH→retrieve_graph, etc.)
 python -m pytest AutoStudio/tests/test_policy_engine.py -v
+python -m pytest AutoStudio/tests/test_autonomous_meta.py -v  # Phase 8: evaluator, critic, retry_planner, trajectory_store
+python -m pytest AutoStudio/tests/test_roles.py -v           # Phase 9: planner, localization, edit, test, critic agents
+python scripts/run_repository_eval.py --mock --limit 2       # Phase 10: repository eval (mock)
 python -m pytest AutoStudio/tests/test_agent_robustness.py -v  # failure scenarios, replan, fallback, no corruption
 python -m pytest AutoStudio/tests/test_agent_trajectory.py -v --mock  # complex trajectories: multi-search, conflict resolver, repair loop
 
@@ -634,7 +705,8 @@ Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `cal
 ### Optional: ChromaDB and embeddings
 
 - **Vector search:** `agent/retrieval/vector_retriever.py` — semantic search when graph returns nothing. Index built by `repo_index.index_repo` when `INDEX_EMBEDDINGS=1` (requires `chromadb`, `sentence-transformers`).
-- **Task index:** `agent/memory/task_index.py` — vector index of past tasks for `search_similar_tasks`.
+- **Task index:** `agent/memory/task_index.py` — vector index of past tasks for `search_similar_tasks` (`.agent_memory/task_index/`).
+- **Intelligence layer (Phase 11):** `agent/intelligence/` — solution memory (`.agent_memory/solutions/`), task embeddings (`.agent_memory/intelligence_index/`), developer profile (`.agent_memory/developer_profile.json`), repo knowledge (`.agent_memory/repo_knowledge.json`).
 - **Legacy:** `index_repo.py`, `mcp_retriever.py` — standalone embedding indexer and FastAPI endpoint.
 
 ---
@@ -657,6 +729,56 @@ AutoStudio includes **repository structure awareness**:
 
 See [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md) for details.
 
+### Repository Intelligence (Phase 10)
+
+When using `run_multi_agent`, the supervisor builds a **repository intelligence layer** before planning:
+
+- **repo_summary_graph** — High-level map: modules, entrypoints, key classes, dependency edges (capped at `MAX_REPO_SCAN_FILES`)
+- **architecture_map** — Classifies modules into controllers, services, data_layers, utilities (heuristics + small model for ambiguous)
+- **long_horizon_planner** — Prepends architecture context to the goal; delegates to `planner.plan()` for multi-module planning
+- **impact_analyzer** — After each edit, BFS from edited file to predict affected files/symbols (depth `MAX_IMPACT_DEPTH`)
+- **context_compressor** — When `ranked_context` exceeds `MAX_CONTEXT_TOKENS`, replaces snippets with summaries
+
+Config: `config/repo_intelligence_config.py`. See [dev/roadmap/phase_10_capability_expansion.md](dev/roadmap/phase_10_capability_expansion.md).
+
+### Intelligence Layer (Phase 11)
+
+The autonomous loop includes an **intelligence layer** that learns from successful runs and adapts planning:
+
+- **solution_memory** — Persists successful solutions to `.agent_memory/solutions/<task_id>.json` (goal, files_modified, patch_summary)
+- **task_embeddings** — ChromaDB vector index of solution patterns in `.agent_memory/intelligence_index/` for semantic search
+- **experience_retriever** — Before each task: retrieves similar solutions, developer_profile, repo_knowledge; returns ExperienceHints (similar_solutions, suggested_files) injected into `state.context["experience_hints"]`
+- **developer_model** — `.agent_memory/developer_profile.json`: preferred_test_framework, logging_style, code_style, observed_patterns
+- **repo_learning** — `.agent_memory/repo_knowledge.json`: frequent_bug_areas, common_refactor_patterns, architecture_constraints
+
+On success, the agent stores the solution and updates developer_model and repo_learning. See [dev/roadmap/phase_11_intelligence.md](dev/roadmap/phase_11_intelligence.md).
+
+### Graph-Guided Localization (Phase 10.5)
+
+The retrieval pipeline includes a **localization layer** that performs structural repository navigation before vector search:
+
+- **dependency_traversal** — BFS over symbol graph (callers, callees, imports) from anchor; returns candidate symbols with hop distance
+- **execution_path_analyzer** — Reconstructs forward/backward call chains from anchor
+- **symbol_ranker** — Scores candidates by dependency distance (0.4), call graph relevance (0.25), name similarity (0.2), semantic similarity (0.15)
+- **localization_engine** — Orchestrates stages; prepends ranked candidates to context pool
+
+Config: `ENABLE_LOCALIZATION_ENGINE`, `MAX_GRAPH_DEPTH`, `MAX_DEPENDENCY_NODES`, `MAX_EXECUTION_PATHS`. See [dev/roadmap/phase_10-5_graph_traversal.md](dev/roadmap/phase_10-5_graph_traversal.md).
+
+### Developer Workflow (Phase 12)
+
+The **workflow layer** (`agent/workflow/`) turns AutoStudio into a developer teammate operating inside the real software development loop: issue → agent solution → PR → CI → review → merge.
+
+- **issue_parser** — Converts GitHub/GitLab issue text into structured tasks (type, module, symbol, priority)
+- **pr_generator** — Generates PR title and description from workspace, patches, and test results
+- **ci_runner** — Runs pytest and ruff with `MAX_CI_RUNTIME_SECONDS` (600s) timeout
+- **code_review_agent** — Reviews patches for style violations, security risks, large diffs (> `MAX_PATCH_LINES`), missing tests
+- **developer_feedback** — Applies human feedback via critic → retry planner → improved patch
+- **workflow_controller** — Orchestrates full flow: issue → parse → run_multi_agent → PR → CI → review
+
+**CLI commands:** `autostudio issue <text>`, `autostudio fix <instruction>`, `autostudio pr`, `autostudio review`, `autostudio ci`. Last workflow result persisted to `.agent_memory/last_workflow.json` for `pr` and `review` commands.
+
+**Safety limits:** `MAX_FILES_PER_PR=10`, `MAX_PATCH_LINES=500`, `MAX_CI_RUNTIME_SECONDS=600`. See [dev/roadmap/phase_12_last_stop.md](dev/roadmap/phase_12_last_stop.md).
+
 ---
 
 ## Documentation
@@ -676,6 +798,13 @@ See [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md) for detai
 | [dev/roadmap/phase_5_metrics.md](dev/roadmap/phase_5_metrics.md) | Phase 5 capability expansion: dev_tasks.json, run_capability_eval, metrics dashboard |
 | [dev/roadmap/phase_6_developer_experience.md](dev/roadmap/phase_6_developer_experience.md) | Phase 6 developer experience: autostudio CLI, interactive chat, slash-commands, session memory, live viz, UX metrics |
 | [dev/roadmap/phase_7_reliability_hardening.md](dev/roadmap/phase_7_reliability_hardening.md) | Phase 7 reliability hardening: per-step timeout, tool validation, context guardrail; autonomous mode (agent/autonomous/, run_autonomous) |
+| [dev/roadmap/phase_8_autonomous_mode.md](dev/roadmap/phase_8_autonomous_mode.md) | Phase 8 self-improving loop: agent/meta/ (evaluator, critic, retry_planner, trajectory_store); outer retry loop; reflection metrics |
+| [dev/roadmap/phase_9_workflow_integration.md](dev/roadmap/phase_9_workflow_integration.md) | Phase 9 hierarchical multi-agent: agent/roles/ (supervisor, planner, localization, edit, test, critic); run_multi_agent; AgentWorkspace; multi_agent_tasks.json; run_multi_agent_eval |
+| [dev/roadmap/phase_10_capability_expansion.md](dev/roadmap/phase_10_capability_expansion.md) | Phase 10 repository-scale intelligence: agent/repo_intelligence/ (repo_summary_graph, architecture_map, impact_analyzer, context_compressor, long_horizon_planner); repository_tasks.json; run_repository_eval |
+| [dev/roadmap/phase_10-5_graph_traversal.md](dev/roadmap/phase_10-5_graph_traversal.md) | Phase 10.5 graph-guided localization: agent/retrieval/localization/ (dependency_traversal, execution_path_analyzer, symbol_ranker, localization_engine); localization_tasks.json; run_localization_eval |
+| [dev/roadmap/phase_11_intelligence.md](dev/roadmap/phase_11_intelligence.md) | Phase 11 intelligence layer: agent/intelligence/ (solution_memory, task_embeddings, experience_retriever, developer_model, repo_learning); experience_hints injection; solution storage on success; metrics: solution_reuse_rate, experience_improvement, repeat_failure_rate, developer_acceptance |
+| [dev/roadmap/phase_12_last_stop.md](dev/roadmap/phase_12_last_stop.md) | Phase 12 developer workflow: agent/workflow/ (issue_parser, pr_generator, ci_runner, code_review_agent, developer_feedback, workflow_controller); CLI: issue, fix, pr, review, ci; workflow_tasks.json; run_workflow_eval; metrics: pr_success_rate, ci_pass_rate, issue_to_pr_success |
+| [Docs/WORKFLOW.md](Docs/WORKFLOW.md) | Phase 12 workflow layer: modules, CLI, flow, safety limits, trace events, persistence, evaluation |
 
 ---
 
@@ -707,6 +836,68 @@ python scripts/run_capability_eval.py --mock
 python scripts/run_capability_eval.py --limit 5
 ```
 
+**Phase 8 autonomous eval** (7 tasks via `run_autonomous`):
+
+```bash
+# Run autonomous_tasks.json; output: reports/autonomous_eval_report.json
+python scripts/run_autonomous_eval.py
+
+# Mock mode for CI
+python scripts/run_autonomous_eval.py --mock
+```
+
+**Phase 9 multi-agent eval** (30 tasks via `run_multi_agent`):
+
+```bash
+# Run multi_agent_tasks.json; output: reports/multi_agent_eval_report.json
+python scripts/run_multi_agent_eval.py
+
+# Mock mode for CI
+python scripts/run_multi_agent_eval.py --mock
+
+# Merge metrics into reports/eval_report.json
+python scripts/run_multi_agent_eval.py --merge
+```
+
+**Phase 10 repository eval** (40 tasks via `run_multi_agent` with repo intelligence):
+
+```bash
+# Run repository_tasks.json; output: reports/repository_eval_report.json
+python scripts/run_repository_eval.py
+
+# Mock mode for CI
+python scripts/run_repository_eval.py --mock
+
+# Merge metrics into reports/eval_report.json
+python scripts/run_repository_eval.py --merge
+```
+
+**Phase 10.5 localization eval** (10 tasks; graph-guided localization):
+
+```bash
+# Run localization_tasks.json; output: reports/localization_report.json
+python scripts/run_localization_eval.py
+
+# Mock mode for CI
+python scripts/run_localization_eval.py --mock
+
+# Limit tasks for quick validation
+python scripts/run_localization_eval.py --limit 3
+```
+
+**Phase 12 workflow eval** (8 tasks; issue → task → PR → CI → review):
+
+```bash
+# Run workflow_tasks.json; output: reports/workflow_eval_report.json
+python scripts/run_workflow_eval.py
+
+# Mock mode for CI
+python scripts/run_workflow_eval.py --mock
+
+# Limit tasks for quick validation
+python scripts/run_workflow_eval.py --limit 3
+```
+
 **Phase 4 reliability** (failure mining, stress testing):
 
 ```bash
@@ -720,9 +911,12 @@ python scripts/run_principal_engineer_suite.py --stress --stress-reps 5
 **Datasets:**
 - `tests/agent_scenarios.json` — 40 structured scenarios across 8 groups (code_understanding, navigation, simple_edits, multi_line_fixes, multi_file, bug_fixing, feature_addition, refactoring).
 - `tests/dev_tasks.json` — 40 developer tasks for Phase 5 capability eval (bug_fixing, feature_addition, refactoring, code_generation).
-- `tests/autonomous_tasks.json` — 3 autonomous-mode benchmark tasks (Phase 7).
+- `tests/autonomous_tasks.json` — 7 autonomous-mode benchmark tasks across 5 types (Phase 8: bug_fixing, feature_addition, refactoring, test_repair, configuration_updates).
+- `tests/multi_agent_tasks.json` — 30 multi-agent benchmark tasks (Phase 9: fix_test_suite, multi_file_refactor, feature_addition).
+- `tests/repository_tasks.json` — 40 repository-scale benchmark tasks (Phase 10: refactor_architecture, rename_api, multi_service_feature, config_update).
+- `tests/workflow_tasks.json` — 8 workflow benchmark tasks (Phase 12: fix_failing_test, implement_feature, refactor_module, add_logging).
 
-**Metrics:** `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `edit_success_rate`, `avg_latency`, `avg_files_modified`, `avg_steps_per_task`, `avg_patch_size`, `failure_rate`, `replan_rate`. See `dev/evaluation/metrics.md`.
+**Metrics:** `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `edit_success_rate`, `avg_latency`, `avg_files_modified`, `avg_steps_per_task`, `avg_patch_size`, `failure_rate`, `replan_rate`. **Phase 8 reflection metrics** (run_autonomous_eval.py): `attempts_per_goal`, `retry_success_rate`, `critic_accuracy`, `trajectory_reuse`. **Phase 9 multi-agent metrics** (run_multi_agent_eval.py): `goal_success_rate`, `agent_delegations`, `critic_accuracy`, `localization_accuracy`, `patch_success_rate`. **Phase 10 repository metrics** (run_repository_eval.py): `localization_accuracy`, `impact_prediction_accuracy`, `context_compression_ratio`, `long_horizon_success_rate`. **Phase 10.5 localization metrics** (run_localization_eval.py): `file_accuracy`, `function_accuracy`, `top_k_recall`, `avg_graph_nodes`. **Phase 11 intelligence metrics** (run_autonomous_eval.py, run_multi_agent_eval.py): `solution_reuse_rate`, `experience_improvement`, `repeat_failure_rate`, `developer_acceptance`. **Phase 12 workflow metrics** (run_workflow_eval.py): `pr_success_rate`, `ci_pass_rate`, `developer_acceptance_rate`, `avg_retries_per_task`, `pr_merge_latency`, `issue_to_pr_success`. See `dev/evaluation/metrics.md`.
 
 **Phase 6 UX metrics** (per-task, written by `run_controller`): `reports/ux_metrics.json` — `interaction_latency`, `steps_per_task`, `tool_calls`, `patch_success`.
 

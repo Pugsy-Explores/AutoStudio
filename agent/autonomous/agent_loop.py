@@ -3,6 +3,8 @@ Autonomous agent loop (Mode 2): goal -> observe -> select action -> execute -> r
 
 Reuses: dispatcher, retrieval pipeline, editing pipeline, trace_logger, policy_engine.
 Enforces: max_steps, max_tool_calls, max_runtime, max_edits.
+
+When max_retries > 1, wraps with evaluator -> critic -> retry_planner meta loop.
 """
 
 import logging
@@ -14,11 +16,19 @@ from agent.autonomous.action_selector import select_next_action
 from agent.autonomous.goal_manager import GoalManager
 from agent.autonomous.state_observer import observe
 from agent.execution.step_dispatcher import dispatch
+from agent.intelligence.experience_retriever import retrieve
+from agent.intelligence.repo_learning import update_from_solution as update_repo_from_solution
+from agent.intelligence.solution_memory import save_solution
+from agent.intelligence.task_embeddings import index_solution
+from agent.intelligence.developer_model import update_from_solution as update_dev_from_solution
 from agent.memory.state import AgentState
 from agent.memory.step_result import StepResult
 from agent.observability.trace_logger import finish_trace, log_event, start_trace
 
 logger = logging.getLogger(__name__)
+
+# Meta loop: max attempts before giving up
+DEFAULT_MAX_RETRIES = 3
 
 
 def run_autonomous(
@@ -29,10 +39,13 @@ def run_autonomous(
     max_tool_calls: int = 50,
     max_runtime_seconds: float = 60,
     max_edits: int = 10,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    success_criteria: str | None = None,
 ) -> dict:
     """
     Run autonomous loop: observe -> select -> dispatch -> evaluate.
-    Returns summary dict with goal, completed_steps, tool_calls, stop_reason, etc.
+    When max_retries > 1, wraps with evaluator -> critic -> retry_planner meta loop.
+    Returns summary dict with goal, completed_steps, tool_calls, stop_reason, evaluation, etc.
     """
     root = Path(project_root or os.environ.get("SERENA_PROJECT_DIR", os.getcwd())).resolve()
     task_id = str(uuid.uuid4())
@@ -64,66 +77,193 @@ def run_autonomous(
         },
     )
 
-    log_event(trace_id, "autonomous_start", {"goal": goal, "limits": goal_manager.get_limits_dict()})
+    hints = retrieve(goal, str(root), trace_id=trace_id)
+    state.context["experience_hints"] = hints.to_dict()
+
+    log_event(trace_id, "autonomous_start", {"goal": goal, "limits": goal_manager.get_limits_dict(), "max_retries": max_retries})
 
     try:
-        while True:
-            should_stop, reason = goal_manager.should_stop()
-            if should_stop:
-                log_event(trace_id, "autonomous_stop", {"reason": reason, "counts": goal_manager.get_counts_dict()})
+        if max_retries <= 1:
+            result, state = _run_single_attempt(goal, str(root), task_id, trace_id, goal_manager, state)
+            evaluation = _evaluate_and_record(
+                result, state, task_id, trace_id, 0, success_criteria, str(root),
+            )
+            _finalize_trajectory(task_id, evaluation.status, str(root))
+            if evaluation.status == "SUCCESS":
+                _store_solution(task_id, goal, state, str(root))
+            result["evaluation"] = evaluation.to_dict()
+            return result
+
+        # Meta loop: evaluate -> critic -> retry
+        evaluation = None
+        diagnosis_prev = None
+        strategy_prev = None
+        for attempt_num in range(max_retries):
+            result, state = _run_single_attempt(goal, str(root), task_id, trace_id, goal_manager, state)
+            evaluation = _evaluate_and_record(
+                result, state, task_id, trace_id, attempt_num, success_criteria, str(root),
+                diagnosis=diagnosis_prev,
+                strategy=strategy_prev,
+            )
+            log_event(trace_id, "evaluation", {"status": evaluation.status, "attempt": attempt_num, "reason": evaluation.reason})
+
+            if evaluation.status == "SUCCESS":
                 break
 
-            observation = observe(
-                goal=goal,
-                project_root=str(root),
-                completed_steps=state.completed_steps,
-                step_results=state.step_results,
-                context=state.context,
-            )
+            if attempt_num < max_retries - 1:
+                diagnosis, retry_hints = _critic_and_plan(goal, state, evaluation, trace_id)
+                diagnosis_prev = diagnosis.to_dict()
+                strategy_prev = retry_hints.strategy
+                state.context["retry_hints"] = retry_hints.to_dict()
+                state.completed_steps = []
+                state.step_results = []
+                goal_manager.reset_for_retry()
+                log_event(trace_id, "retry_prepared", {"strategy": retry_hints.strategy, "attempt": attempt_num + 1})
 
-            step = select_next_action(observation)
-            if step is None:
-                log_event(trace_id, "action_selector_failed", {"observation_goal": goal})
-                break
+        if evaluation:
+            _finalize_trajectory(task_id, evaluation.status, str(root))
+            if evaluation.status == "SUCCESS":
+                _store_solution(task_id, goal, state, str(root))
+            result["evaluation"] = evaluation.to_dict()
+            result["attempts"] = attempt_num + 1
 
-            step_id = len(state.completed_steps) + 1
-            step["id"] = step.get("id") or step_id
-            state.context["current_step_id"] = step_id
-
-            goal_manager.record_tool_call()
-            result_raw = dispatch(step, state)
-
-            success = result_raw.get("success", False)
-            goal_manager.record_step(step.get("action", ""), success)
-
-            result = _raw_to_step_result(step, result_raw)
-            state.record(step, result)
-
-            log_event(
-                trace_id,
-                "autonomous_step",
-                {
-                    "step_id": step_id,
-                    "action": step.get("action"),
-                    "success": success,
-                    "error": result_raw.get("error"),
-                },
-            )
-
-            # Optional: evaluate goal achieved (e.g. run tests for "Fix failing test")
-            # For now we rely on limits; goal_achieved can be set by external evaluator
-            # goal_manager.set_goal_achieved(...)
-
-        return {
-            "task_id": task_id,
-            "goal": goal,
-            "completed_steps": len(state.completed_steps),
-            "tool_calls": goal_manager.get_counts_dict()["tool_calls"],
-            "stop_reason": goal_manager.get_stop_reason() or "action_selector_failed",
-            "counts": goal_manager.get_counts_dict(),
-        }
+        return result
     finally:
         finish_trace(trace_id)
+
+
+def _run_single_attempt(
+    goal: str,
+    root: str,
+    task_id: str,
+    trace_id: str,
+    goal_manager: GoalManager,
+    state: AgentState,
+) -> tuple[dict, AgentState]:
+    """Run one autonomous attempt until limits or action_selector returns None."""
+    while True:
+        should_stop, reason = goal_manager.should_stop()
+        if should_stop:
+            log_event(trace_id, "autonomous_stop", {"reason": reason, "counts": goal_manager.get_counts_dict()})
+            break
+
+        observation = observe(
+            goal=goal,
+            project_root=root,
+            completed_steps=state.completed_steps,
+            step_results=state.step_results,
+            context=state.context,
+        )
+
+        step = select_next_action(observation)
+        if step is None:
+            log_event(trace_id, "action_selector_failed", {"observation_goal": goal})
+            break
+
+        step_id = len(state.completed_steps) + 1
+        step["id"] = step.get("id") or step_id
+        state.context["current_step_id"] = step_id
+
+        goal_manager.record_tool_call()
+        result_raw = dispatch(step, state)
+
+        success = result_raw.get("success", False)
+        goal_manager.record_step(step.get("action", ""), success)
+
+        result = _raw_to_step_result(step, result_raw)
+        state.record(step, result)
+
+        log_event(
+            trace_id,
+            "autonomous_step",
+            {
+                "step_id": step_id,
+                "action": step.get("action"),
+                "success": success,
+                "error": result_raw.get("error"),
+            },
+        )
+
+    return {
+        "task_id": task_id,
+        "goal": goal,
+        "completed_steps": len(state.completed_steps),
+        "tool_calls": goal_manager.get_counts_dict()["tool_calls"],
+        "stop_reason": goal_manager.get_stop_reason() or "action_selector_failed",
+        "counts": goal_manager.get_counts_dict(),
+    }, state
+
+
+def _evaluate_and_record(
+    result: dict,
+    state: AgentState,
+    task_id: str,
+    trace_id: str,
+    attempt_num: int,
+    success_criteria: str | None,
+    project_root: str,
+    diagnosis: dict | None = None,
+    strategy: str | None = None,
+):
+    """Evaluate run and record to trajectory store."""
+    from agent.meta.evaluator import evaluate
+    from agent.meta.trajectory_store import record_attempt
+
+    evaluation = evaluate(result, state, success_criteria=success_criteria, use_model=False)
+    record_attempt(task_id, state, evaluation, diagnosis=diagnosis, strategy=strategy, project_root=project_root)
+    return evaluation
+
+
+def _critic_and_plan(goal: str, state: AgentState, evaluation, trace_id: str):
+    """Run critic and retry planner. Returns (diagnosis, retry_hints)."""
+    from agent.meta.critic import diagnose
+    from agent.meta.retry_planner import plan_retry
+
+    diagnosis = diagnose(state, evaluation)
+    retry_hints = plan_retry(goal, diagnosis)
+    return diagnosis, retry_hints
+
+
+def _finalize_trajectory(task_id: str, final_status: str, project_root: str) -> None:
+    """Finalize trajectory store."""
+    from agent.meta.trajectory_store import finalize
+
+    finalize(task_id, final_status, project_root=project_root)
+
+
+def _store_solution(task_id: str, goal: str, state: AgentState, project_root: str) -> None:
+    """Store successful solution to intelligence layer (solution_memory, task_embeddings, repo_learning, developer_model)."""
+    files_modified: list[str] = []
+    patch_summary = "successful edit"
+    for i, sr in enumerate(state.step_results or []):
+        if getattr(sr, "action", "") == "EDIT":
+            fm = getattr(sr, "files_modified", None)
+            if fm:
+                files_modified.extend(fm if isinstance(fm, list) else [fm])
+            if i < len(state.completed_steps or []):
+                step = state.completed_steps[i]
+                if isinstance(step, dict) and step.get("description"):
+                    patch_summary = step["description"][:200]
+                    break
+    files_modified = list(dict.fromkeys(files_modified))
+    solution = {
+        "task_id": task_id,
+        "goal": goal,
+        "files_modified": files_modified,
+        "patch_summary": patch_summary,
+        "success": True,
+    }
+    save_solution(
+        task_id=task_id,
+        goal=goal,
+        files_modified=files_modified,
+        patch_summary=patch_summary,
+        success=True,
+        project_root=project_root,
+    )
+    index_solution(task_id, goal, files_modified, patch_summary, project_root=project_root)
+    update_repo_from_solution(solution, project_root)
+    update_dev_from_solution(solution, project_root)
 
 
 def _raw_to_step_result(step: dict, raw: dict) -> StepResult:

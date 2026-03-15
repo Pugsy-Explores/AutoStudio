@@ -22,11 +22,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def test_run_controller_creates_trace_file(tmp_path):
     """run_controller creates a trace file in .agent_memory/traces/."""
-    with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
+    with patch("agent.orchestrator.deterministic_runner.get_plan") as mock_plan:
         mock_plan.return_value = {
             "steps": [{"id": 1, "action": "EXPLAIN", "description": "Done", "reason": "test"}],
         }
-        with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
+        with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
             mock_dispatch.return_value = {
                 "success": True,
                 "output": "StepExecutor in agent/execution/executor.py handles step execution.",
@@ -43,8 +43,8 @@ def test_run_controller_creates_trace_file(tmp_path):
 def test_trace_contains_plan(tmp_path):
     """Trace contains planner_decision event with plan."""
     plan_result = {"steps": [{"id": 1, "action": "EXPLAIN", "description": "Done"}]}
-    with patch("agent.orchestrator.agent_controller.get_plan", return_value=plan_result):
-        with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
+    with patch("agent.orchestrator.deterministic_runner.get_plan", return_value=plan_result):
+        with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
             mock_dispatch.return_value = {
                 "success": True,
                 "output": "StepExecutor in agent/execution/executor.py handles step execution.",
@@ -62,11 +62,11 @@ def test_trace_contains_plan(tmp_path):
 
 def test_trace_contains_tool_calls(tmp_path):
     """Trace step_executed events include tool (chosen_tool)."""
-    with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
+    with patch("agent.orchestrator.deterministic_runner.get_plan") as mock_plan:
         mock_plan.return_value = {
             "steps": [{"id": 1, "action": "SEARCH", "description": "find foo"}],
         }
-        with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
+        with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
             def capture_dispatch(step, state):
                 state.context["chosen_tool"] = "search_code"
                 return {"success": True, "output": {"results": [{"file": "foo.py", "snippet": "x"}]}}
@@ -157,7 +157,7 @@ def test_controller_trace_has_planner_stage(tmp_path):
     with patch("agent.orchestrator.plan_resolver.ENABLE_INSTRUCTION_ROUTER", False):
         with patch("planner.planner.plan") as mock_plan_fn:
             mock_plan_fn.return_value = plan_result
-            with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
+            with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
                 mock_dispatch.return_value = {
                     "success": True,
                     "output": "StepExecutor in agent/execution/executor.py handles step execution.",
@@ -174,9 +174,9 @@ def test_controller_trace_has_planner_stage(tmp_path):
 def test_trace_does_not_exceed_size(tmp_path):
     """Trace file stays under ~500 KB."""
     plan_result = {"steps": [{"id": 1, "action": "EXPLAIN", "description": "Done"}]}
-    with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
+    with patch("agent.orchestrator.deterministic_runner.get_plan") as mock_plan:
         mock_plan.return_value = plan_result
-        with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
+        with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
             mock_dispatch.return_value = {
                 "success": True,
                 "output": "StepExecutor in agent/execution/executor.py handles step execution.",
@@ -204,12 +204,12 @@ def test_trace_contains_errors_on_failure(tmp_path):
 def test_trace_contains_patch_results_on_edit(tmp_path):
     """Trace contains patch_result event when EDIT step applies patches."""
     (tmp_path / "foo.py").write_text("x = 1")
-    with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
+    with patch("agent.orchestrator.deterministic_runner.get_plan") as mock_plan:
         mock_plan.return_value = {
             "steps": [{"id": 1, "action": "EDIT", "description": "edit foo", "reason": "r1"}],
         }
-        with patch("agent.orchestrator.agent_controller._run_edit_flow") as mock_edit:
-            mock_edit.return_value = {
+        with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
+            mock_dispatch.return_value = {
                 "success": True,
                 "output": {
                     "files_modified": ["foo.py"],
@@ -230,11 +230,11 @@ def test_trace_contains_patch_results_on_edit(tmp_path):
 
 def test_trace_task_complete_has_summary(tmp_path):
     """Trace task_complete event includes errors and patches summary."""
-    with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
+    with patch("agent.orchestrator.deterministic_runner.get_plan") as mock_plan:
         mock_plan.return_value = {
             "steps": [{"id": 1, "action": "EXPLAIN", "description": "Done"}],
         }
-        with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
+        with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
             mock_dispatch.return_value = {
                 "success": True,
                 "output": "StepExecutor in agent/execution/executor.py handles step execution.",

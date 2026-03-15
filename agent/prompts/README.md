@@ -29,3 +29,5 @@ For prompts that require JSON-only output (e.g. query_rewrite_with_context):
 - `model_router.yaml` — `{task_description}`
 - `planner_system.yaml` — system prompt; includes MULTI-STEP EXAMPLES (Phase 5): bug fix, multi-file feature, refactoring few-shot examples.
 - `replanner_system.yaml` — system prompt, not formatted
+- `critic_system.yaml` — Phase 8: critic system prompt; given goal + trace + results, output JSON `{failure_type, affected_step, suggestion}`
+- `retry_planner_system.yaml` — Phase 8: retry planner system prompt; given diagnosis + goal, output JSON `{strategy, rewrite_query, plan_override, retrieve_files}`

@@ -106,3 +106,12 @@ class GoalManager:
     def get_stop_reason(self) -> str | None:
         """Return limit_hit or None."""
         return self._state.limit_hit
+
+    def reset_for_retry(self) -> None:
+        """Reset counters for a new attempt. Preserves limits."""
+        self._state.steps_completed = 0
+        self._state.tool_calls = 0
+        self._state.edits_count = 0
+        self._state.start_time = time.perf_counter()
+        self._state.limit_hit = None
+        self._state.goal_achieved = False

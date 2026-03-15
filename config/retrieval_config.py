@@ -29,3 +29,9 @@ FALLBACK_TOP_N = int(os.getenv("FALLBACK_TOP_N", "3"))
 
 MAX_SYMBOLS = int(os.getenv("MAX_SYMBOLS", "15"))
 MAX_RETRIEVED_SYMBOLS = int(os.getenv("MAX_RETRIEVED_SYMBOLS", "15"))
+
+# Phase 10.5 — Graph-Guided Localization
+MAX_GRAPH_DEPTH = int(os.getenv("MAX_GRAPH_DEPTH", "3"))
+MAX_DEPENDENCY_NODES = int(os.getenv("MAX_DEPENDENCY_NODES", "100"))
+MAX_EXECUTION_PATHS = int(os.getenv("MAX_EXECUTION_PATHS", "10"))
+ENABLE_LOCALIZATION_ENGINE = _bool_env("ENABLE_LOCALIZATION_ENGINE", "1")

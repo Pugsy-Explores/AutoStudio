@@ -206,56 +206,16 @@ def _search_fn(query: str, state: AgentState):
 
 
 def _edit_fn(step: dict, state: AgentState) -> dict:
-    """Dispatch-style: { success, output, error }. When ENABLE_DIFF_PLANNER: plan -> patch_executor -> update_index."""
+    """Dispatch-style: { success, output, error }. Pipeline: plan_diff -> resolve_conflicts -> to_structured_patches -> run_with_repair."""
     try:
-        try:
-            from editing.diff_planner import ENABLE_DIFF_PLANNER, plan_diff
-            from editing.patch_executor import execute_patch
-            from editing.patch_generator import to_structured_patches
-            from repo_index.indexer import update_index_for_file
-
-            if ENABLE_DIFF_PLANNER:
-                instruction = step.get("description") or ""
-                plan = plan_diff(instruction, state.context)
-                changes = plan.get("changes", [])
-                logger.info("[edit_planner] patches=%d", len(changes))
-
-                if changes:
-                    patch_plan = to_structured_patches(plan, instruction, state.context)
-                    project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
-                    result = execute_patch(patch_plan, project_root)
-
-                    if result.get("success"):
-                        for file_path in result.get("files_modified", []):
-                            update_index_for_file(file_path, project_root)
-                            try:
-                                from repo_graph.repo_map_updater import update_repo_map_for_file
-                                update_repo_map_for_file(file_path, project_root)
-                            except Exception:
-                                pass
-                        return {
-                            "success": True,
-                            "output": {
-                                "files_modified": result.get("files_modified", []),
-                                "patches_applied": result.get("patches_applied", 0),
-                                "planned_changes": changes,
-                            },
-                        }
-                    return {
-                        "success": False,
-                        "output": {
-                            "error": result.get("error", "patch_failed"),
-                            "reason": result.get("reason", ""),
-                            "file": result.get("file", ""),
-                        },
-                        "error": result.get("reason", "") or result.get("error", "patch_failed"),
-                    }
-
-                out = {"planned_changes": changes, **plan}
-                return {"success": True, "output": out}
-        except ImportError:
-            pass
-
+        from config.editing_config import MAX_FILES_EDITED, MAX_PATCH_SIZE
+        from editing.conflict_resolver import resolve_conflicts
+        from editing.diff_planner import plan_diff
+        from editing.patch_generator import to_structured_patches
+        from editing.test_repair_loop import run_with_repair
+        from repo_graph.change_detector import RISK_HIGH, detect_change_impact
+        from repo_index.indexer import update_index_for_file
+    except ImportError:
         path = state.context.get("edit_path")
         if path:
             print("  [read_file] path:", path)
@@ -266,15 +226,92 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
             listing = list_files(".")
             out = {"message": "No path in context; listed cwd", "files": listing}
         return {"success": True, "output": out}
-    except Exception as e:
-        return {"success": False, "output": {}, "error": str(e)}
+
+    instruction = step.get("description") or ""
+    context = state.context
+    project_root = context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    context["instruction"] = instruction
+
+    diff_plan = plan_diff(instruction, context)
+    changes = diff_plan.get("changes", [])
+    if not changes:
+        return {"success": True, "output": {"planned_changes": changes}}
+
+    # Safety limits
+    if len(changes) > MAX_FILES_EDITED:
+        return {
+            "success": False,
+            "output": {"error": "max_files_exceeded"},
+            "error": f"max files exceeded ({len(changes)} > {MAX_FILES_EDITED})",
+        }
+    for c in changes:
+        patch_text = c.get("patch", "")
+        if isinstance(patch_text, str) and patch_text.count("\n") >= MAX_PATCH_SIZE:
+            return {
+                "success": False,
+                "output": {"error": "max_patch_size_exceeded"},
+                "error": "max patch size exceeded",
+            }
+
+    # Change detection (before apply) for risk assessment
+    edited_symbols = [(c.get("file", ""), c.get("symbol", "")) for c in changes]
+    impact = detect_change_impact(edited_symbols, project_root)
+    trace_id = context.get("trace_id")
+    if impact.get("risk_level") == RISK_HIGH and trace_id:
+        from agent.observability.trace_logger import log_event
+        log_event(trace_id, "high_risk_edit", {"impact": impact})
+
+    # Conflict resolution
+    resolve_result = resolve_conflicts(diff_plan)
+    if resolve_result.get("valid"):
+        groups = [changes]
+    else:
+        groups = resolve_result.get("sequential_groups", [changes])
+
+    all_modified: list = []
+    all_patches = 0
+    for group in groups:
+        if not group:
+            continue
+        patch_plan = to_structured_patches({"changes": group}, instruction, context)
+        repair_result = run_with_repair(patch_plan, project_root, context, max_attempts=3)
+        if not repair_result.get("success"):
+            return {
+                "success": False,
+                "output": {
+                    "error": repair_result.get("error"),
+                    "reason": repair_result.get("reason"),
+                },
+                "error": repair_result.get("reason", repair_result.get("error")),
+            }
+        all_modified.extend(repair_result.get("files_modified", []))
+        all_patches += repair_result.get("patches_applied", 0)
+
+    for file_path in all_modified:
+        update_index_for_file(file_path, project_root)
+        try:
+            from repo_graph.repo_map_updater import update_repo_map_for_file
+            update_repo_map_for_file(file_path, project_root)
+        except Exception:
+            pass
+
+    return {
+        "success": True,
+        "output": {
+            "files_modified": list(dict.fromkeys(all_modified)),
+            "patches_applied": all_patches,
+            "planned_changes": changes,
+        },
+    }
 
 
 def _infra_fn(step: dict, state: AgentState) -> dict:
-    """Dispatch-style: { success, output, error }; output has returncode."""
+    """Dispatch-style: { success, output, error }; output has returncode.
+    Uses step.description or step.command as shell command; defaults to 'true' if empty."""
     try:
-        print("  [run_command] true")
-        cmd_result = run_command("true")
+        cmd = (step.get("description") or step.get("command") or "").strip() or "true"
+        print(f"  [run_command] {cmd[:80]}{'...' if len(cmd) > 80 else ''}")
+        cmd_result = run_command(cmd)
         print("  [list_files] .")
         out = {"list_files": list_files("."), "run_command": cmd_result}
         out["returncode"] = cmd_result.get("returncode", -1)

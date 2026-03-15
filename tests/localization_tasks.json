@@ -1,0 +1,62 @@
+[
+  {
+    "id": "loc_001",
+    "query": "Find retry logic bug",
+    "correct_file": "agent/execution/policy_engine.py",
+    "correct_symbol": "execute_with_policy"
+  },
+  {
+    "id": "loc_002",
+    "query": "Locate patch validator",
+    "correct_file": "editing/patch_validator.py",
+    "correct_symbol": "validate_patch"
+  },
+  {
+    "id": "loc_003",
+    "query": "Find symbol graph builder",
+    "correct_file": "repo_graph/graph_builder.py",
+    "correct_symbol": "build_graph"
+  },
+  {
+    "id": "loc_004",
+    "query": "Find configuration loader",
+    "correct_file": "config/retrieval_config.py",
+    "correct_symbol": null
+  },
+  {
+    "id": "loc_005",
+    "query": "Locate dependency extractor",
+    "correct_file": "repo_index/dependency_extractor.py",
+    "correct_symbol": "extract_edges"
+  },
+  {
+    "id": "loc_006",
+    "query": "Find context ranker",
+    "correct_file": "agent/retrieval/context_ranker.py",
+    "correct_symbol": "rank_context"
+  },
+  {
+    "id": "loc_007",
+    "query": "Locate dispatcher",
+    "correct_file": "agent/execution/step_dispatcher.py",
+    "correct_symbol": "dispatch"
+  },
+  {
+    "id": "loc_008",
+    "query": "Find planner",
+    "correct_file": "planner/planner.py",
+    "correct_symbol": "plan"
+  },
+  {
+    "id": "loc_009",
+    "query": "Locate anchor detector",
+    "correct_file": "agent/retrieval/anchor_detector.py",
+    "correct_symbol": "detect_anchors"
+  },
+  {
+    "id": "loc_010",
+    "query": "Find context pruner",
+    "correct_file": "agent/retrieval/context_pruner.py",
+    "correct_symbol": "prune_context"
+  }
+]

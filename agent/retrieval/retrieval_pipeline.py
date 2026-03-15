@@ -15,6 +15,7 @@ from agent.tools import find_referencing_symbols, read_file, read_symbol_body
 from config.retrieval_config import (
     DEFAULT_MAX_CHARS,
     ENABLE_CONTEXT_RANKING,
+    ENABLE_LOCALIZATION_ENGINE,
     MAX_CONTEXT_SNIPPETS,
     MAX_SEARCH_RESULTS,
 )
@@ -86,6 +87,17 @@ def run_retrieval_pipeline(
         return {"results": results, "query": query or "", "anchors": 0}
 
     project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+
+    localization_candidates: list[dict] = []
+    if ENABLE_LOCALIZATION_ENGINE and anchors:
+        from agent.retrieval.localization.localization_engine import localize_issue
+
+        trace_id = state.context.get("trace_id") or ""
+        localization_candidates = localize_issue(
+            query or "", anchors, project_root, trace_id=trace_id
+        )
+        state.context["localization_candidates"] = localization_candidates
+
     symbol_snippets = expand_from_anchors(anchors, query or "", project_root)
 
     expanded = expand_search_results(anchors)
@@ -124,6 +136,7 @@ def run_retrieval_pipeline(
     candidates = _build_candidates_from_context(built)
     if symbol_snippets:
         candidates = symbol_snippets + candidates
+    candidates = localization_candidates + candidates
     state.context["context_candidates"] = candidates
     if ENABLE_CONTEXT_RANKING and candidates:
         rank_query = query or state.instruction or ""
@@ -131,6 +144,18 @@ def run_retrieval_pipeline(
         final_context = prune_context(
             ranked, max_snippets=MAX_CONTEXT_SNIPPETS, max_chars=DEFAULT_MAX_CHARS
         )
+        # Phase 10: optional context compression in repo-scale mode
+        if state.context.get("repo_summary"):
+            from agent.repo_intelligence.context_compressor import compress_context
+            from config.repo_intelligence_config import MAX_CONTEXT_TOKENS
+
+            final_context, compression_ratio = compress_context(
+                final_context,
+                repo_summary=state.context.get("repo_summary"),
+                task_goal=state.instruction or "",
+                max_tokens=MAX_CONTEXT_TOKENS,
+            )
+            state.context["context_compression_ratio"] = compression_ratio
         state.context["ranked_context"] = final_context
         state.context["ranking_scores"] = []
     else:

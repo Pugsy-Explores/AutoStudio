@@ -18,7 +18,7 @@ User Query (instruction)
   → state.next_step() [agent/memory/state.py]
   → step = { id, action, description, reason }
   → action in { EDIT, SEARCH, EXPLAIN, INFRA }
-  → if action == "EDIT": _run_edit_flow(step, state)
+  → result = dispatch(step, state)   # ALL steps via dispatch (including EDIT)
   → else: dispatch(step, state) [agent/execution/step_dispatcher.py]
        → ToolGraph.get_allowed_tools() + get_preferred_tool()
        → resolve_tool() [agent/execution/tool_graph_router.py]
@@ -86,7 +86,7 @@ These live in `router_eval/` and are used by the evaluation harness. When `ROUTE
 
 | Category | Source | Consumed By |
 |----------|--------|-------------|
-| **EDIT** | `planner/planner.py`, `planner_utils.py` | `agent_controller._run_edit_flow`, `step_dispatcher` |
+| **EDIT** | `planner/planner.py`, `planner_utils.py` | `step_dispatcher._edit_fn` (via dispatch) |
 | **SEARCH** | Same | `step_dispatcher` → PolicyEngine → `_search_fn` |
 | **EXPLAIN** | Same | `step_dispatcher` → `get_model_for_task("EXPLAIN")` → LLM call |
 | **INFRA** | Same | `step_dispatcher` → PolicyEngine → `_infra_fn` |

@@ -1,17 +1,44 @@
 [
   {
     "id": "auto_001",
-    "goal": "Fix failing test",
+    "task_type": "bug_fixing",
+    "goal": "Fix failing test in tests/conftest.py if one exists",
     "success_criteria": "tests_pass"
   },
   {
     "id": "auto_002",
-    "goal": "Add retry logic to SEARCH step",
+    "task_type": "bug_fixing",
+    "goal": "Fix incorrect variable name or typo in agent/execution/step_dispatcher.py",
     "success_criteria": "tests_pass"
   },
   {
     "id": "auto_003",
-    "goal": "Implement missing feature stub",
+    "task_type": "feature_addition",
+    "goal": "Add retry logic to SEARCH step in policy engine",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "auto_004",
+    "task_type": "feature_addition",
+    "goal": "Implement missing feature stub in agent/memory",
+    "success_criteria": "no_syntax_errors"
+  },
+  {
+    "id": "auto_005",
+    "task_type": "refactoring",
+    "goal": "Extract repeated validation logic into a helper function in agent/execution",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "auto_006",
+    "task_type": "test_repair",
+    "goal": "Fix failing test in tests/test_planner_eval.py if any test is broken",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "auto_007",
+    "task_type": "configuration_updates",
+    "goal": "Add evaluation task params to agent/models/models_config.json if missing",
     "success_criteria": "no_syntax_errors"
   }
 ]

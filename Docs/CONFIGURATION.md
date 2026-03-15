@@ -11,6 +11,7 @@ All configuration values are centralized under the top-level `config/` directory
 | `config/logging_config.py` | Log level and format |
 | `config/observability_config.py` | Trace and observability settings |
 | `config/repo_graph_config.py` | Repository symbol graph paths |
+| `config/repo_intelligence_config.py` | Phase 10: repo scan, architecture map, impact analyzer, context compressor limits |
 | `config/retrieval_config.py` | Retrieval pipeline budgets and flags |
 | `config/router_config.py` | Instruction router settings |
 | `config/tool_graph_config.py` | Tool graph enable/disable |
@@ -25,6 +26,11 @@ Used by `agent_controller`. `agent_loop` uses its own constants in `agent/orches
 |----------|---------|--------------|-------------|
 | MAX_TASK_RUNTIME_SECONDS | 900 | MAX_TASK_RUNTIME_SECONDS | Max seconds before task times out |
 | MAX_REPLAN_ATTEMPTS | 5 | MAX_REPLAN_ATTEMPTS | Max replan attempts on step failure |
+| MAX_CONTEXT_CHARS | 32000 | MAX_CONTEXT_CHARS | Hard cap on context before LLM reasoning call |
+| MAX_STEP_TIMEOUT_SECONDS | 15 | MAX_STEP_TIMEOUT_SECONDS | Per-step timeout (Phase 7) |
+| MAX_FILES_PER_PR | 10 | MAX_FILES_PER_PR | Phase 12: max files per PR (safety) |
+| MAX_PATCH_LINES | 500 | MAX_PATCH_LINES | Phase 12: max patch lines (safety) |
+| MAX_CI_RUNTIME_SECONDS | 600 | MAX_CI_RUNTIME_SECONDS | Phase 12: CI timeout (pytest, ruff) in seconds |
 
 ### agent_loop constants (agent/orchestrator/agent_loop.py)
 
@@ -64,6 +70,15 @@ Phase 4 reliability limits; not configurable via env:
 
 `get_trace_dir(project_root)` returns the full path to `.agent_memory/traces/`.
 
+**Phase 11 intelligence layer** uses additional subdirs under `.agent_memory/`:
+- `solutions/` — successful solution JSON files (goal, files_modified, patch_summary)
+- `intelligence_index/` — ChromaDB vector index for solution pattern search
+- `developer_profile.json` — developer preferences learned from accepted solutions
+- `repo_knowledge.json` — frequent_bug_areas, common_refactor_patterns, architecture_constraints
+
+**Phase 12 workflow layer** uses:
+- `last_workflow.json` — last workflow result (task, pr, ci, review, patches) for `autostudio pr` and `autostudio review` commands
+
 ### repo_graph_config.py
 
 | Variable | Default | Env Override | Description |
@@ -75,6 +90,15 @@ Phase 4 reliability limits; not configurable via env:
 | MAX_EXPANSION_DEPTH | 2 | GRAPH_EXPANSION_DEPTH | Graph expansion depth |
 
 `get_repo_map_path(project_root)` returns the path to `repo_map.json`.
+
+### repo_intelligence_config.py (Phase 10)
+
+| Variable | Default | Env Override | Description |
+|----------|---------|--------------|-------------|
+| MAX_REPO_SCAN_FILES | 200 | MAX_REPO_SCAN_FILES | Cap on files scanned for repo summary |
+| MAX_ARCHITECTURE_NODES | 500 | MAX_ARCHITECTURE_NODES | Cap on modules in architecture map |
+| MAX_CONTEXT_TOKENS | 8192 | MAX_CONTEXT_TOKENS | Context budget for compressor (chars ≈ 4×tokens) |
+| MAX_IMPACT_DEPTH | 3 | MAX_IMPACT_DEPTH | BFS depth for impact analyzer |
 
 ### retrieval_config.py
 
@@ -96,6 +120,10 @@ Phase 4 reliability limits; not configurable via env:
 | FALLBACK_TOP_N | 3 | FALLBACK_TOP_N | Fallback when no anchors |
 | MAX_SYMBOLS | 15 | MAX_SYMBOLS | Max symbols in expansion |
 | MAX_RETRIEVED_SYMBOLS | 15 | MAX_RETRIEVED_SYMBOLS | Max symbols from graph |
+| MAX_GRAPH_DEPTH | 3 | MAX_GRAPH_DEPTH | Phase 10.5: dependency traversal depth |
+| MAX_DEPENDENCY_NODES | 100 | MAX_DEPENDENCY_NODES | Phase 10.5: cap on graph nodes |
+| MAX_EXECUTION_PATHS | 10 | MAX_EXECUTION_PATHS | Phase 10.5: cap on execution path chains |
+| ENABLE_LOCALIZATION_ENGINE | True | ENABLE_LOCALIZATION_ENGINE | Phase 10.5: graph-guided localization (1/0 or true/false) |
 
 ### router_config.py
 

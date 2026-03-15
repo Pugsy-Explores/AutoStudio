@@ -75,3 +75,56 @@
 - avg_patch_size
 
 Report output: `reports/eval_report.json`
+
+**Phase 8 reflection metrics** (run_autonomous_eval.py, dataset: tests/autonomous_tasks.json):
+- attempts_per_goal — mean attempts to succeed
+- retry_success_rate — % of FAILURE→SUCCESS across retries
+- critic_accuracy — % of diagnoses that led to a successful next attempt
+- trajectory_reuse — % of runs where a past trajectory was consulted
+- autonomous_success_rate — % of tasks that achieved SUCCESS
+
+Report output: `reports/autonomous_eval_report.json`
+
+**Phase 9 multi-agent metrics** (run_multi_agent_eval.py, dataset: tests/multi_agent_tasks.json):
+- agent_delegations — mean agents_used per task
+- retry_depth — mean patch_attempts before success/fail
+- critic_accuracy — % of critic runs that led to success on next attempt
+- localization_accuracy — % of tasks with non-empty candidate_files
+- patch_success_rate — % of edit steps that succeeded
+- goal_success_rate — % of tasks where goal_success=True
+
+Report output: `reports/multi_agent_eval_report.json`; `--merge` merges into `reports/eval_report.json`
+
+**Phase 10 repository metrics** (run_repository_eval.py, dataset: tests/repository_tasks.json):
+- localization_accuracy — % of tasks with non-empty candidate_files
+- impact_prediction_accuracy — % of edit tasks where impact_result had affected_files
+- context_compression_ratio — chars_in/chars_out when context_compressor activates
+- long_horizon_success_rate — % of repository tasks completed successfully
+
+Report output: `reports/repository_eval_report.json`; `--merge` merges into `reports/eval_report.json`
+
+**Phase 10.5 graph-guided localization metrics** (run_localization_eval.py, dataset: tests/localization_tasks.json):
+- file_localization_accuracy — % correct file in top-k (target ≥ 85%)
+- function_localization_accuracy — % correct symbol in top-k (target ≥ 75%)
+- top_k_recall — hits at k=1, 3, 5
+- average_graph_traversal_depth — mean dependency traversal count
+- average_candidate_files — mean files returned by localization
+- retry_reduction — target ≥ 30% reduction vs baseline (requires baseline comparison)
+
+Report output: `reports/localization_report.json`
+
+**Phase 11 intelligence metrics** (run_autonomous_eval.py, run_multi_agent_eval.py with intelligence layer):
+- solution_reuse_rate — % of tasks where similar_solutions was non-empty and influenced the plan
+- experience_improvement — delta in task_success_rate when experience_hints present vs absent
+- repeat_failure_rate — % of tasks that failed after a similar past task had succeeded
+- developer_acceptance — % of solutions marked developer_accepted=true (when feedback collected)
+
+**Phase 12 workflow metrics** (run_workflow_eval.py, dataset: tests/workflow_tasks.json):
+- pr_success_rate — % of tasks with valid PR generated (title + files/description)
+- ci_pass_rate — % of tasks where CI (pytest, ruff) passed
+- developer_acceptance_rate — % of solutions accepted by developer (when feedback collected)
+- avg_retries_per_task — mean retries before success or fail
+- pr_merge_latency — mean time from issue to PR ready (seconds)
+- issue_to_pr_success — % of tasks where goal_success and PR generated
+
+Report output: `reports/workflow_eval_report.json`

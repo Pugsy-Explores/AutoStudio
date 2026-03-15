@@ -20,7 +20,11 @@
     }
   },
   "task_models": {
+    "experience_retrieval": "SMALL",
     "action_selection": "SMALL",
+    "evaluation": "SMALL",
+    "critique": "SMALL",
+    "retry_planning": "REASONING",
     "query rewriting": "REASONING",
     "validation": "REASONING",
     "EXPLAIN": "REASONING",
@@ -28,7 +32,13 @@
     "routing": "REASONING",
     "planner": "REASONING",
     "replanner": "REASONING",
-    "context_ranking": "REASONING"
+    "context_ranking": "REASONING",
+    "localization": "SMALL",
+    "supervisor_routing": "SMALL",
+    "issue_parsing": "SMALL",
+    "pr_generation": "REASONING",
+    "code_review": "SMALL",
+    "code_review_summary": "REASONING"
   },
   "task_params": {
     "query rewriting": {
@@ -72,6 +82,56 @@
       "temperature": 0.0,
       "max_tokens": 512,
       "request_timeout_seconds": 60
+    },
+    "evaluation": {
+      "temperature": 0.0,
+      "max_tokens": 512,
+      "request_timeout_seconds": 60
+    },
+    "critique": {
+      "temperature": 0.0,
+      "max_tokens": 1024,
+      "request_timeout_seconds": 120
+    },
+    "retry_planning": {
+      "temperature": 0.0,
+      "max_tokens": 2048,
+      "request_timeout_seconds": 120
+    },
+    "localization": {
+      "temperature": 0.0,
+      "max_tokens": 512,
+      "request_timeout_seconds": 60
+    },
+    "supervisor_routing": {
+      "temperature": 0.0,
+      "max_tokens": 256,
+      "request_timeout_seconds": 30
+    },
+    "experience_retrieval": {
+      "temperature": 0.0,
+      "max_tokens": 512,
+      "request_timeout_seconds": 60
+    },
+    "issue_parsing": {
+      "temperature": 0.0,
+      "max_tokens": 512,
+      "request_timeout_seconds": 60
+    },
+    "pr_generation": {
+      "temperature": 0.0,
+      "max_tokens": 2048,
+      "request_timeout_seconds": 120
+    },
+    "code_review": {
+      "temperature": 0.0,
+      "max_tokens": 512,
+      "request_timeout_seconds": 60
+    },
+    "code_review_summary": {
+      "temperature": 0.0,
+      "max_tokens": 1024,
+      "request_timeout_seconds": 120
     }
   }
 }

@@ -238,7 +238,8 @@ flowchart TB
   - `_is_valid_search_result(results)`: first result has non-empty `file` and non-empty `snippet`.
 
 - **Retrieval pipeline (after search success)**  
-  - Dispatcher calls `run_retrieval_pipeline(search_results, state, query)` (no inline logic). Pipeline: `anchor_detector.detect_anchors` (filter to symbol/class/def matches; fallback top N) → `symbol_expander.expand_from_anchors` (when graph exists; anchor → expand depth=2 → fetch bodies → rank → prune to 6; max 15 symbols) → `expand_search_results` (capped at MAX_SYMBOL_EXPANSION) → read_symbol_body/read_file → find_referencing_symbols → `build_context_from_symbols` → (when `ENABLE_CONTEXT_RANKING=1`) `rank_context` (max 20 candidates) → `prune_context` (max 6 snippets, 8000 chars) → `state.context["ranked_context"]`, `state.context["context_snippets"]` (list of `{file, symbol, snippet}`).  
+  - Dispatcher calls `run_retrieval_pipeline(search_results, state, query)` (no inline logic). Pipeline: `anchor_detector.detect_anchors` (filter to symbol/class/def matches; fallback top N) → **localization_engine.localize_issue** (Phase 10.5; when `ENABLE_LOCALIZATION_ENGINE=1`: dependency traversal → execution paths → symbol ranking → prepend to candidates) → `symbol_expander.expand_from_anchors` (when graph exists; anchor → expand depth=2 → fetch bodies → rank → prune to 6; max 15 symbols) → `expand_search_results` (capped at MAX_SYMBOL_EXPANSION) → read_symbol_body/read_file → find_referencing_symbols → `build_context_from_symbols` → (when `ENABLE_CONTEXT_RANKING=1`) `rank_context` (max 20 candidates) → `prune_context` (max 6 snippets, 8000 chars) → `state.context["ranked_context"]`, `state.context["context_snippets"]` (list of `{file, symbol, snippet}`).  
+  - **Localization (Phase 10.5):** `agent/retrieval/localization/` — dependency_traversal (BFS over symbol graph), execution_path_analyzer (forward/backward call chains), symbol_ranker (4-factor scoring), localization_engine (orchestrator). Prepends ranked candidates to context pool. Config: `MAX_GRAPH_DEPTH`, `MAX_DEPENDENCY_NODES`, `MAX_EXECUTION_PATHS`.  
   - **Symbol expander:** Uses repository symbol graph; `expand_from_anchors(anchors, query, project_root)` merges graph-expanded snippets with expansion results.  
   - Ranker: **batch LLM**; hybrid score = 0.6×LLM + 0.2×symbol_match + 0.1×filename_match + 0.1×reference_score − **same_file_penalty** (diversity).  
   - Pruner: max 6 snippets, 8000 chars; deduplicate by (file, symbol).
@@ -280,7 +281,7 @@ flowchart TB
                                     └───────────────────────────────┘
 ```
 
-- **Diff planner (ENABLE_DIFF_PLANNER=1):** `plan_diff` → `conflict_resolver` → `patch_generator.to_structured_patches` → `patch_executor.execute_patch` (ast_patcher + patch_validator) → `run_with_repair` (test repair loop). Validation: compile + AST reparse before write; rollback on invalid syntax, >200 lines, >5 files, or apply error. Max 5 files, 200 lines per patch.
+- **Diff planner (EDIT via dispatch):** `_edit_fn` runs full pipeline: `plan_diff` → `conflict_resolver` → `patch_generator.to_structured_patches` → `run_with_repair` (execute_patch + test repair loop). Validation: compile + AST reparse before write; rollback on invalid syntax, >200 lines, >5 files, or apply error. Max 5 files, 200 lines per patch. All EDIT execution goes through `dispatch(step, state)`.
 - **Mutation**: `symbol_retry(step)` → currently returns `[step]` (single variant). Placeholder for future symbol/path variants.
 - **Retry condition**: `result.error` or `result.success is False`.
 
@@ -294,7 +295,7 @@ flowchart TB
         I1["Policy: max_attempts 2, retry_on non_zero_exit, mutation retry_same"]
         I1 --> I2["retry_same step returns step"]
         I2 --> I3["For attempt: _infra_fn with step and state"]
-        I3 --> I4["run_command true, list_files, returncode in output"]
+        I3 --> I4["run_command step.description or 'true', list_files, returncode in output"]
         I4 --> I5{"returncode equals 0?"}
         I5 -->|yes| I6["Return success"]
         I5 -->|no| I7["Retry same step or exhausted"]
@@ -318,6 +319,7 @@ flowchart TB
                 └───────────────────────────────┘
 ```
 
+- **Command**: Uses `step.description` or `step.command` as shell command (Phase 9); defaults to `"true"` if empty.
 - **Mutation**: `retry_same(step)` → same step retried.
 - **Retry condition**: `output.returncode != 0`.
 
@@ -516,8 +518,11 @@ flowchart LR
 - **Retrieval cache**: `agent/retrieval/retrieval_cache.py` — LRU cache for search results.
 - **Diff planner**: `editing/diff_planner.py` — plan_diff.
 - **Patch pipeline**: `editing/patch_generator.py` — to_structured_patches; `editing/ast_patcher.py` — apply_patch; `editing/patch_validator.py` — validate_patch; `editing/patch_executor.py` — execute_patch (rollback on failure).
-- **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (full pipeline); get_plan from plan_resolver (instruction router + planner).
-- **Autonomous mode (Phase 7)**: `agent/autonomous/` — run_autonomous(goal, project_root); goal_manager, state_observer, action_selector, agent_loop; reuses dispatcher, retrieval, editing pipeline; limits: max_steps, max_tool_calls, max_runtime, max_edits.
+- **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (mode routing: deterministic/autonomous/multi_agent); delegates deterministic loop to run_deterministic.
+- **Deterministic runner**: `agent/orchestrator/deterministic_runner.py` — run_deterministic (plan → dispatch loop); single source of truth for Mode 1.
+- **Autonomous mode (Phase 7/8)**: `agent/autonomous/` — run_autonomous(goal, project_root, max_retries=3); goal_manager, state_observer, action_selector, agent_loop; when max_retries>1, meta loop (evaluate→critic→retry_planner); reuses dispatcher, retrieval, editing pipeline; limits: max_steps, max_tool_calls, max_runtime, max_edits.
+- **Multi-agent orchestration (Phase 9)**: `agent/roles/` — run_multi_agent(goal, project_root, success_criteria); supervisor coordinates planner → localization → edit → test → critic (on failure); AgentWorkspace; all agents use dispatch; limits: max_agent_steps=30, max_patch_attempts=3, max_runtime=120s, max_file_edits=10; trace events: agent_started, agent_completed, agent_failed, handoff.
+- **Meta layer (Phase 8)**: `agent/meta/` — evaluator (SUCCESS/FAILURE/PARTIAL), critic (diagnose failure), retry_planner (rewrite_query, expand_scope, new_plan, etc.), trajectory_store (.agent_memory/trajectories/).
 - **Instruction router**: `agent/routing/instruction_router.py` — route_instruction (when ENABLE_INSTRUCTION_ROUTER=1).
 - **Router registry**: `agent/routing/router_registry.py` — get_router, get_router_raw (ROUTER_TYPE integration).
 
@@ -539,3 +544,36 @@ flowchart LR
 - `agent/retrieval/vector_retriever.py`, `agent/retrieval/retrieval_cache.py`
 
 **Files:** `repo_index/`, `repo_graph/`, `agent/retrieval/`, `editing/`
+
+---
+
+## Phase 9 Multi-Agent Flow
+
+```mermaid
+flowchart TD
+    goal[Goal] --> supervisor[supervisor_agent]
+    supervisor --> planner[planner_agent]
+    planner --> localization[localization_agent]
+    localization --> edit[edit_agent]
+    edit --> test[test_agent]
+    test -->|FAIL| critic[critic_agent]
+    critic -->|retry_instruction| edit
+    test -->|PASS| result[Final Patch]
+
+    subgraph infrastructure [Shared Infrastructure]
+        dispatcher[step_dispatcher.dispatch]
+        policy[policy_engine]
+        retrieval[retrieval_pipeline]
+        editing[editing_pipeline]
+        trace[trace_logger]
+    end
+
+    edit --> dispatcher
+    localization --> dispatcher
+    test --> dispatcher
+```
+
+- **Entry:** `run_multi_agent(goal, project_root, success_criteria)` in `agent/roles/supervisor_agent.py`.
+- **Agents:** planner (goal→plan via planner.plan), localization (SEARCH via dispatch), edit (EDIT via dispatch), test (INFRA via dispatch; step.description = command), critic (agent.meta.critic.diagnose).
+- **State:** AgentWorkspace wraps AgentState; carries goal, plan, candidate_files, patches, test_results, retry_instruction.
+- **Trace events:** agent_started, agent_completed, agent_failed, handoff.

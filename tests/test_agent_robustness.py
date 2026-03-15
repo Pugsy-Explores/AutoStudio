@@ -208,42 +208,33 @@ def test_agent_replans_on_edit_failure(tmp_path):
         remaining = [s for s in steps if isinstance(s, dict) and s.get("id") not in completed_ids]
         return {"steps": remaining}
 
-    with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
-        mock_plan.return_value = {
-            "steps": [
-                {"id": 1, "action": "SEARCH", "description": "find foo", "reason": "r1"},
-                {"id": 2, "action": "EDIT", "description": "modify foo", "reason": "r2"},
-            ],
-        }
-        with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
-            call_count = 0
+    with patch("repo_graph.repo_map_builder.build_repo_map", lambda *a, **k: None):
+        with patch("agent.memory.task_index.search_similar_tasks", lambda *a, **k: []):
+            with patch("agent.orchestrator.deterministic_runner.get_plan") as mock_plan:
+                mock_plan.return_value = {
+                    "steps": [
+                        {"id": 1, "action": "SEARCH", "description": "find foo", "reason": "r1"},
+                        {"id": 2, "action": "EDIT", "description": "modify foo", "reason": "r2"},
+                    ],
+                }
+                with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
+                    call_count = 0
 
-            def mock_dispatch_fn(step, state):
-                nonlocal call_count
-                action = (step.get("action") or "").upper()
-                if action == "SEARCH":
-                    return {"success": True, "output": {"results": [{"file": "a.py", "snippet": "def foo"}]}}
-                if action == "EDIT":
-                    call_count += 1
-                    if call_count == 1:
-                        return {"success": False, "error": "patch_failed", "reason": "validation failed"}
-                    return {"success": True, "output": {"files_modified": [], "patches_applied": 0}}
-                return {"success": True, "output": {}}
+                    def mock_dispatch_fn(step, state):
+                        nonlocal call_count
+                        action = (step.get("action") or "").upper()
+                        if action == "SEARCH":
+                            return {"success": True, "output": {"results": [{"file": "a.py", "snippet": "def foo"}]}}
+                        if action == "EDIT":
+                            call_count += 1
+                            if call_count == 1:
+                                return {"success": False, "error": "patch_failed", "reason": "validation failed"}
+                            return {"success": True, "output": {"files_modified": [], "patches_applied": 0}}
+                        return {"success": True, "output": {}}
 
-            mock_dispatch.side_effect = mock_dispatch_fn
-            with patch("agent.orchestrator.agent_controller._run_edit_flow") as mock_edit:
-                call_edit = 0
-
-                def mock_edit_fn(step, state):
-                    nonlocal call_edit
-                    call_edit += 1
-                    if call_edit == 1:
-                        return {"success": False, "error": "patch_failed", "reason": "validation failed"}
-                    return {"success": True, "output": {"files_modified": [], "patches_applied": 0}}
-
-                mock_edit.side_effect = mock_edit_fn
-                with patch("agent.orchestrator.agent_controller.replan", side_effect=mock_replan):
-                    result = run_controller("Edit foo", project_root=str(tmp_path))
+                    mock_dispatch.side_effect = mock_dispatch_fn
+                    with patch("agent.orchestrator.deterministic_runner.replan", side_effect=mock_replan):
+                        result = run_controller("Edit foo", project_root=str(tmp_path))
 
     assert "task_id" in result
     assert "errors" in result
