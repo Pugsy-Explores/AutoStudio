@@ -31,9 +31,10 @@ instructions = registry.get_instructions("router", variables={"task_description"
 template = registry.get("query_rewrite_with_context")
 main, end = template.extra["main"], template.extra["end"]
 
-# Guardrails (Phase 13 Hardening): for user-facing prompts
-template = registry.get_guarded("planner", user_input=user_input)  # runs injection check
-is_valid, err = registry.validate_response("planner", response, user_input)
+# Guardrails (Phase 13 Hardening): enforced at LLM call boundary in model_client
+# Pre-call: injection check on user content (always)
+# Post-call: constraint validation when prompt_name passed to call_small_model/call_reasoning_model
+# For programmatic use: registry.get_guarded(...), registry.validate_response(...)
 ```
 
 ## Format String Rules

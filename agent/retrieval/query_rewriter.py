@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
-from agent.prompts import get_prompt
+from agent.prompt_system import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +38,15 @@ class RewriteResult(TypedDict, total=False):
     queries: list[str]
 
 # Load once at module import
-_REWRITE_PROMPT = get_prompt("query_rewrite", "prompt")
-_CTX_PROMPTS = get_prompt("query_rewrite_with_context")
-_REWRITE_WITH_CONTEXT_MAIN = _CTX_PROMPTS["main"]
-_REWRITE_WITH_CONTEXT_END = _CTX_PROMPTS["end"]
+def _get_rewrite_prompt(text: str) -> str:
+    return get_registry().get_instructions("query_rewrite", variables={"text": text})
+
+
+def _get_ctx_prompts() -> tuple[str, str]:
+    t = get_registry().get("query_rewrite_with_context")
+    if t.extra:
+        return t.extra.get("main", ""), t.extra.get("end", "")
+    return t.instructions, ""
 
 
 def _extract_json_from_text(text: str) -> dict | None:
@@ -183,31 +188,29 @@ def rewrite_query_with_context(
         planner_step_safe = (planner_step or "").strip()[:2000]
         previous_attempts_safe = _format_attempts_for_prompt(attempts_slice)[:1500]
         user_request_safe = (user_request or "").strip()[:500]
-        prompt = _REWRITE_WITH_CONTEXT_MAIN.format(
+        main, end = _get_ctx_prompts()
+        prompt = main.format(
             user_request=user_request_safe or "(none)",
             previous_attempts=previous_attempts_safe,
             planner_step=planner_step_safe,
         )
-        prompt += _REWRITE_WITH_CONTEXT_END
+        prompt += end
 
-        # System prompt: role-based API contract (prompt best practice for structured output)
-        _REWRITE_SYSTEM = (
-            "You are a code-search API. Return ONLY valid JSON with keys: tool, query, reason. "
-            "Optional: queries (array of strings) for multiple variants; policy engine tries each until success. "
-            "Never include explanations, thinking, or markdown. Your output must be parseable by json.loads()."
-        )
+        _REWRITE_SYSTEM = get_registry().get_instructions("query_rewrite_system")
 
         if model_type == ModelType.REASONING:
             out = call_reasoning_model(
                 prompt,
                 system_prompt=_REWRITE_SYSTEM,
                 task_name="query rewriting",
+                prompt_name="query_rewrite_with_context",
             )
         else:
             out = call_small_model(
                 prompt,
                 task_name="query rewriting",
                 system_prompt=_REWRITE_SYSTEM,
+                prompt_name="query_rewrite_with_context",
             )
 
         raw = (out or "").strip()
@@ -275,8 +278,9 @@ def rewrite_query(text: str, use_llm: bool = False) -> str:
         model_name = "REASONING" if model_type == ModelType.REASONING else "SMALL"
         print("    [workflow] rewriter model:", model_name)
 
-        prompt = _REWRITE_PROMPT.format(text=text.strip())
+        prompt = _get_rewrite_prompt(text.strip())
 
+        # No prompt_name: query_rewrite returns plain text, not JSON; output_schema_guard would fail
         if model_type == ModelType.REASONING:
             out = call_reasoning_model(prompt, task_name="query rewriting")
         else:

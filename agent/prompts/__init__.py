@@ -1,29 +1,35 @@
-"""Centralized prompts: loaded from YAML files (literal newlines) in this package."""
+"""Centralized prompts: compatibility shim redirecting to PromptRegistry."""
 
-from pathlib import Path
-
-import yaml
-
-_PROMPTS_DIR = Path(__file__).resolve().parent
-
-
-def _load(name: str) -> dict:
-    """Load prompt YAML by name; return dict of string values (prompt keys)."""
-    path = _PROMPTS_DIR / f"{name}.yaml"
-    if not path.exists():
-        raise FileNotFoundError(f"Prompt file not found: {path}")
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    return {k: v for k, v in data.items() if isinstance(v, str)}
+# Legacy name -> registry name mapping
+_LEGACY_TO_REGISTRY = {
+    "planner_system": "planner",
+    "model_router": "router",
+    "critic_system": "critic",
+    "retry_planner_system": "retry_planner",
+    "replanner_system": "replanner",
+    "query_rewrite": "query_rewrite",
+    "query_rewrite_with_context": "query_rewrite_with_context",
+    "validate_step": "validate_step",
+    "router_logit_system": "router_logit",
+}
 
 
 def get_prompt(name: str, key: str | None = None) -> str | dict:
     """
-    Get prompt content from a YAML file in this package.
-    name: file stem (e.g. 'query_rewrite', 'query_rewrite_with_context').
+    Compatibility shim: redirect to PromptRegistry.
+    name: legacy file stem (e.g. 'planner_system', 'query_rewrite_with_context').
     key: optional key; if given, return that key's value (str); else return full dict.
     """
-    data = _load(name)
+    from agent.prompt_system import get_registry
+
+    reg_name = _LEGACY_TO_REGISTRY.get(name, name)
+    template = get_registry().get(reg_name)
     if key is not None:
-        return data[key]
-    return data
+        if key in ("system_prompt", "prompt"):
+            return template.instructions
+        if template.extra and key in template.extra:
+            return template.extra[key]
+        return ""
+    if template.extra:
+        return dict(template.extra)
+    return {"system_prompt": template.instructions}
