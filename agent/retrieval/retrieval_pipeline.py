@@ -12,6 +12,7 @@ from agent.retrieval.context_ranker import rank_context
 from agent.retrieval.retrieval_expander import expand_search_results
 from agent.retrieval.symbol_expander import expand_from_anchors
 from agent.tools import find_referencing_symbols, read_file, read_symbol_body
+from config.agent_config import MAX_RETRIEVAL_RESULTS
 from config.retrieval_config import (
     DEFAULT_MAX_CHARS,
     ENABLE_CONTEXT_RANKING,
@@ -137,6 +138,7 @@ def run_retrieval_pipeline(
     if symbol_snippets:
         candidates = symbol_snippets + candidates
     candidates = localization_candidates + candidates
+    candidates = candidates[:MAX_RETRIEVAL_RESULTS]
     state.context["context_candidates"] = candidates
     if ENABLE_CONTEXT_RANKING and candidates:
         rank_query = query or state.instruction or ""
