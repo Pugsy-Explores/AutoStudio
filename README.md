@@ -308,7 +308,7 @@ AutoStudio/
 │   │
 │   ├── models/                 # Model client and config
 │   │   ├── __init__.py
-│   │   ├── model_client.py     # OpenAI-compatible API client
+│   │   ├── model_client.py     # LLM call boundary; guardrails (injection + optional output validation)
 │   │   ├── model_config.py     # Load models_config.json, env overrides
 │   │   ├── model_router.py     # Route task → model (SMALL, REASONING, REASONING_V2)
 │   │   ├── model_types.py      # Typed request/response
@@ -330,7 +330,7 @@ AutoStudio/
 │   │
 │   ├── prompt_system/          # Phase 13: Prompt infrastructure
 │   │   ├── __init__.py
-│   │   ├── registry.py         # PromptRegistry.get(), get_instructions(), get_guarded(), validate_response()
+│   │   ├── registry.py         # PromptRegistry.get(), get_instructions(); guardrails at model_client boundary
 │   │   ├── loader.py           # Load YAML from prompt_versions or legacy prompts/
 │   │   ├── prompt_template.py # PromptTemplate dataclass
 │   │   ├── prompt_context_builder.py
@@ -812,6 +812,14 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `MAX_FILES_PER_PR` | Phase 12: max files per PR (default 10) |
 | `MAX_PATCH_LINES` | Phase 12: max patch lines (default 500) |
 | `MAX_CI_RUNTIME_SECONDS` | Phase 12: CI timeout in seconds (default 600) |
+| `MAX_PROMPT_TOKENS` | Phase 14: hard cap on total prompt tokens (default 12000) |
+| `OUTPUT_TOKEN_RESERVE` | Phase 14: tokens reserved for model output (default 2000) |
+| `MAX_REPO_SNIPPETS` | Phase 14: max ranked code snippets (default 10) |
+| `MAX_HISTORY_TOKENS` | Phase 14: token budget for history (default 2000) |
+| `MAX_REPO_CONTEXT_TOKENS` | Phase 14: threshold for conditional compression (default 7200) |
+| `MAX_RETRIEVAL_RESULTS` | Phase 14: max candidates from retrieval to ranker (default 20) |
+| `HISTORY_WINDOW_TURNS` | Phase 14: last N turns kept raw (default 10) |
+| `HISTORY_SUMMARY_TURNS` | Phase 14: older turns summarized (default 30) |
 
 ---
 
@@ -927,9 +935,10 @@ Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `cal
 - Actions: EDIT, SEARCH, EXPLAIN, INFRA
 - Evaluation: `python -m planner.planner_eval`
 
-### Prompt System (Phase 13)
+### Prompt System (Phase 13 + Phase 14)
 
 - **PromptRegistry**: Central registry for all prompts; `get_registry().get(name)`, `get_instructions(name, variables=...)`, `get_guarded(name, user_input=...)`, `validate_response(name, response, user_input)`, `compose(prompt, skill, repo_context)`
+- **Phase 14 — Token Budgeting & Context Control**: `agent/prompt_system/context/` — enforces prompt size bounds via ranked context pruning, conditional compression (only when `repo_context_tokens > MAX_REPO_CONTEXT_TOKENS`), sliding conversation window (last N raw + summarized older), dynamic budget allocation per section, and emergency hard truncation as a last-resort safety guard. Use `build_context_budgeted()` for full pipeline.
 - **Versioning**: Prompts in `agent/prompt_versions/{name}/v1.yaml`; `get_prompt(name, version="latest")`, `compare_prompts(name, v1, v2)`, `run_ab_test(name, variant_a, variant_b, run_fn)` for A/B testing
 - **Guardrails**: Injection detection (pre-load via `get_guarded`), output schema validation, safety policy, constraint checker (post-response via `validate_response`)
 - **Skills**: Modular YAML skills (planner_skill, patch_generation_skill, etc.); compose with prompts

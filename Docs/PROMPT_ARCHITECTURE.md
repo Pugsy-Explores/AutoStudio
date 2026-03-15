@@ -31,8 +31,9 @@ composed = registry.compose("planner", skill_name="planner_skill", repo_context=
 |-----|---------|
 | `get_registry().get(name, version, variables)` | Returns `PromptTemplate` (name, version, role, instructions, constraints, output_schema, extra) |
 | `get_registry().get_instructions(name, variables)` | Returns instructions string (drop-in for `get_prompt`) |
-| `get_registry().get_guarded(name, user_input, version, variables)` | Load with pre-load injection guard on `user_input`; raises `PromptInjectionError` if detected |
-| `get_registry().validate_response(name, response, user_input)` | Validate LLM output against constraints (injection, output_schema, safety); returns `(is_valid, error_message)` |
+| `get_registry().get_guarded(name, user_input, version, variables)` | Load with pre-load injection guard on `user_input`; raises `PromptInjectionError` if detected (programmatic use) |
+| `get_registry().validate_response(name, response, user_input)` | Validate LLM output against constraints (injection, output_schema, safety); returns `(is_valid, error_message)` (programmatic use) |
+| `call_small_model(..., prompt_name="planner")` / `call_reasoning_model(..., prompt_name=...)` | **Primary guardrail enforcement:** injection check always; output validation when `prompt_name` provided |
 | `get_registry().compose(name, skill_name, repo_context)` | Composes prompt + skill + repo context |
 | `get_registry().get_skill(skill_name)` | Loads skill YAML (goal, tools_allowed, output_format, constraints) |
 | `agent.prompt_system.versioning.get_prompt(name, version)` | Version store: `list_versions(name)`, `compare_prompts(name, v1, v2)` |
@@ -45,6 +46,29 @@ composed = registry.compose("planner", skill_name="planner_skill", repo_context=
 ### Model Routing
 
 Task-to-model mapping is defined in [`agent/models/models_config.json`](../agent/models/models_config.json) under `task_models`. The `model_router.yaml` prompt (registry name `router`) is used only when a task is not in config (fallback). Production uses config lookup via `get_model_for_task()`.
+
+### Phase 14: Context Control & Token Budgeting
+
+The context control layer enforces prompt size bounds before every LLM call. Pipeline order:
+
+```
+retrieve → rank_and_limit() → apply_sliding_window() → prune_sections() → compress() [conditional]
+→ count_prompt_tokens() → enforce_budget() → emergency truncation → assemble → Model
+```
+
+| Module | Location | Responsibility |
+|--------|----------|----------------|
+| `token_counter` | `agent/prompt_system/context/token_counter.py` | Count tokens per prompt section; tiktoken/sentencepiece/approximate fallback |
+| `context_compressor` | `agent/prompt_system/context/context_compressor.py` | Conditional compression: fires only when `repo_context_tokens > MAX_REPO_CONTEXT_TOKENS` |
+| `PromptBudgetManager` | `agent/prompt_system/context/prompt_budget_manager.py` | Dynamic budget allocation (60/20/10% splits), enforce budget, emergency truncation |
+| `apply_sliding_window` | `agent/prompt_system/context/context_pruner.py` | Keep last N history turns raw; summarize older turns |
+
+- **`get_guarded()` contract**: Injection guard + assembly only; budgeting is handled by `PromptBudgetManager` in the builder layer.
+- **Dynamic fallback key**: `f"{prompt_name}_compact"` (e.g. `planner_compact`, `critic_compact`).
+- **Emergency truncation**: Last-resort hard truncation of `repo_context` if prompt still exceeds `MAX_PROMPT_TOKENS` after pruning/fallback.
+- **BudgetReport fields**: `pruning_triggered`, `compression_triggered`, `emergency_truncation_triggered`, `use_fallback`, `fallback_key`.
+
+Use `build_context_budgeted()` for full pipeline; `build_context()` remains for simple composition.
 
 ---
 
@@ -458,7 +482,26 @@ When changing prompts:
 
 ### Guardrails (Phase 13 Hardening)
 
-For user-facing prompts, use `get_registry().get_guarded(name, user_input=...)` to run injection checking before load. After LLM response, use `get_registry().validate_response(name, response, user_input)` to check constraints (injection, output_schema, safety). The loader does not inject guardrails automatically; callers opt in via `get_guarded()` and `validate_response()`.
+**Guardrails are enforced at the LLM call boundary**, not inside prompt utilities. This ensures no module can bypass them by calling `model_client` directly.
+
+**Correct architecture:**
+
+```
+Agent / Router / Planner / etc.
+    ↓
+call_small_model() / call_reasoning_model()
+    ↓
+_pre: injection check on user content (always)
+_post: constraint validation when prompt_name provided (optional)
+    ↓
+Model client (OpenAI-compatible API)
+```
+
+- **Pre-call:** Injection check runs on every call to `call_small_model` / `call_reasoning_model` (via `agent/models/model_client.py`). Raises `PromptInjectionError` if detected.
+- **Post-call:** Constraint validation (output_schema, safety) runs when `prompt_name` is passed. Call sites that return JSON pass `prompt_name`; free-text prompts (explain_system, context_ranker, simple query_rewrite) omit it.
+- **Disable:** Set `ENABLE_PROMPT_GUARDRAILS=0` for eval or tests.
+
+**Registry APIs** (for programmatic use): `get_registry().get_guarded(name, user_input=...)` and `validate_response(name, response, user_input)` remain available for custom flows that bypass model_client.
 
 ### A/B Testing (Phase 13 Scaffold)
 

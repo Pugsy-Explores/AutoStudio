@@ -31,6 +31,14 @@ Used by `agent_controller`. `agent_loop` uses its own constants in `agent/orches
 | MAX_FILES_PER_PR | 10 | MAX_FILES_PER_PR | Phase 12: max files per PR (safety) |
 | MAX_PATCH_LINES | 500 | MAX_PATCH_LINES | Phase 12: max patch lines (safety) |
 | MAX_CI_RUNTIME_SECONDS | 600 | MAX_CI_RUNTIME_SECONDS | Phase 12: CI timeout (pytest, ruff) in seconds |
+| MAX_PROMPT_TOKENS | 12000 | MAX_PROMPT_TOKENS | Phase 14: hard cap on total prompt tokens before LLM call |
+| OUTPUT_TOKEN_RESERVE | 2000 | OUTPUT_TOKEN_RESERVE | Phase 14: tokens reserved for model output |
+| MAX_REPO_SNIPPETS | 10 | MAX_REPO_SNIPPETS | Phase 14: max ranked code snippets passed to prompt |
+| MAX_HISTORY_TOKENS | 2000 | MAX_HISTORY_TOKENS | Phase 14: token budget for conversation history section |
+| MAX_REPO_CONTEXT_TOKENS | 7200 | MAX_REPO_CONTEXT_TOKENS | Phase 14: threshold triggering conditional compression (60% of 12000) |
+| MAX_RETRIEVAL_RESULTS | 20 | MAX_RETRIEVAL_RESULTS | Phase 14: max candidates passed from retrieval to ranker |
+| HISTORY_WINDOW_TURNS | 10 | HISTORY_WINDOW_TURNS | Phase 14: last N turns kept verbatim in sliding window |
+| HISTORY_SUMMARY_TURNS | 30 | HISTORY_SUMMARY_TURNS | Phase 14: turns 10–30 collapsed into one summarized memory block |
 
 ### agent_loop constants (agent/orchestrator/agent_loop.py)
 
@@ -78,6 +86,10 @@ Phase 4 reliability limits; not configurable via env:
 
 **Phase 12 workflow layer** uses:
 - `last_workflow.json` — last workflow result (task, pr, ci, review, patches) for `autostudio pr` and `autostudio review` commands
+
+**Phase 13 prompt infrastructure** uses:
+- `dev/prompt_eval_results/` — prompt CI output (e.g. `planner_v1.json`); `baseline.json` for regression comparison
+- `dev/failure_logs/{prompt_name}/{date}.jsonl` — failure records from `failure_logger.log_failure()`
 
 ### repo_graph_config.py
 
