@@ -54,6 +54,34 @@ flowchart TB
     end
 ```
 
+**ASCII diagram:**
+
+```
+  User instruction ──► run_agent ──► get_plan
+                                        │
+                    ┌──────────────────┴──────────────────┐
+                    │ ENABLE_INSTRUCTION_ROUTER?           │
+                    │ yes: route_instruction ──► category  │
+                    │   CODE_SEARCH ──► Single SEARCH       │
+                    │   CODE_EXPLAIN ──► Single EXPLAIN     │
+                    │   INFRA ──► Single INFRA             │
+                    │   CODE_EDIT/GENERAL ──► plan         │
+                    │ no: plan instruction                 │
+                    └──────────────────┬──────────────────┘
+                                       │
+                                       ▼
+  AgentState (instruction, plan, completed_steps, results, context)
+                                       │
+                    ┌──────────────────┴──────────────────┐
+                    │ Execution loop                       │
+                    │ next_step ──► execute_step ──►       │
+                    │   dispatch ──► state.record          │
+                    │   validate? ──► success: continue     │
+                    │   fail: undo, replan, update_plan    │
+                    │ Termination: max_iter/runtime/replan │
+                    └─────────────────────────────────────┘
+```
+
 **Context initialization:** `run_agent` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
 
 **Termination conditions (best practice):** task complete, max replan (5), max runtime (15 min), max iterations (100). `agent_controller` uses `config/agent_config.py`; `agent_loop` uses module-level constants. See [CONFIGURATION.md](CONFIGURATION.md).
@@ -71,6 +99,20 @@ flowchart LR
     A -->|EDIT| E["Policy engine: _execute_edit"]
     A -->|INFRA| I["Policy engine: _execute_infra"]
     A -->|EXPLAIN or unknown| X["EXPLAIN path"]
+```
+
+**ASCII diagram:**
+
+```
+  dispatch ──► ToolGraph.get_allowed_tools ──► resolve_tool
+                                                    │
+                    ┌───────────────────────────────┴───────────────────────────────┐
+                    │ action?                                                        │
+                    │   SEARCH ──► Policy engine: _execute_search                     │
+                    │   EDIT    ──► Policy engine: _execute_edit                     │
+                    │   INFRA   ──► Policy engine: _execute_infra                    │
+                    │   EXPLAIN ──► EXPLAIN path (direct model call)                  │
+                    └───────────────────────────────────────────────────────────────┘
 ```
 
 - **ToolGraph → Router:** Dispatcher reads `current_node` from state; ToolGraph returns allowed tools; Router chooses tool (preferred for action, or first allowed if preferred not in set—no hard reject). Dispatcher sets `state.context["tool_node"]` after each step.
@@ -91,6 +133,20 @@ flowchart LR
     C -->|REASONING or missing| Re["REASONING_MODEL_ENDPOINT"]
     S --> MC["_call_chat"]
     Re --> MC
+```
+
+**ASCII diagram:**
+
+```
+  Task name ──► get_model_for_task ──► task_models lookup
+                                            │
+                        ┌───────────────────┴───────────────────┐
+                        │ SMALL ──► SMALL_MODEL_ENDPOINT        │
+                        │ REASONING/missing ──► REASONING_EP    │
+                        └───────────────────┬───────────────────┘
+                                            │
+                                            ▼
+                                        _call_chat
 ```
 
 - **Query rewriting** (SEARCH steps): `task_models["query rewriting"]` → REASONING or SMALL → `call_reasoning_model` / `call_small_model`.
@@ -124,6 +180,30 @@ flowchart TB
         S13 --> S2
         S2 --> S14["Exhausted"] --> S15["Return success False"]
     end
+```
+
+**ASCII diagram:**
+
+```
+  Policy (max_attempts 5) ──► For attempt 1 to max_attempts
+                                        │
+                    ┌───────────────────┴───────────────────┐
+                    │ rewrite_query_fn set?                 │
+                    │ yes: rewrite_query_with_context       │
+                    │ no:  queries_to_try = description     │
+                    └───────────────────┬───────────────────┘
+                                        │
+                                        ▼
+  For each query ──► more queries? ──yes──► _search_fn ──► RepoMapLookup, cache, hybrid_retrieve
+       │                    │                                    │
+       │                    │                                    ▼
+       │                    │                         valid search result?
+       │                    │                         yes: Store context ──► Return success
+       │                    │                         no:  Append attempt_history ──► (loop)
+       │                    │
+       │                    no──► Try next attempt ──► (back to attempt loop)
+       │
+       └──► Exhausted ──► Return success False
 ```
 
 **Details:**
@@ -179,6 +259,22 @@ flowchart TB
     end
 ```
 
+**ASCII diagram:**
+
+```
+  Policy (max_attempts 2) ──► symbol_retry ──► steps_to_try
+                                                    │
+                                                    ▼
+  For each step variant ──► _edit_fn (plan_diff or read_file/list_files)
+                                                    │
+                                    ┌───────────────┴───────────────┐
+                                    │ EDIT failure?                 │
+                                    │ no: Return success            │
+                                    │ yes: Next variant or exhausted│
+                                    │      ──► Return success False │
+                                    └───────────────────────────────┘
+```
+
 - **Diff planner (ENABLE_DIFF_PLANNER=1):** `plan_diff` → `conflict_resolver` → `patch_generator.to_structured_patches` → `patch_executor.execute_patch` (ast_patcher + patch_validator) → `run_with_repair` (test repair loop). Validation: compile + AST reparse before write; rollback on invalid syntax, >200 lines, >5 files, or apply error. Max 5 files, 200 lines per patch.
 - **Mutation**: `symbol_retry(step)` → currently returns `[step]` (single variant). Placeholder for future symbol/path variants.
 - **Retry condition**: `result.error` or `result.success is False`.
@@ -201,6 +297,22 @@ flowchart TB
     end
 ```
 
+**ASCII diagram:**
+
+```
+  Policy (max_attempts 2) ──► retry_same ──► step
+                                                │
+                                                ▼
+  For attempt ──► _infra_fn (run_command, list_files)
+                                │
+                ┌───────────────┴───────────────┐
+                │ returncode equals 0?           │
+                │ yes: Return success            │
+                │ no:  Retry or exhausted        │
+                │      ──► Return success False  │
+                └───────────────────────────────┘
+```
+
 - **Mutation**: `retry_same(step)` → same step retried.
 - **Retry condition**: `output.returncode != 0`.
 
@@ -220,6 +332,24 @@ flowchart TB
     X2 --> X3["call_reasoning_model or call_small_model"]
     X3 --> X4["out_str = output.strip or fallback string"]
     X4 --> X5["Return success True, output out_str"]
+```
+
+**ASCII diagram:**
+
+```
+  dispatch EXPLAIN ──► ensure_context_before_explain
+                                │
+                ┌───────────────┴───────────────┐
+                │ ranked_context empty?          │
+                │ yes: Context gate              │
+                │   _search_fn + run_retrieval   │
+                │   Valid results? ──no──► Fail   │
+                │   ──yes──► (continue)          │
+                │ no: get_model_for_task EXPLAIN │
+                └───────────────┬───────────────┘
+                                │
+                                ▼
+  _format_explain_context ──► call_model ──► Return success
 ```
 
 - **Context gate:** If `ranked_context` is empty, inject SEARCH (call `_search_fn` with step description; no LLM rewrite), then `run_retrieval_pipeline()`. If no valid results, return failure without calling the model. Avoids wasted LLM calls.
@@ -246,6 +376,23 @@ flowchart TB
     R --> EXPLAIN_RULE["EXPLAIN: not fallback, needs context or triggers replan"]
 ```
 
+**ASCII diagram:**
+
+```
+  validate_step ──► use_llm?
+                        │
+        ┌───────────────┴───────────────┐
+        │ False: _validate_step_rules   │
+        │ True:  get_model_for_task      │
+        │   ──► call_model ──► YES/NO    │
+        │   ──► _validate_step_rules    │
+        └───────────────┬───────────────┘
+                        │
+                        ▼
+  Rules: SEARCH (valid result), EDIT (success), INFRA (returncode 0),
+         EXPLAIN (not fallback, needs context)
+```
+
 - **Rule-based (default)**: SEARCH → non-empty first result with file + snippet; EDIT → success; INFRA → returncode 0; EXPLAIN → if output contains "I cannot answer without relevant code context" → invalid (triggers replanner to add SEARCH); else `_is_valid_explain`: False when output length < 40 chars (triggers replan to add SEARCH). No LLM phrase detection.
 - **LLM**: On exception, fallback to rule-based.
 
@@ -262,6 +409,24 @@ flowchart LR
     R3 -->|no| R5["Fallback: remaining steps"]
     R4 --> R6["state.update_plan with new_plan"]
     R5 --> R6
+```
+
+**ASCII diagram:**
+
+```
+  replan(state, failed_step, error)
+        │
+        ▼
+  Log last step failure ──► LLM call (instruction, plan, failed_step, error)
+                                        │
+                        ┌───────────────┴───────────────┐
+                        │ Valid JSON plan?               │
+                        │ yes: Return revised plan       │
+                        │ no:  Fallback: remaining steps │
+                        └───────────────┬───────────────┘
+                                        │
+                                        ▼
+                            state.update_plan with new_plan
 ```
 
 - LLM-based: receives `failed_step` and `error`; produces revised plan via `call_reasoning_model` (task_models["replanner"]).
