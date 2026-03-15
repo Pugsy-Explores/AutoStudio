@@ -10,7 +10,7 @@ AutoStudio uses a **deterministic pipeline** where LLMs plan and reason, and det
 
 ### Prompt Loading
 
-All YAML prompts are loaded via [`agent/prompts/__init__.py`](agent/prompts/__init__.py):
+All YAML prompts are loaded via [`agent/prompts/__init__.py`](../agent/prompts/__init__.py):
 
 ```python
 def get_prompt(name: str, key: str | None = None) -> str | dict:
@@ -23,7 +23,7 @@ def get_prompt(name: str, key: str | None = None) -> str | dict:
 
 ### Model Routing
 
-Task-to-model mapping is defined in [`agent/models/models_config.json`](agent/models/models_config.json) under `task_models`. The `model_router.yaml` prompt is used only when a task is not in config (fallback). Production uses config lookup via `get_model_for_task()`.
+Task-to-model mapping is defined in [`agent/models/models_config.json`](../agent/models/models_config.json) under `task_models`. The `model_router.yaml` prompt is used only when a task is not in config (fallback). Production uses config lookup via `get_model_for_task()`.
 
 ---
 
@@ -31,23 +31,23 @@ Task-to-model mapping is defined in [`agent/models/models_config.json`](agent/mo
 
 | Prompt | File / Location | Key / Name | Consumer | Model |
 |--------|-----------------|------------|----------|-------|
-| planner_system | `agent/prompts/planner_system.yaml` | `system_prompt` | `planner/planner.py` | REASONING |
-| replanner_system | `agent/prompts/replanner_system.yaml` | `system_prompt` | `agent/orchestrator/replanner.py` | REASONING |
-| query_rewrite | `agent/prompts/query_rewrite.yaml` | `prompt` | `agent/retrieval/query_rewriter.py` | REASONING/SMALL |
-| query_rewrite_with_context | `agent/prompts/query_rewrite_with_context.yaml` | `main`, `end` | `agent/retrieval/query_rewriter.py` | REASONING/SMALL |
-| validate_step | `agent/prompts/validate_step.yaml` | `prompt` | `agent/orchestrator/validator.py` | REASONING |
-| model_router | `agent/prompts/model_router.yaml` | `prompt` | `agent/models/model_router.py` | SMALL (fallback) |
-| router_logit_system | `agent/prompts/router_logit_system.yaml` | `system_prompt` | `router_eval/routers/logit_router.py` | SMALL |
-| _ROUTER_SYSTEM | `agent/routing/instruction_router.py` (inline) | — | `instruction_router.route_instruction()` | SMALL |
-| EXPLAIN_SYSTEM_PROMPT | `agent/execution/step_dispatcher.py` (inline) | — | `dispatch()` EXPLAIN path | REASONING/SMALL |
-| _REWRITE_SYSTEM | `agent/retrieval/query_rewriter.py` (inline) | — | `rewrite_query_with_context()` | REASONING/SMALL |
-| replanner user_prompt | `agent/orchestrator/replanner.py` (inline) | — | `replan()` | REASONING/SMALL |
-| context_ranker | `agent/retrieval/context_ranker.py` (inline) | — | `rank_context()` | REASONING |
-| BASELINE_SYSTEM | `router_eval/prompts/router_prompts.py` | — | `baseline_router.py` | SMALL |
-| FEWSHOT_SYSTEM | `router_eval/prompts/router_prompts.py` | — | `fewshot_router.py`, `fewshot_logit_router.py` | SMALL |
-| PROMPT_A/B/C | `router_eval/prompts/router_prompts.py` | — | `router_core.py`, `ensemble_router.py` | SMALL |
-| ROUTER_V2_SYSTEM | `router_eval/prompts/router_v2_prompt.py` | — | `router_v2.py` | SMALL |
-| CRITIC_SYSTEM | `router_eval/prompts/critic_prompt.py` | — | `critic_router.py`, `final_router.py` | SMALL |
+| planner_system | [agent/prompts/planner_system.yaml](../agent/prompts/planner_system.yaml) | `system_prompt` | [planner/planner.py](../planner/planner.py) | REASONING |
+| replanner_system | [agent/prompts/replanner_system.yaml](../agent/prompts/replanner_system.yaml) | `system_prompt` | [agent/orchestrator/replanner.py](../agent/orchestrator/replanner.py) | REASONING |
+| query_rewrite | [agent/prompts/query_rewrite.yaml](../agent/prompts/query_rewrite.yaml) | `prompt` | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
+| query_rewrite_with_context | [agent/prompts/query_rewrite_with_context.yaml](../agent/prompts/query_rewrite_with_context.yaml) | `main`, `end` | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
+| validate_step | [agent/prompts/validate_step.yaml](../agent/prompts/validate_step.yaml) | `prompt` | [agent/orchestrator/validator.py](../agent/orchestrator/validator.py) | REASONING |
+| model_router | [agent/prompts/model_router.yaml](../agent/prompts/model_router.yaml) | `prompt` | [agent/models/model_router.py](../agent/models/model_router.py) | SMALL (fallback) |
+| router_logit_system | [agent/prompts/router_logit_system.yaml](../agent/prompts/router_logit_system.yaml) | `system_prompt` | [router_eval/routers/logit_router.py](../router_eval/routers/logit_router.py) | SMALL |
+| _ROUTER_SYSTEM | [agent/routing/instruction_router.py](../agent/routing/instruction_router.py) (inline) | — | `instruction_router.route_instruction()` | SMALL |
+| EXPLAIN_SYSTEM_PROMPT | [agent/execution/step_dispatcher.py](../agent/execution/step_dispatcher.py) (inline) | — | `dispatch()` EXPLAIN path | REASONING/SMALL |
+| _REWRITE_SYSTEM | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) (inline) | — | `rewrite_query_with_context()` | REASONING/SMALL |
+| replanner user_prompt | [agent/orchestrator/replanner.py](../agent/orchestrator/replanner.py) (inline) | — | `replan()` | REASONING/SMALL |
+| context_ranker | [agent/retrieval/context_ranker.py](../agent/retrieval/context_ranker.py) (inline) | — | `rank_context()` | REASONING |
+| BASELINE_SYSTEM | [router_eval/prompts/router_prompts.py](../router_eval/prompts/router_prompts.py) | — | [baseline_router.py](../router_eval/routers/baseline_router.py) | SMALL |
+| FEWSHOT_SYSTEM | [router_eval/prompts/router_prompts.py](../router_eval/prompts/router_prompts.py) | — | [fewshot_router.py](../router_eval/routers/fewshot_router.py), [fewshot_logit_router.py](../router_eval/routers/fewshot_logit_router.py) | SMALL |
+| PROMPT_A/B/C | [router_eval/prompts/router_prompts.py](../router_eval/prompts/router_prompts.py) | — | [router_core.py](../router_eval/utils/router_core.py), [ensemble_router.py](../router_eval/routers/ensemble_router.py) | SMALL |
+| ROUTER_V2_SYSTEM | [router_eval/prompts/router_v2_prompt.py](../router_eval/prompts/router_v2_prompt.py) | — | [router_v2.py](../router_eval/routers/router_v2.py) | SMALL |
+| CRITIC_SYSTEM | [router_eval/prompts/critic_prompt.py](../router_eval/prompts/critic_prompt.py) | — | [critic_router.py](../router_eval/routers/critic_router.py), [final_router.py](../router_eval/routers/final_router.py) | SMALL |
 
 ---
 
@@ -97,7 +97,7 @@ flowchart TD
 
 ### 4.1 Production Router (`_ROUTER_SYSTEM`)
 
-**Location**: [`agent/routing/instruction_router.py`](agent/routing/instruction_router.py) lines 26–40
+**Location**: [`agent/routing/instruction_router.py`](../agent/routing/instruction_router.py) lines 26–40
 
 **Purpose**: Classify developer query before planner. When `ENABLE_INSTRUCTION_ROUTER=1`, routes to single-step plans for CODE_SEARCH, CODE_EXPLAIN, INFRA; falls through to planner for CODE_EDIT, GENERAL.
 
@@ -174,7 +174,7 @@ flowchart TD
 - Parse failure → fallback: single SEARCH step.
 - LLM failure → fallback: single EXPLAIN step.
 
-**Used in**: `planner/planner.py`, `planner/planner_prompts.py`, `planner/planner_eval.py`, `agent/orchestrator/plan_resolver.py`.
+**Used in**: [planner/planner.py](../planner/planner.py), [planner/planner_prompts.py](../planner/planner_prompts.py), [planner/planner_eval.py](../planner/planner_eval.py), [agent/orchestrator/plan_resolver.py](../agent/orchestrator/plan_resolver.py).
 
 ---
 
@@ -205,7 +205,7 @@ flowchart TD
 
 **Failure Modes**: LLM/parse failure → fallback: remaining steps only (no new plan).
 
-**Used in**: `agent/orchestrator/replanner.py`.
+**Used in**: [agent/orchestrator/replanner.py](../agent/orchestrator/replanner.py).
 
 ---
 
@@ -217,7 +217,7 @@ flowchart TD
 
 **Structure**: Single prompt with `{text}` placeholder. Describes 4 tools (retrieve_graph, retrieve_vector, retrieve_grep, list_dir), rules for identifiers and patterns, "Return only the rewritten search query."
 
-**Used in**: `agent/retrieval/query_rewriter.py` `rewrite_query()`. Primary path is `rewrite_query_with_context()`.
+**Used in**: [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) `rewrite_query()`. Primary path is `rewrite_query_with_context()`.
 
 ---
 
@@ -244,7 +244,7 @@ flowchart TD
 
 **Failure Modes**: LLM error → heuristic strip filler words → raw planner_step. Invalid tool → `chosen_tool` not set; retrieval uses default order.
 
-**Used in**: `agent/retrieval/query_rewriter.py` `rewrite_query_with_context()`.
+**Used in**: [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) `rewrite_query_with_context()`.
 
 ---
 
@@ -273,13 +273,13 @@ Answer with exactly YES or NO.
 
 **Failure Modes**: LLM failure → fallback to rule-based. Non-YES response → invalid, feedback passed to replanner.
 
-**Used in**: `agent/orchestrator/validator.py` `validate_step()`.
+**Used in**: [agent/orchestrator/validator.py](../agent/orchestrator/validator.py) `validate_step()`.
 
 ---
 
 ### EXPLAIN_SYSTEM_PROMPT (context gate)
 
-**Location**: [`agent/execution/step_dispatcher.py`](agent/execution/step_dispatcher.py) lines 279–285
+**Location**: [`agent/execution/step_dispatcher.py`](../agent/execution/step_dispatcher.py) lines 279–285
 
 **Purpose**: Ground EXPLAIN in provided context; refuse to answer without code context.
 
@@ -290,7 +290,7 @@ Answer with exactly YES or NO.
 
 **Design Reasoning**: Prevents hallucination; forces retrieval-before-reasoning. The exact refusal string is detected by validator to trigger replan (add SEARCH).
 
-**Used in**: `agent/execution/step_dispatcher.py` `dispatch()` EXPLAIN path.
+**Used in**: [agent/execution/step_dispatcher.py](../agent/execution/step_dispatcher.py) `dispatch()` EXPLAIN path.
 
 ---
 
@@ -310,7 +310,7 @@ Task: {task_description}
 Return only the label: SMALL or REASONING.
 ```
 
-**Used in**: `agent/models/model_router.py` `route_task()`. `get_model_for_task()` uses `models_config.json` `task_models` by default.
+**Used in**: [agent/models/model_router.py](../agent/models/model_router.py) `route_task()`. `get_model_for_task()` uses [models_config.json](../agent/models/models_config.json) `task_models` by default.
 
 ---
 
@@ -325,13 +325,13 @@ Used in `router_eval/` for router benchmarking:
 | `CONFIDENCE_INSTRUCTION` | Extends router to output CATEGORY CONFIDENCE |
 | `DUAL_INSTRUCTION` | Extends router to output PRIMARY SECONDARY CONFIDENCE |
 
-**Used in**: `router_eval/routers/critic_router.py`, `final_router.py`, `confidence_router.py`, `dual_router.py`.
+**Used in**: [router_eval/routers/critic_router.py](../router_eval/routers/critic_router.py), [final_router.py](../router_eval/routers/final_router.py), [confidence_router.py](../router_eval/routers/confidence_router.py), [dual_router.py](../router_eval/routers/dual_router.py).
 
 ---
 
 ## 11. Context Ranker (Inline)
 
-**Location**: [`agent/retrieval/context_ranker.py`](agent/retrieval/context_ranker.py)
+**Location**: [`agent/retrieval/context_ranker.py`](../agent/retrieval/context_ranker.py)
 
 **Purpose**: Score retrieved snippets for relevance. Hybrid: 0.6×LLM + 0.2×symbol + 0.1×filename + 0.1×reference, minus diversity/test penalties.
 
@@ -410,9 +410,9 @@ The planner chooses **action types** (EDIT, SEARCH, EXPLAIN, INFRA). Tool select
 
 ### Eval Datasets
 
-- Planner: `planner/planner_dataset.json`
-- Router: `router_eval/dataset_v2`, `golden_dataset_v2.json`, `adversarial_dataset_v2.json`
-- Agent: `tests/agent_eval.json`
+- Planner: [planner/planner_dataset.json](../planner/planner_dataset.json)
+- Router: [router_eval/dataset_v2](../router_eval/dataset_v2.py), [golden_dataset_v2.json](../router_eval/golden_dataset_v2.json), [adversarial_dataset_v2.json](../router_eval/adversarial_dataset_v2.json)
+- Agent: [tests/agent_eval.json](../tests/agent_eval.json)
 
 ---
 
@@ -429,7 +429,7 @@ When changing prompts:
 
 ### Adding a New Prompt
 
-1. Create YAML in `agent/prompts/` or add to Python module.
+1. Create YAML in [agent/prompts/](../agent/prompts/) or add to Python module.
 2. Document in this file: purpose, pipeline position, structure, failure modes.
 3. Add to Prompt Inventory table.
 4. Add consumer to Code References.
