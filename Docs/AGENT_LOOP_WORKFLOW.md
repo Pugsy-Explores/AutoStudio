@@ -107,21 +107,22 @@ flowchart TB
         S1["Policy: max_attempts 5, retry_on empty_results, mutation query_variants"]
         S1 --> S2["For attempt 1 to max_attempts"]
         S2 --> S3{"rewrite_query_fn set?"}
-        S3 -->|yes| S4["rewrite_query_with_context(planner_step, user_request, attempt_history, state)"]
-        S3 -->|no| S5["queries_to_try = [description]"]
+        S3 -->|yes| S4["rewrite_query_with_context"]
+        S3 -->|no| S5["queries_to_try = description only"]
         S4 --> S4a["queries_to_try = str or list from rewriter"]
         S4a --> S6
         S5 --> S6["For each query in queries_to_try"]
-        S6 --> S7["_search_fn(query, state)"]
-        S7 --> S8["RepoMapLookup + detect_anchor → cache → hybrid_retrieve or sequential"]
-        S8 --> S9{"_is_valid_search_result?"}
-        S9 -->|yes| S10["Store context: search_query_rewritten, search_results; append attempt_history"]
+        S6 --> S6a{"more queries?"}
+        S6a -->|yes| S7["_search_fn query state"]
+        S6a -->|no| S13["Try next attempt with fresh rewrite"]
+        S7 --> S8["RepoMapLookup, detect_anchor, cache, hybrid_retrieve"]
+        S8 --> S9{"valid search result?"}
+        S9 -->|yes| S10["Store context, append attempt_history"]
         S10 --> S11["Return success"]
-        S9 -->|no| S12["Append to attempt_history; try next query variant"]
+        S9 -->|no| S12["Append to attempt_history, try next query"]
         S12 --> S6
-        S6 --> S13["Try next attempt with fresh rewrite"]
         S13 --> S2
-        S2 --> S14["Exhausted"] --> S15["Return success False, error all search attempts empty"]
+        S2 --> S14["Exhausted"] --> S15["Return success False"]
     end
 ```
 
@@ -171,7 +172,7 @@ flowchart TB
         E1 --> E2["symbol_retry step to steps_to_try"]
         E2 --> E3["For each step variant: _edit_fn with step and state"]
         E3 --> E4["edit_fn: plan_diff (if ENABLE_DIFF_PLANNER) else read_file/list_files"]
-        E4 --> E5{"_is_failure EDIT?"}
+        E4 --> E5{"EDIT failure?"}
         E5 -->|no| E6["Return success and output"]
         E5 -->|yes| E7["Next variant or exhausted"]
         E7 --> E8["Return success False with attempt_history"]
@@ -210,12 +211,12 @@ flowchart TB
 ```mermaid
 flowchart TB
     X["dispatch EXPLAIN"] --> X0{"ensure_context_before_explain"}
-    X0 -->|ranked_context empty| XG["Context gate: _search_fn(description) + run_retrieval_pipeline"]
+    X0 -->|ranked_context empty| XG["Context gate: _search_fn and run_retrieval_pipeline"]
     XG --> XG2{"Valid results?"}
     XG2 -->|no| XF["Return failure: No context for EXPLAIN"]
     XG2 -->|yes| X1
     X0 -->|ranked_context present| X1["get_model_for_task EXPLAIN"]
-    X1 --> X2["_format_explain_context: anchored FILE/SYMBOL/LINES/SNIPPET blocks"]
+    X1 --> X2["_format_explain_context: anchored blocks"]
     X2 --> X3["call_reasoning_model or call_small_model"]
     X3 --> X4["out_str = output.strip or fallback string"]
     X4 --> X5["Return success True, output out_str"]
@@ -242,7 +243,7 @@ flowchart TB
     R --> SEARCH_RULE["SEARCH: _is_valid_search_result"]
     R --> EDIT_RULE["EDIT: result.success"]
     R --> INFRA_RULE["INFRA: returncode equals 0"]
-    R --> EXPLAIN_RULE["EXPLAIN: not fallback (needs context → False, triggers replan)"]
+    R --> EXPLAIN_RULE["EXPLAIN: not fallback, needs context or triggers replan"]
 ```
 
 - **Rule-based (default)**: SEARCH → non-empty first result with file + snippet; EDIT → success; INFRA → returncode 0; EXPLAIN → if output contains "I cannot answer without relevant code context" → invalid (triggers replanner to add SEARCH); else `_is_valid_explain`: False when output length < 40 chars (triggers replan to add SEARCH). No LLM phrase detection.

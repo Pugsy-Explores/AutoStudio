@@ -47,17 +47,17 @@ flowchart TB
         Policy[PolicyEngine]
     end
 
-    subgraph SearchPath["SEARCH: _search_fn"]
+    subgraph SearchPath["SEARCH path"]
         RepoMapLookup[RepoMapLookup]
         AnchorDetector1[AnchorDetector]
-        SearchPipeline[SearchPipeline hybrid_retrieve]
+        SearchPipeline[SearchPipeline]
         GraphRetriever[GraphRetriever]
         VectorRetriever[VectorRetriever]
         SerenaGrep[Serena search_code]
     end
 
-    subgraph PostSearch["Post-SEARCH: run_retrieval_pipeline"]
-        AnchorDetector2[AnchorDetector.detect_anchors]
+    subgraph PostSearch["Post-SEARCH pipeline"]
+        AnchorDetector2[AnchorDetector]
         SymbolExpander[SymbolExpander]
         Expand[RetrievalExpansion]
         ContextBuilder[ContextBuilder]
