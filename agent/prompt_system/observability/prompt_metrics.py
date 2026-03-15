@@ -27,3 +27,8 @@ class PromptUsageMetric:
     pruning_triggered: bool = False
     compression_triggered: bool = False
     emergency_truncation_triggered: bool = False
+    # Phase 15 trajectory retry telemetry
+    attempt_number: int = 0
+    retry_strategy: str = ""
+    trajectory_length: int = 0
+    failure_type: str = ""

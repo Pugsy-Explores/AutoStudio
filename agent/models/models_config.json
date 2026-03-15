@@ -20,10 +20,10 @@
     }
   },
   "task_models": {
-    "experience_retrieval": "SMALL",
-    "action_selection": "SMALL",
-    "evaluation": "SMALL",
-    "critique": "SMALL",
+    "experience_retrieval": "REASONING",
+    "action_selection": "REASONING",
+    "evaluation": "REASONING",
+    "critique": "REASONING",
     "retry_planning": "REASONING",
     "query rewriting": "REASONING",
     "validation": "REASONING",
@@ -33,11 +33,11 @@
     "planner": "REASONING",
     "replanner": "REASONING",
     "context_ranking": "REASONING",
-    "localization": "SMALL",
-    "supervisor_routing": "SMALL",
-    "issue_parsing": "SMALL",
+    "localization": "REASONING",
+    "supervisor_routing": "REASONING",
+    "issue_parsing": "REASONING",
     "pr_generation": "REASONING",
-    "code_review": "SMALL",
+    "code_review": "REASONING",
     "code_review_summary": "REASONING"
   },
   "task_params": {

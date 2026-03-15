@@ -22,3 +22,7 @@ MAX_REPO_CONTEXT_TOKENS = int(os.getenv("MAX_REPO_CONTEXT_TOKENS", "7200"))  # 6
 MAX_RETRIEVAL_RESULTS = int(os.getenv("MAX_RETRIEVAL_RESULTS", "20"))
 HISTORY_WINDOW_TURNS = int(os.getenv("HISTORY_WINDOW_TURNS", "10"))  # last N turns kept raw
 HISTORY_SUMMARY_TURNS = int(os.getenv("HISTORY_SUMMARY_TURNS", "30"))  # older turns summarized
+
+# Phase 15 trajectory retry loop
+MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", "3"))
+MAX_RETRY_RUNTIME_SECONDS = int(os.getenv("MAX_RETRY_RUNTIME_SECONDS", "120"))

@@ -39,6 +39,8 @@ Used by `agent_controller`. `agent_loop` uses its own constants in `agent/orches
 | MAX_RETRIEVAL_RESULTS | 20 | MAX_RETRIEVAL_RESULTS | Phase 14: max candidates passed from retrieval to ranker |
 | HISTORY_WINDOW_TURNS | 10 | HISTORY_WINDOW_TURNS | Phase 14: last N turns kept verbatim in sliding window |
 | HISTORY_SUMMARY_TURNS | 30 | HISTORY_SUMMARY_TURNS | Phase 14: turns 10–30 collapsed into one summarized memory block |
+| MAX_RETRY_ATTEMPTS | 3 | MAX_RETRY_ATTEMPTS | Phase 15: max retry attempts in trajectory loop (autonomous mode) |
+| MAX_RETRY_RUNTIME_SECONDS | 120 | MAX_RETRY_RUNTIME_SECONDS | Phase 15: max wall-clock seconds for retry loop before stopping |
 
 ### agent_loop constants (agent/orchestrator/agent_loop.py)
 
@@ -90,6 +92,9 @@ Phase 4 reliability limits; not configurable via env:
 **Phase 13 prompt infrastructure** uses:
 - `dev/prompt_eval_results/` — prompt CI output (e.g. `planner_v1.json`); `baseline.json` for regression comparison
 - `dev/failure_logs/{prompt_name}/{date}.jsonl` — failure records from `failure_logger.log_failure()`
+
+**Phase 15 trajectory loop** uses:
+- `.agent_memory/trajectories/<task_id>.json` — per-task trajectory records: goal, attempts (each with attempt, start_time, end_time, steps, evaluation, diagnosis, strategy), final_status, timestamp
 
 ### repo_graph_config.py
 

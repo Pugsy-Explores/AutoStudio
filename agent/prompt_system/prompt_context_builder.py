@@ -4,10 +4,11 @@ from agent.prompt_system.context import (
     apply_sliding_window,
     compress,
     count_prompt_tokens,
-    count_tokens,
     rank_and_limit,
     PromptBudgetManager,
 )
+
+_CHARS_PER_TOKEN_ESTIMATE = 4
 
 
 def build_context(
@@ -75,8 +76,9 @@ def build_context_budgeted(
     history_windowed = apply_sliding_window(history, model_name)
     ranked = rank_and_limit(query, candidates)
     repo_context_str = _format_snippets(ranked)
-    repo_context_tokens, _ = count_tokens(repo_context_str, model_name)
-    ranked, compression_ratio = compress(ranked, repo_context_tokens, model_name=model_name)
+    # Cheap estimate (len/4) for compression gate — avoid expensive count_tokens/LLM unless needed
+    repo_estimate = len(repo_context_str) // _CHARS_PER_TOKEN_ESTIMATE
+    ranked, compression_ratio = compress(ranked, repo_estimate, model_name=model_name)
     repo_context_str = _format_snippets(ranked)
     compression_triggered = compression_ratio > 1.0
 
