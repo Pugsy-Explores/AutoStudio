@@ -1,5 +1,10 @@
 # AutoStudio
 
+[![GitHub license](https://img.shields.io/github/license/Pugsy-Explores/AutoCodeStudio)](https://github.com/Pugsy-Explores/AutoCodeStudio/blob/main/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/Pugsy-Explores/AutoCodeStudio)](https://github.com/Pugsy-Explores/AutoCodeStudio/stargazers)
+
+> **Plan. Search. Edit. Explain.** — A repository-aware autonomous coding agent that turns natural language into structured execution. LLM-powered planning, hybrid retrieval, and deterministic tool dispatch.
+
 **A repository-aware autonomous coding agent** that plans, searches, edits, and explains codebases using LLMs and structured tool execution.
 
 AutoStudio converts natural-language instructions into executable plans, runs code search (graph + vector + Serena fallback), ranks context, applies structured patches with conflict resolution, runs tests with repair loops, and persists task memory—all while respecting safety limits, policy-driven retries, and configurable model routing.
@@ -634,4 +639,4 @@ python scripts/evaluate_agent.py --json  # JSON output
 
 ## License and Contributing
 
-See project root for license.
+Licensed under the [MIT License](LICENSE). See [LICENSE](LICENSE) in the project root.
