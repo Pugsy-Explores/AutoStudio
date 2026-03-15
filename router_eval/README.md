@@ -63,6 +63,7 @@ from router_eval.routers.baseline_router import route
 
 ## See also
 
+- [Docs/PROMPT_ARCHITECTURE.md](../Docs/PROMPT_ARCHITECTURE.md) — Prompt layer: router prompts, few-shot strategy, evaluation prompts
 - [Docs/CONFIGURATION.md](../Docs/CONFIGURATION.md) — Centralized config (ROUTER_TYPE, etc.)
 - [Docs/AGENT_LOOP_WORKFLOW.md](../Docs/AGENT_LOOP_WORKFLOW.md) — Agent execution flow
 - [README.md](../README.md) — Project overview

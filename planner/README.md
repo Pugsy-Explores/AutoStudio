@@ -5,7 +5,7 @@ The planner converts a user instruction into a **sequence of atomic steps**. Eac
 ## Architecture
 
 1. **Input**: A single user instruction (e.g. “Find the login handler and update JWT validation”).
-2. **LLM**: The instruction is sent to an LLM with `PLANNER_SYSTEM_PROMPT`, which asks for a strict JSON plan.
+2. **LLM**: The instruction is sent to an LLM with `PLANNER_SYSTEM_PROMPT` (see [Docs/PROMPT_ARCHITECTURE.md](../Docs/PROMPT_ARCHITECTURE.md)), which asks for a strict JSON plan.
 3. **Parse**: The response is parsed as JSON (markdown code fences are stripped if present).
 4. **Validate & normalize**: Steps are validated and actions are normalized to the four allowed categories.
 5. **Output**: A structured plan: `{"steps": [{"id", "action", "description", "reason"}, ...]}`.

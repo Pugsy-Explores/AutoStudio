@@ -4,6 +4,7 @@
 
 | Document | Description |
 |----------|--------------|
+| [PROMPT_ARCHITECTURE.md](PROMPT_ARCHITECTURE.md) | Prompt layer: all prompts, pipeline position, design philosophy, safety risks, testing. |
 | [CONFIGURATION.md](CONFIGURATION.md) | Centralized config: all modules (`config/`), env overrides, validation rules. |
 | [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md) | End-to-end agent flow: instruction → plan → execute → validate → replan. ToolGraph → Router → PolicyEngine; step dispatch; SEARCH/EDIT/INFRA/EXPLAIN paths; repo_map lookup + anchor detection → hybrid retrieval; run_retrieval_pipeline (anchor detection → symbol_expander + expand → read → build_context); context_builder_v2; context gate; model routing; diff planner; validator empty-context rule. |
 | [AGENT_CONTROLLER.md](AGENT_CONTROLLER.md) | Full pipeline: run_controller, instruction router, safety limits, test repair, task memory, trace logging. |

@@ -2,6 +2,8 @@
 
 YAML prompts in this package are loaded and formatted with Python's `str.format()`.
 
+For full architecture: [Docs/PROMPT_ARCHITECTURE.md](../../Docs/PROMPT_ARCHITECTURE.md) — purpose, pipeline position, design philosophy, safety risks, testing.
+
 ## Format string rules
 
 - **Placeholders**: Use `{name}` for substitution. Pass matching kwargs to `format()`.
