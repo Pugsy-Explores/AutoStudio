@@ -56,7 +56,7 @@ flowchart TB
 
 **Context initialization:** `run_agent` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
 
-**Termination conditions (best practice):** task complete, max replan (5), max runtime (15 min), max iterations (100). Limits are configurable via `config/agent_config.py`; see [CONFIGURATION.md](CONFIGURATION.md).
+**Termination conditions (best practice):** task complete, max replan (5), max runtime (15 min), max iterations (100). `agent_controller` uses `config/agent_config.py`; `agent_loop` uses module-level constants. See [CONFIGURATION.md](CONFIGURATION.md).
 
 ---
 
@@ -107,23 +107,21 @@ flowchart TB
         S1["Policy: max_attempts 5, retry_on empty_results, mutation query_variants"]
         S1 --> S2["For attempt 1 to max_attempts"]
         S2 --> S3{"rewrite_query_fn set?"}
-        S3 -->|yes| S4["rewrite_query_with_context(planner_step, user_request, attempts, state)"]
-        S3 -->|no| S5["query = description"]
-        S4 --> S6{"use_llm?"}
-        S6 -->|True| S7["get_model_for_task query rewriting"]
-        S7 --> S8["call_reasoning_model or call_small_model"]
-        S8 --> S9{"Model output empty?"}
-        S9 -->|yes| S10["Raise ValueError - Query rewrite returned empty response"]
-        S9 -->|no| S11["cleaned = output.strip"]
-        S6 -->|False| S12["query = planner_step.strip (passthrough)"]
-        S12 --> S11
-        S11 --> S13["_search_fn: chosen_tool order retrieve_graph/vector/grep/list_dir, else search_code"]
-        S13 --> S14{"_is_valid_search_result?"}
-        S14 -->|yes| S15["Store context: search_query_rewritten, search_results, files, snippets"]
-        S15 --> S16["Return success"]
-        S14 -->|no| S17["Append to attempt_history and try next query variant or attempt"]
-        S17 --> S2
-        S2 --> S18["Exhausted"] --> S19["Return success False, error all search attempts empty"]
+        S3 -->|yes| S4["rewrite_query_with_context(planner_step, user_request, attempt_history, state)"]
+        S3 -->|no| S5["queries_to_try = [description]"]
+        S4 --> S4a["queries_to_try = str or list from rewriter"]
+        S4a --> S6
+        S5 --> S6["For each query in queries_to_try"]
+        S6 --> S7["_search_fn(query, state)"]
+        S7 --> S8["RepoMapLookup + detect_anchor → cache → hybrid_retrieve or sequential"]
+        S8 --> S9{"_is_valid_search_result?"}
+        S9 -->|yes| S10["Store context: search_query_rewritten, search_results; append attempt_history"]
+        S10 --> S11["Return success"]
+        S9 -->|no| S12["Append to attempt_history; try next query variant"]
+        S12 --> S6
+        S6 --> S13["Try next attempt with fresh rewrite"]
+        S13 --> S2
+        S2 --> S14["Exhausted"] --> S15["Return success False, error all search attempts empty"]
     end
 ```
 
@@ -346,7 +344,7 @@ flowchart LR
 - **Retrieval cache**: `agent/retrieval/retrieval_cache.py` — LRU cache for search results.
 - **Diff planner**: `editing/diff_planner.py` — plan_diff.
 - **Patch pipeline**: `editing/patch_generator.py` — to_structured_patches; `editing/ast_patcher.py` — apply_patch; `editing/patch_validator.py` — validate_patch; `editing/patch_executor.py` — execute_patch (rollback on failure).
-- **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (full pipeline); _get_plan (instruction router + planner).
+- **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (full pipeline); get_plan from plan_resolver (instruction router + planner).
 - **Instruction router**: `agent/routing/instruction_router.py` — route_instruction (when ENABLE_INSTRUCTION_ROUTER=1).
 - **Router registry**: `agent/routing/router_registry.py` — get_router, get_router_raw (ROUTER_TYPE integration).
 

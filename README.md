@@ -33,7 +33,7 @@ flowchart TB
         User[User instruction]
     end
 
-    subgraph Routing
+    subgraph PlanResolver["Plan resolver (router + planner)"]
         InstructionRouter[Instruction Router]
         Planner[Planner]
         Plan[JSON plan: steps with action, description]
@@ -45,27 +45,30 @@ flowchart TB
         Dispatch[Dispatcher]
         ToolGraph[ToolGraph]
         Policy[PolicyEngine]
-        Tools[Tools]
     end
 
-    subgraph Retrieval
+    subgraph SearchPath["SEARCH: _search_fn"]
         RepoMapLookup[RepoMapLookup]
-        SearchPipeline[SearchPipeline]
+        AnchorDetector1[AnchorDetector]
+        SearchPipeline[SearchPipeline hybrid_retrieve]
         GraphRetriever[GraphRetriever]
         VectorRetriever[VectorRetriever]
         SerenaGrep[Serena search_code]
-        RetrievalPipeline[RetrievalPipeline]
-        AnchorDetector[AnchorDetector]
+    end
+
+    subgraph PostSearch["Post-SEARCH: run_retrieval_pipeline"]
+        AnchorDetector2[AnchorDetector.detect_anchors]
         SymbolExpander[SymbolExpander]
         Expand[RetrievalExpansion]
-        ContextBuilder[ContextBuilderV2]
+        ContextBuilder[ContextBuilder]
         Ranker[ContextRanker]
         Pruner[ContextPruner]
     end
 
-    subgraph Reasoning
+    subgraph ExplainPath["EXPLAIN"]
         ExplainGate[ExplainGate]
-        Explain[EXPLAIN]
+        ContextBuilderV2[ContextBuilderV2]
+        Explain[EXPLAIN model call]
     end
 
     User --> InstructionRouter
@@ -77,28 +80,26 @@ flowchart TB
     Exec --> Dispatch
     Dispatch --> ToolGraph
     ToolGraph --> Policy
-    Policy --> Tools
-    Policy --> RepoMapLookup
-    Tools --> SearchPipeline
-    RepoMapLookup --> SearchPipeline
+    Policy -->|SEARCH| RepoMapLookup
+    RepoMapLookup --> AnchorDetector1
+    AnchorDetector1 --> SearchPipeline
     SearchPipeline --> GraphRetriever
     SearchPipeline --> VectorRetriever
     SearchPipeline --> SerenaGrep
-    GraphRetriever --> RetrievalPipeline
-    VectorRetriever --> RetrievalPipeline
-    SerenaGrep --> RetrievalPipeline
-    RetrievalPipeline --> AnchorDetector
-    AnchorDetector --> SymbolExpander
-    AnchorDetector --> Expand
+    Dispatch -->|SEARCH success| AnchorDetector2
+    AnchorDetector2 --> SymbolExpander
+    AnchorDetector2 --> Expand
     SymbolExpander --> ContextBuilder
     Expand --> ContextBuilder
     ContextBuilder --> Ranker
     Ranker --> Pruner
-    Pruner --> ExplainGate
-    ExplainGate --> Explain
+    Dispatch -->|EXPLAIN| ExplainGate
+    ExplainGate -->|ranked_context empty| RepoMapLookup
+    ExplainGate -->|has context| ContextBuilderV2
+    ContextBuilderV2 --> Explain
 ```
 
-**High-level flow:** Instruction → Instruction Router (optional) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state.
+**High-level flow:** Instruction → Plan resolver (instruction router when enabled, else planner) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state. SEARCH uses `_search_fn` (RepoMapLookup → SearchPipeline) then `run_retrieval_pipeline` on success. EXPLAIN uses ExplainGate to inject SEARCH when `ranked_context` is empty.
 
 ---
 
@@ -334,7 +335,7 @@ EDIT
 instruction
   → build_repo_map() — high-level architectural map
   → search_similar_tasks() — vector index of past tasks (optional)
-  → _get_plan() — instruction router (if enabled) or planner.plan()
+  → get_plan() — instruction router (if enabled) or planner.plan()
   → while task_not_complete:
         step = next_step()
         if SEARCH: dispatch (hybrid_retrieve or retrieve_graph → retrieve_vector → retrieve_grep → Serena)

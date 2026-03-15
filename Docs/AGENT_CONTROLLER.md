@@ -24,7 +24,7 @@ result = run_controller(
 instruction
   → build_repo_map() — spec format {modules, symbols, calls} → repo_map.json
   → search_similar_tasks() — vector index of past tasks (optional)
-  → _get_plan(instruction)
+  → get_plan(instruction)
        → [if ENABLE_INSTRUCTION_ROUTER=1] route_instruction() → category
        → if CODE_SEARCH/CODE_EXPLAIN/INFRA: single-step plan, skip planner
        → if CODE_EDIT/GENERAL: planner.plan(instruction)
@@ -153,7 +153,7 @@ python -m pytest tests/test_agent_e2e.py -v --mock   # always use mock
 
 ## File Reference
 
-- **Controller:** `agent/orchestrator/agent_controller.py` — `run_controller`, `_get_plan`, `_run_edit_flow`
+- **Controller:** `agent/orchestrator/agent_controller.py` — `run_controller`, `get_plan` (from plan_resolver), `_run_edit_flow`
 - **Instruction router:** `agent/routing/instruction_router.py` — `route_instruction`
 - **Task memory:** `agent/memory/task_memory.py`
 - **Trace logger:** `agent/observability/trace_logger.py`

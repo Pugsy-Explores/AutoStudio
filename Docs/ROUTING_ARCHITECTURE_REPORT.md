@@ -9,7 +9,7 @@
 ```
 User Query (instruction)
   → run_controller() [agent/orchestrator/agent_controller.py]
-  → _get_plan(instruction) [when ENABLE_INSTRUCTION_ROUTER=1]
+  → get_plan(instruction) [agent/orchestrator/plan_resolver.py; when ENABLE_INSTRUCTION_ROUTER=1]
        → route_instruction(instruction) [agent/routing/instruction_router.py]
        → category ∈ {CODE_SEARCH, CODE_EDIT, CODE_EXPLAIN, INFRA, GENERAL}
        → if CODE_SEARCH/CODE_EXPLAIN/INFRA: single-step plan, skip planner
@@ -32,7 +32,7 @@ User Query (instruction)
 ```
 User Query
   → run_agent() [agent/orchestrator/agent_loop.py]
-  → plan(instruction)
+  → get_plan(instruction) [agent/orchestrator/plan_resolver.py]
   → StepExecutor.execute_step() [agent/execution/executor.py]
   → dispatch(step, state) [same as above]
 ```
