@@ -226,142 +226,332 @@ Configure `agent/models/models_config.json` or set:
 
 ## Project Structure
 
+Detailed repository tree. Excludes: `.venv/`, `__pycache__/`, `.agent_memory/`, `reports/`, `.symbol_graph/`, `.cursor/`.
+
 ```
 AutoStudio/
-├── pyproject.toml            # Package config; autostudio CLI entrypoint (Phase 6)
-├── config/                   # Centralized configuration (see Docs/CONFIGURATION.md)
-│   ├── agent_config.py       # Agent loop limits (runtime, replan, step timeout, context chars)
-│   ├── editing_config.py     # Patch and file limits
-│   ├── retrieval_config.py   # Retrieval budgets and flags
-│   ├── router_config.py      # Instruction router
-│   ├── tool_graph_config.py # Tool graph enable
-│   ├── repo_graph_config.py # Symbol graph paths
-│   ├── repo_intelligence_config.py # Phase 10: repo scan, architecture, impact, context limits
+├── pyproject.toml              # Package config; autostudio CLI entrypoint (Phase 6)
+├── mcp.json                     # MCP server config (Serena, etc.)
+├── index_repo.py                # Legacy embedding indexer (use repo_index.index_repo)
+├── mcp_retriever.py             # Optional ChromaDB retrieval API (legacy)
+│
+├── config/                      # Centralized configuration (Docs/CONFIGURATION.md)
+│   ├── __init__.py
+│   ├── agent_config.py         # Agent loop limits: runtime, replan, step timeout, context chars
+│   ├── editing_config.py       # Patch and file limits
+│   ├── retrieval_config.py     # Retrieval budgets, hybrid flags, cache size
+│   ├── router_config.py        # Instruction router (ROUTER_TYPE, ENABLE_INSTRUCTION_ROUTER)
+│   ├── tool_graph_config.py    # Tool graph enable/disable
+│   ├── repo_graph_config.py    # Symbol graph paths (.symbol_graph/)
+│   ├── repo_intelligence_config.py  # Phase 10: repo scan, architecture, impact, context limits
 │   ├── observability_config.py # Trace settings
-│   ├── logging_config.py    # Log level/format
-│   └── config_validator.py  # Startup validation
-├── agent/                    # Core agent package
-│   ├── autonomous/           # Mode 2: goal-driven loop (Phase 7/8)
-│   │   ├── goal_manager.py   # Goal tracking, limit checks; reset_for_retry (Phase 8)
-│   │   ├── state_observer.py # ObservationBundle from repo_map, trace, retrieval
-│   │   ├── action_selector.py # Small-model structured action selection (SEARCH/EDIT/EXPLAIN/INFRA)
-│   │   └── agent_loop.py     # run_autonomous(goal, max_retries=3); meta loop: evaluate→critic→retry
-│   ├── workflow/             # Phase 12: developer workflow (issue → task → PR → CI → review)
-│   │   ├── issue_parser.py         # Parse GitHub/GitLab issues into structured tasks
-│   │   ├── pr_generator.py         # Generate PR title and description from workspace/patches
-│   │   ├── ci_runner.py            # Run pytest, ruff; MAX_CI_RUNTIME_SECONDS
-│   │   ├── code_review_agent.py    # Review patch: style, security, large diffs, missing tests
-│   │   ├── developer_feedback.py   # Apply feedback via critic → retry planner → improved patch
-│   │   └── workflow_controller.py  # Orchestrate: issue → parse → run_multi_agent → PR → CI → review
-│   ├── intelligence/         # Phase 11: solution memory, task embeddings, experience retrieval, developer model, repo learning
-│   │   ├── solution_memory.py      # Persist successful solutions to .agent_memory/solutions/
-│   │   ├── task_embeddings.py      # ChromaDB vector index for solution patterns (.agent_memory/intelligence_index/)
-│   │   ├── experience_retriever.py # Pre-task retrieval: similar_solutions, developer_profile, repo_knowledge, suggested_files
-│   │   ├── developer_model.py      # developer_profile.json: preferences from accepted solutions
-│   │   └── repo_learning.py        # repo_knowledge.json: frequent_bug_areas, refactor_patterns, architecture_constraints
-│   ├── repo_intelligence/    # Phase 10: repository-scale intelligence
-│   │   ├── repo_summary_graph.py   # build_repo_summary_graph: modules, entrypoints, key_classes, dependencies
-│   │   ├── architecture_map.py    # build_architecture_map: controllers, services, data_layers, utilities
-│   │   ├── impact_analyzer.py      # analyze_impact: BFS from edited file to affected files/symbols
-│   │   ├── context_compressor.py   # compress_context: summaries when ranked_context exceeds budget
-│   │   └── long_horizon_planner.py # plan_long_horizon: architecture-aware multi-module planning
-│   ├── meta/                 # Reflection layer (Phase 8)
-│   │   ├── evaluator.py      # SUCCESS/FAILURE/PARTIAL from step results
-│   │   ├── critic.py         # Diagnose failure (retrieval_miss, bad_plan, bad_patch, etc.)
-│   │   ├── retry_planner.py  # Retry hints: rewrite_query, expand_scope, new_plan, etc.
+│   ├── logging_config.py       # Log level/format
+│   └── config_validator.py     # Startup validation
+│
+├── agent/                       # Core agent package
+│   ├── __init__.py
+│   ├── __main__.py             # python -m agent "instruction"
+│   ├── agent_loop.py           # Legacy: run_agent entry
+│   ├── executor.py             # Legacy executor
+│   ├── state.py                # AgentState (legacy alias)
+│   ├── step_result.py          # StepResult (legacy alias)
+│   ├── test_executor.py        # Test harness
+│   │
+│   ├── autonomous/             # Mode 2: goal-driven loop (Phase 7/8)
+│   │   ├── __init__.py
+│   │   ├── agent_loop.py       # run_autonomous(goal, max_retries=3); meta loop: evaluate→critic→retry
+│   │   ├── goal_manager.py     # Goal tracking, limit checks; reset_for_retry (Phase 8)
+│   │   ├── state_observer.py   # ObservationBundle from repo_map, trace, retrieval
+│   │   └── action_selector.py  # Small-model structured action selection (SEARCH/EDIT/EXPLAIN/INFRA)
+│   │
+│   ├── cli/                    # CLI entry points (Phase 6)
+│   │   ├── __init__.py
+│   │   ├── __main__.py
+│   │   ├── entrypoint.py       # autostudio: explain, edit, trace, chat, debug, issue, fix, pr, review, ci
+│   │   ├── run_agent.py        # Single-shot (legacy); --live for step visualization
+│   │   ├── session.py          # Interactive chat REPL
+│   │   ├── command_parser.py   # Slash-commands: /explain, /fix, /refactor, /add-logging, /find
+│   │   └── live_viz.py         # Live trace event listeners
+│   │
+│   ├── execution/              # Step execution and dispatch
+│   │   ├── __init__.py
+│   │   ├── executor.py         # StepExecutor (execute_step → dispatch)
+│   │   ├── step_dispatcher.py  # Orchestrates: ToolGraph → Router → PolicyEngine; run_retrieval_pipeline
+│   │   ├── tool_graph.py       # Allowed tools per node; ENABLE_TOOL_GRAPH
+│   │   ├── tool_graph_router.py # resolve_tool (preferred or first allowed)
+│   │   ├── policy_engine.py    # Retry + mutation; validate_step_input pre-dispatch (Phase 7)
+│   │   ├── explain_gate.py     # Context gate before EXPLAIN (inject SEARCH if empty)
+│   │   └── mutation_strategies.py  # Query rewrite, symbol retry, retry_same
+│   │
+│   ├── intelligence/           # Phase 11: solution memory, task embeddings, experience retrieval
+│   │   ├── __init__.py
+│   │   ├── solution_memory.py  # Persist successful solutions to .agent_memory/solutions/
+│   │   ├── task_embeddings.py  # ChromaDB vector index (.agent_memory/intelligence_index/)
+│   │   ├── experience_retriever.py  # Pre-task: similar_solutions, developer_profile, repo_knowledge
+│   │   ├── developer_model.py  # developer_profile.json: preferences from accepted solutions
+│   │   └── repo_learning.py   # repo_knowledge.json: bug_areas, refactor_patterns, constraints
+│   │
+│   ├── meta/                   # Reflection layer (Phase 8)
+│   │   ├── __init__.py
+│   │   ├── evaluator.py        # SUCCESS/FAILURE/PARTIAL from step results
+│   │   ├── critic.py           # Diagnose failure (retrieval_miss, bad_plan, bad_patch, etc.)
+│   │   ├── retry_planner.py    # Retry hints: rewrite_query, expand_scope, new_plan
 │   │   └── trajectory_store.py # Persist attempts under .agent_memory/trajectories/
-│   ├── cli/                  # CLI entry points (Phase 6)
-│   │   ├── entrypoint.py     # autostudio: explain, edit, trace, chat, debug, run
-│   │   ├── run_agent.py      # Single-shot (legacy); --live for step visualization
-│   │   ├── session.py        # Interactive chat REPL
-│   │   ├── command_parser.py # Slash-commands: /explain, /fix, /refactor, /add-logging, /find
-│   │   └── live_viz.py       # Live trace event listeners
-│   ├── execution/            # Step execution and dispatch
-│   │   ├── executor.py       # StepExecutor (execute_step → dispatch)
-│   │   ├── step_dispatcher.py  # Orchestrates: ToolGraph → Router → PolicyEngine; calls run_retrieval_pipeline
-│   │   ├── tool_graph.py     # Allowed tools per node; ENABLE_TOOL_GRAPH
-│   │   ├── tool_graph_router.py  # resolve_tool (preferred or first allowed; no hard reject)
-│   │   ├── policy_engine.py  # Retry + mutation; validate_step_input pre-dispatch (Phase 7)
-│   │   └── explain_gate.py   # Context gate before EXPLAIN (inject SEARCH if empty)
-│   ├── memory/               # State, results, task memory, task index
-│   │   ├── state.py          # AgentState
-│   │   ├── task_memory.py    # save_task, load_task, list_tasks
-│   │   ├── task_index.py     # Vector index for past tasks (optional)
-│   │   └── session_memory.py # Session: conversation_history, recent_files, recent_symbols (Phase 6)
-│   ├── models/               # Model client and config
-│   ├── observability/        # Trace logging
-│   │   ├── trace_logger.py   # start_trace, log_event, finish_trace; event/stage listeners (Phase 6)
-│   │   └── ux_metrics.py     # Session metrics: interaction_latency, steps_per_task, patch_success (Phase 6)
-│   ├── orchestrator/         # Agent loop, controller, validation
-│   │   ├── agent_loop.py     # run_agent (Mode 1: standard loop; per-step timeout Phase 7)
-│   │   ├── agent_controller.py # run_controller (mode routing; deterministic/autonomous/multi_agent)
-│   │   └── deterministic_runner.py # run_deterministic (plan → dispatch loop; single source for Mode 1)
-│   ├── retrieval/            # Query rewrite, context building, ranking
-│   │   ├── search_pipeline.py  # Hybrid parallel retrieval (graph + vector + grep); uses repo_map anchor when present
-│   │   ├── retrieval_pipeline.py  # run_retrieval_pipeline: anchor → localization → symbol_expander + expand → read → build_context
-│   │   ├── localization/       # Phase 10.5: graph-guided localization (dependency_traversal, execution_path_analyzer, symbol_ranker, localization_engine)
-│   │   ├── repo_map_lookup.py  # lookup_repo_map: tokenize query → match symbols → anchor candidates
-│   │   ├── anchor_detector.py  # detect_anchors (search results); detect_anchor (query + repo_map)
-│   │   ├── symbol_expander.py  # expand_from_anchors: graph depth=2 → fetch bodies → rank → prune (max 15 symbols, 6 snippets)
-│   │   ├── graph_retriever.py # Symbol lookup + 2-hop expansion
-│   │   ├── vector_retriever.py # Embedding-based search (optional)
-│   │   ├── retrieval_cache.py  # LRU cache for search results
+│   │
+│   ├── memory/                 # State, results, task memory, task index
+│   │   ├── __init__.py
+│   │   ├── state.py            # AgentState
+│   │   ├── step_result.py      # StepResult
+│   │   ├── task_memory.py      # save_task, load_task, list_tasks
+│   │   ├── task_index.py       # Vector index for past tasks (optional)
+│   │   └── session_memory.py   # Session: conversation_history, recent_files (Phase 6)
+│   │
+│   ├── models/                 # Model client and config
+│   │   ├── __init__.py
+│   │   ├── model_client.py     # OpenAI-compatible API client
+│   │   ├── model_config.py     # Load models_config.json, env overrides
+│   │   ├── model_router.py     # Route task → model (SMALL, REASONING, REASONING_V2)
+│   │   ├── model_types.py      # Typed request/response
+│   │   └── models_config.json  # Model endpoints, task_models, task_params
+│   │
+│   ├── observability/          # Trace logging
+│   │   ├── __init__.py
+│   │   ├── trace_logger.py     # start_trace, log_event, finish_trace; event/stage listeners
+│   │   └── ux_metrics.py       # Session metrics: interaction_latency, steps_per_task, patch_success
+│   │
+│   ├── orchestrator/           # Agent loop, controller, validation
+│   │   ├── __init__.py
+│   │   ├── agent_loop.py       # run_agent (Mode 1: standard loop; per-step timeout)
+│   │   ├── agent_controller.py # run_controller (mode: deterministic/autonomous/multi_agent)
+│   │   ├── deterministic_runner.py  # run_deterministic (plan → dispatch loop; Mode 1 source)
+│   │   ├── plan_resolver.py    # get_plan: instruction_router or planner.plan()
+│   │   ├── replanner.py        # LLM-based replan on failure
+│   │   └── validator.py        # validate_step (rules + optional LLM)
+│   │
+│   ├── prompts/                # YAML prompts
+│   │   ├── __init__.py
+│   │   ├── README.md
+│   │   ├── planner_system.yaml
+│   │   ├── replanner_system.yaml
+│   │   ├── critic_system.yaml
+│   │   ├── retry_planner_system.yaml
+│   │   ├── query_rewrite.yaml
+│   │   ├── query_rewrite_with_context.yaml
+│   │   ├── validate_step.yaml
+│   │   ├── model_router.yaml
+│   │   └── router_logit_system.yaml
+│   │
+│   ├── repo_intelligence/      # Phase 10: repository-scale intelligence
+│   │   ├── __init__.py
+│   │   ├── repo_summary_graph.py   # build_repo_summary_graph: modules, entrypoints, key_classes
+│   │   ├── architecture_map.py    # build_architecture_map: controllers, services, data_layers
+│   │   ├── impact_analyzer.py      # analyze_impact: BFS from edited file to affected files
+│   │   ├── context_compressor.py   # compress_context when ranked_context exceeds budget
+│   │   └── long_horizon_planner.py # plan_long_horizon: architecture-aware multi-module planning
+│   │
+│   ├── retrieval/              # Query rewrite, context building, ranking
+│   │   ├── __init__.py
+│   │   ├── search_pipeline.py      # Hybrid parallel (graph + vector + grep); repo_map anchor
+│   │   ├── retrieval_pipeline.py   # anchor → localization → symbol_expander + expand → build_context
+│   │   ├── repo_map_lookup.py      # lookup_repo_map: tokenize query → match symbols → anchor
+│   │   ├── anchor_detector.py      # detect_anchors (results); detect_anchor (query + repo_map)
+│   │   ├── symbol_expander.py      # expand_from_anchors: graph depth=2 → rank → prune
+│   │   ├── graph_retriever.py      # Symbol lookup + 2-hop expansion
+│   │   ├── vector_retriever.py     # Embedding-based search (ChromaDB)
+│   │   ├── retrieval_cache.py     # LRU cache for search results
+│   │   ├── retrieval_expander.py   # expand_search_results
 │   │   ├── query_rewriter.py
-│   │   ├── retrieval_expander.py
 │   │   ├── context_builder.py
-│   │   ├── context_builder_v2.py  # assemble_reasoning_context: FILE/SYMBOL/LINES/SNIPPET format, ~8000 char budget
+│   │   ├── context_builder_v2.py   # assemble_reasoning_context: FILE/SYMBOL/LINES/SNIPPET
 │   │   ├── context_ranker.py
-│   │   └── context_pruner.py
-│   ├── tools/                # Tool adapters
-│   └── prompts/              # YAML prompts (planner, replanner, critic, retry_planner)
-├── repo_index/               # Repository indexing (Tree-sitter)
-│   ├── index_repo.py         # CLI: index_repo (--verbose, --no-gitignore)
-│   ├── indexer.py            # scan_repo, index_repo (parallel, .gitignore, optional embeddings)
-│   ├── parser.py             # parse_file
-│   ├── symbol_extractor.py   # extract_symbols
+│   │   ├── context_pruner.py
+│   │   ├── symbol_graph.py         # Symbol graph query wrapper
+│   │   └── localization/           # Phase 10.5: graph-guided localization
+│   │       ├── __init__.py
+│   │       ├── dependency_traversal.py   # BFS over symbol graph (callers, callees)
+│   │       ├── execution_path_analyzer.py # Forward/backward call chains
+│   │       ├── symbol_ranker.py            # Score by dependency, call graph, name, semantic
+│   │       └── localization_engine.py     # Orchestrate stages; prepend to candidates
+│   │
+│   ├── roles/                  # Phase 9: hierarchical multi-agent
+│   │   ├── __init__.py
+│   │   ├── base_role_agent.py  # Base class for role agents
+│   │   ├── supervisor_agent.py # Orchestrates planner → localization → edit → test → critic
+│   │   ├── planner_agent.py
+│   │   ├── localization_agent.py
+│   │   ├── edit_agent.py
+│   │   ├── test_agent.py
+│   │   ├── critic_agent.py
+│   │   └── workspace.py        # AgentWorkspace: shared state, patches, trace
+│   │
+│   ├── routing/                # Instruction routing
+│   │   ├── __init__.py
+│   │   ├── instruction_router.py  # Classify before planner (CODE_EDIT, CODE_SEARCH, etc.)
+│   │   └── router_registry.py     # baseline, fewshot, ensemble, final
+│   │
+│   ├── tools/                  # Tool adapters
+│   │   ├── __init__.py
+│   │   ├── filesystem_adapter.py   # read_file, write_file, list_files
+│   │   ├── terminal_adapter.py     # run_command
+│   │   ├── reference_tools.py      # read_symbol_body, find_referencing_symbols
+│   │   ├── serena_adapter.py       # Serena MCP: search_code
+│   │   └── context7_adapter.py    # Optional doc lookup
+│   │
+│   └── workflow/               # Phase 12: developer workflow (issue → PR → CI → review)
+│       ├── __init__.py
+│       ├── workflow_controller.py  # Orchestrate: issue → parse → run_multi_agent → PR → CI → review
+│       ├── issue_parser.py         # Parse GitHub/GitLab issues into structured tasks
+│       ├── pr_generator.py         # Generate PR title/description from workspace/patches
+│       ├── ci_runner.py            # Run pytest, ruff; MAX_CI_RUNTIME_SECONDS
+│       ├── code_review_agent.py    # Review patch: style, security, large diffs, missing tests
+│       └── developer_feedback.py   # Apply feedback via critic → retry planner → improved patch
+│
+├── repo_index/                 # Repository indexing (Tree-sitter)
+│   ├── __init__.py
+│   ├── index_repo.py           # CLI: index_repo (--verbose, --no-gitignore)
+│   ├── indexer.py              # scan_repo, index_repo (parallel, .gitignore, optional embeddings)
+│   ├── parser.py               # parse_file
+│   ├── symbol_extractor.py     # extract_symbols
 │   └── dependency_extractor.py # extract_edges
-├── repo_graph/               # Symbol graph storage and query
-│   ├── graph_storage.py      # SQLite nodes/edges
-│   ├── graph_builder.py      # build_graph
-│   ├── graph_query.py        # find_symbol, expand_neighbors
-│   ├── repo_map_builder.py   # build_repo_map, build_repo_map_from_storage (spec: modules, symbols, calls)
-│   ├── repo_map_updater.py   # update_repo_map_for_file (incremental; call after update_index_for_file)
-│   └── change_detector.py    # Semantic change impact (risk levels)
-├── editing/                  # Diff planning, conflict resolution, patches
-│   ├── diff_planner.py       # plan_diff (EDIT step)
-│   ├── conflict_resolver.py  # Detect and resolve edit conflicts
-│   ├── semantic_diff.py      # AST-aware overlap detection
-│   ├── merge_strategies.py   # merge_sequential, merge_three_way
-│   ├── patch_generator.py    # to_structured_patches
-│   ├── patch_executor.py     # execute_patch (with rollback)
-│   ├── patch_validator.py    # validate_patch
-│   ├── ast_patcher.py        # AST patching
-│   └── test_repair_loop.py   # Run tests, repair on failure
-├── planner/
-├── router_eval/
-├── scripts/                  # Evaluation and utilities
-│   ├── run_principal_engineer_suite.py  # Phase 3/4 scenario eval, failure mining, stress
-│   ├── run_capability_eval.py            # Phase 5: dev_tasks.json → reports/eval_report.json
-│   ├── run_autonomous_eval.py            # Phase 8: autonomous_tasks.json → reports/autonomous_eval_report.json
-│   ├── run_multi_agent_eval.py           # Phase 9: multi_agent_tasks.json → reports/multi_agent_eval_report.json
-│   ├── run_repository_eval.py            # Phase 10: repository_tasks.json → reports/repository_eval_report.json
-│   ├── run_localization_eval.py          # Phase 10.5: localization_tasks.json → reports/localization_report.json
-│   ├── run_workflow_eval.py              # Phase 12: workflow_tasks.json → reports/workflow_eval_report.json
-│   ├── evaluate_agent.py                 # Legacy: agent_eval.json
-│   ├── replay_trace.py                   # Trace replay
-│   └── verify_phase2_exit.py             # Phase 2 verification
-├── Docs/                     # See Docs/README.md for index
-├── mcp_retriever.py          # Optional ChromaDB retrieval API (legacy)
-├── index_repo.py             # Legacy embedding indexer
-└── tests/
+│
+├── repo_graph/                 # Symbol graph storage and query
+│   ├── __init__.py
+│   ├── graph_storage.py        # SQLite nodes/edges
+│   ├── graph_builder.py        # build_graph
+│   ├── graph_query.py          # find_symbol, expand_neighbors
+│   ├── repo_map_builder.py     # build_repo_map, build_repo_map_from_storage
+│   ├── repo_map_updater.py     # update_repo_map_for_file (incremental)
+│   └── change_detector.py      # Semantic change impact (risk levels)
+│
+├── editing/                    # Diff planning, conflict resolution, patches
+│   ├── __init__.py
+│   ├── diff_planner.py         # plan_diff (EDIT step)
+│   ├── conflict_resolver.py    # Detect and resolve edit conflicts
+│   ├── semantic_diff.py        # AST-aware overlap detection
+│   ├── merge_strategies.py     # merge_sequential, merge_three_way
+│   ├── patch_generator.py      # to_structured_patches
+│   ├── patch_executor.py       # execute_patch (with rollback)
+│   ├── patch_validator.py      # validate_patch
+│   ├── ast_patcher.py          # AST patching (Tree-sitter)
+│   └── test_repair_loop.py     # Run tests, repair on failure
+│
+├── planner/                    # Instruction → JSON plan
+│   ├── __init__.py
+│   ├── README.md
+│   ├── planner.py             # plan(instruction) → {steps: [{id, action, description, reason}]}
+│   ├── planner_prompts.py
+│   ├── planner_utils.py
+│   ├── planner_dataset.json
+│   └── planner_eval.py        # python -m planner.planner_eval
+│
+├── router_eval/                # Instruction router evaluation
+│   ├── __init__.py
+│   ├── README.md
+│   ├── router_eval.py          # python -m router_eval.router_eval
+│   ├── router_eval_v2.py
+│   ├── run_all_routers.py      # Run with production router
+│   ├── dataset.py
+│   ├── dataset_v2.py
+│   ├── golden_dataset_v2.json
+│   ├── adversarial_dataset_v2.json
+│   ├── prompts/
+│   ├── routers/                # baseline, fewshot, ensemble, final, etc.
+│   └── tests/
+│
+├── scripts/                    # Evaluation and utilities
+│   ├── run_principal_engineer_suite.py  # Phase 3/4: scenarios, failure mining, stress
+│   ├── run_capability_eval.py           # Phase 5: dev_tasks.json
+│   ├── run_autonomous_eval.py           # Phase 8: autonomous_tasks.json
+│   ├── run_multi_agent_eval.py          # Phase 9: multi_agent_tasks.json
+│   ├── run_repository_eval.py           # Phase 10: repository_tasks.json
+│   ├── run_localization_eval.py         # Phase 10.5: localization_tasks.json
+│   ├── run_workflow_eval.py             # Phase 12: workflow_tasks.json
+│   ├── evaluate_agent.py                # Legacy: agent_eval.json
+│   ├── replay_trace.py
+│   ├── report_bug.py
+│   ├── validate_retrieval_pipeline.py
+│   └── verify_phase2_exit.py
+│
+├── Docs/                       # Documentation (see Docs/README.md)
+│   ├── README.md
+│   ├── AGENT_CONTROLLER.md
+│   ├── AGENT_LOOP_WORKFLOW.md
+│   ├── CONFIGURATION.md
+│   ├── PROMPT_ARCHITECTURE.md
+│   ├── ROUTING_ARCHITECTURE_REPORT.md
+│   ├── REPOSITORY_SYMBOL_GRAPH.md
+│   ├── CODING_AGENT_ARCHITECTURE_GUIDE.md
+│   ├── WORKFLOW.md
+│   ├── phase.md
+│   └── repo_pattern_anti_pattterns.md
+│
+├── dev/                        # Development workflow
+│   ├── bugs/                   # Bug tracking (backlog, in_progress, resolved)
+│   │   ├── bug_index.md
+│   │   ├── backlog/
+│   │   ├── in_progress/
+│   │   ├── resolved/
+│   │   ├── regression_tests/
+│   │   └── templates/
+│   ├── evaluation/             # Failure patterns, metrics, test tasks
+│   │   ├── failure_cases.md
+│   │   ├── failure_patterns.md
+│   │   ├── metrics.md
+│   │   └── test_tasks.md
+│   ├── experiments/            # Experiment notes
+│   │   ├── FT_7B_Qwen_Locagent_model.md
+│   │   ├── editing_pipeline_tests.md
+│   │   ├── planner_improvements.md
+│   │   └── retrieval_tuning.md
+│   ├── roadmap/                # Phase 1–12 roadmap
+│   │   ├── phase_1_pipeline.md
+│   │   ├── phase_2_integration.md
+│   │   ├── phase_3_scenarios.md
+│   │   ├── phase_4_reliability.md
+│   │   ├── phase_5_metrics.md
+│   │   ├── phase_6_developer_experience.md
+│   │   ├── phase_7_reliability_hardening.md
+│   │   ├── phase_8_autonomous_mode.md
+│   │   ├── phase_9_workflow_integration.md
+│   │   ├── phase_10_capability_expansion.md
+│   │   ├── phase_10-5_graph_traversal.md
+│   │   ├── phase_11_intelligence.md
+│   │   └── phase_12_last_stop.md
+│   └── tasks/                  # Task tracking
+│       ├── backlog.md
+│       ├── in_progress.md
+│       └── completed.md
+│
+└── tests/                      # Test suite
+    ├── __init__.py
+    ├── conftest.py
     ├── agent_scenarios.json   # 40 scenarios (G1–G8)
-    ├── dev_tasks.json         # 40 developer tasks (Phase 5 capability eval)
-    ├── autonomous_tasks.json  # 7 tasks, 5 types (Phase 8: bug_fixing, feature_addition, refactoring, test_repair, configuration_updates)
-    ├── multi_agent_tasks.json # 30 tasks (Phase 9: fix_test_suite, multi_file_refactor, feature_addition)
-    ├── repository_tasks.json  # 40 tasks (Phase 10: refactor_architecture, rename_api, multi_service_feature, config_update)
-    ├── localization_tasks.json # 10 tasks (Phase 10.5: file/function localization; retry logic, patch validator, symbol graph, etc.)
-    ├── workflow_tasks.json     # 8 tasks (Phase 12: fix_failing_test, implement_feature, refactor_module, add_logging)
-    ├── test_multifile_edits.py # Multi-file patch pipeline
+    ├── dev_tasks.json         # 40 developer tasks (Phase 5)
+    ├── autonomous_tasks.json  # 7 tasks (Phase 8)
+    ├── multi_agent_tasks.json # 30 tasks (Phase 9)
+    ├── repository_tasks.json  # 40 tasks (Phase 10)
+    ├── localization_tasks.json # 10 tasks (Phase 10.5)
+    ├── workflow_tasks.json    # 8 tasks (Phase 12)
+    ├── agent_eval.json        # Legacy
+    ├── fixtures/
+    ├── test_agent_controller.py
+    ├── test_agent_loop.py
+    ├── test_agent_e2e.py
+    ├── test_agent_robustness.py
+    ├── test_agent_trajectory.py
+    ├── test_autonomous_meta.py
+    ├── test_roles.py
+    ├── test_observability.py
+    ├── test_explain_gate.py
+    ├── test_tool_graph.py
+    ├── test_policy_engine.py
+    ├── test_retrieval_pipeline.py
+    ├── test_graph_retriever.py
+    ├── test_context_ranker.py
+    ├── test_context_builder_v2.py
+    ├── test_symbol_expansion.py
+    ├── test_agent_*.py
+    ├── test_*.py
     └── ...
 ```
 
