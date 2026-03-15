@@ -128,3 +128,16 @@ Report output: `reports/localization_report.json`
 - issue_to_pr_success — % of tasks where goal_success and PR generated
 
 Report output: `reports/workflow_eval_report.json`
+
+**Phase 16 failure mining metrics** (run_failure_mining.py, dataset: tests/failure_mining_tasks.json):
+- success_rate — % of tasks that achieved SUCCESS
+- retry_success_rate — % of FAILURE→SUCCESS across retries
+- avg_attempts — mean attempts per task
+- retrieval_miss_rate — % of failures classified as retrieval_miss
+- patch_error_rate — % of failures classified as incorrect_patch or syntax_error_patch
+- localization_error_rate — % of failures classified as wrong_file_localization
+- avg_steps_success — mean trajectory_length across success records
+- avg_steps_failure — mean trajectory_length across failure records
+- loop_failure_rate — % of failure records where failure_type = loop_failure
+
+Report output: `reports/failure_analysis.md`, `reports/failure_stats.json`

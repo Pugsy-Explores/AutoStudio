@@ -200,6 +200,26 @@ def main() -> int:
             f"(threshold {TOOL_MISUSE_INCREASE_THRESHOLD:.2%})"
         )
 
+    # Phase 16 failure mining guardrails (skip if failure_stats.json absent)
+    failure_stats_path = _PROJECT_ROOT / "reports" / "failure_stats.json"
+    if failure_stats_path.exists():
+        try:
+            with open(failure_stats_path, encoding="utf-8") as f:
+                failure_stats = json.load(f)
+            metrics = failure_stats.get("metrics", {})
+            retrieval_miss_rate = metrics.get("retrieval_miss_rate", 0)
+            patch_error_rate = metrics.get("patch_error_rate", 0)
+            if retrieval_miss_rate >= 0.40:
+                regressions.append(
+                    f"retrieval_miss_rate {retrieval_miss_rate:.2%} >= 40% threshold"
+                )
+            if patch_error_rate >= 0.25:
+                regressions.append(
+                    f"patch_error_rate {patch_error_rate:.2%} >= 25% threshold"
+                )
+        except (json.JSONDecodeError, OSError):
+            pass
+
     if regressions:
         print("[prompt_ci] REGRESSION DETECTED:")
         for r in regressions:

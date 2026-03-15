@@ -348,6 +348,13 @@ AutoStudio/
 │   │   ├── prompt_dataset_loader.py
 │   │   └── failure_analysis/  # failure_logger, failure_patterns, failure_cluster
 │   │
+│   ├── failure_mining/         # Phase 16: Trajectory-scoped failure analysis
+│   │   ├── trajectory_loader.py
+│   │   ├── failure_extractor.py
+│   │   ├── failure_clusterer.py
+│   │   ├── root_cause_report.py
+│   │   └── failure_judge.py   # Optional LLM relabel
+│   │
 │   ├── prompts/                # Legacy YAML prompts (compat shim → PromptRegistry)
 │   │   ├── __init__.py        # get_prompt() redirects to registry
 │   │   ├── README.md
@@ -506,6 +513,7 @@ AutoStudio/
 │   ├── run_localization_eval.py         # Phase 10.5: localization_tasks.json
 │   ├── run_workflow_eval.py             # Phase 12: workflow_tasks.json
 │   ├── run_prompt_ci.py                 # Phase 13: prompt CI (eval + regression)
+│   ├── run_failure_mining.py            # Phase 16: failure mining (trajectories → cluster → report)
 │   ├── evaluate_agent.py                # Legacy: agent_eval.json
 │   ├── replay_trace.py
 │   ├── report_bug.py
@@ -544,7 +552,7 @@ AutoStudio/
 │   │   ├── editing_pipeline_tests.md
 │   │   ├── planner_improvements.md
 │   │   └── retrieval_tuning.md
-│   ├── roadmap/                # Phase 1–13 roadmap
+│   ├── roadmap/                # Phase 1–16 roadmap
 │   │   ├── phase_1_pipeline.md
 │   │   ├── phase_2_integration.md
 │   │   ├── phase_3_scenarios.md
@@ -558,7 +566,10 @@ AutoStudio/
 │   │   ├── phase_10-5_graph_traversal.md
 │   │   ├── phase_11_intelligence.md
 │   │   ├── phase_12_last_stop.md
-│   │   └── phase_13_prompt_framwork.md
+│   │   ├── phase_13_prompt_framwork.md
+│   │   ├── phase_15_trajectory.md
+│   │   ├── phase_16_failure_mining.md
+│   │   └── failure-pattern-mining.md
 │   └── tasks/                  # Task tracking
 │       ├── backlog.md
 │       ├── in_progress.md
@@ -575,6 +586,7 @@ AutoStudio/
     ├── repository_tasks.json  # 40 tasks (Phase 10)
     ├── localization_tasks.json # 10 tasks (Phase 10.5)
     ├── workflow_tasks.json    # 8 tasks (Phase 12)
+    ├── failure_mining_tasks.json  # 300 tasks (Phase 16)
     ├── agent_eval.json        # Legacy
     ├── fixtures/
     ├── test_agent_controller.py
@@ -1061,6 +1073,8 @@ The **workflow layer** (`agent/workflow/`) turns AutoStudio into a developer tea
 | [dev/roadmap/phase_11_intelligence.md](dev/roadmap/phase_11_intelligence.md) | Phase 11 intelligence layer: agent/intelligence/ (solution_memory, task_embeddings, experience_retriever, developer_model, repo_learning); experience_hints injection; solution storage on success; metrics: solution_reuse_rate, experience_improvement, repeat_failure_rate, developer_acceptance |
 | [dev/roadmap/phase_12_last_stop.md](dev/roadmap/phase_12_last_stop.md) | Phase 12 developer workflow: agent/workflow/ (issue_parser, pr_generator, ci_runner, code_review_agent, developer_feedback, workflow_controller); CLI: issue, fix, pr, review, ci; workflow_tasks.json; run_workflow_eval; metrics: pr_success_rate, ci_pass_rate, issue_to_pr_success |
 | [Docs/WORKFLOW.md](Docs/WORKFLOW.md) | Phase 12 workflow layer: modules, CLI, flow, safety limits, trace events, persistence, evaluation |
+| [dev/roadmap/phase_15_trajectory.md](dev/roadmap/phase_15_trajectory.md) | Phase 15 trajectory loop: TrajectoryLoop, trajectory_store, retry diversity, run_retry_eval |
+| [dev/roadmap/phase_16_failure_mining.md](dev/roadmap/phase_16_failure_mining.md) | Phase 16 failure mining: agent/failure_mining/, run_failure_mining.py, reports/failure_analysis.md |
 
 ---
 
@@ -1170,7 +1184,22 @@ python scripts/run_prompt_ci.py --prompt planner
 python scripts/run_prompt_ci.py --dataset path/to/dataset.json
 ```
 
-Exit code 1 on regression if: `task_success` drops >5%, `json_validity` drops >2%, `tool_misuse` increases >3%. Results: `dev/prompt_eval_results/`.
+Exit code 1 on regression if: `task_success` drops >5%, `json_validity` drops >2%, `tool_misuse` increases >3%. Also checks Phase 16 failure guardrails when `reports/failure_stats.json` exists: `retrieval_miss_rate` < 40%, `patch_error_rate` < 25%. Results: `dev/prompt_eval_results/`.
+
+**Phase 16 failure mining** (trajectory-scoped failure analysis):
+
+```bash
+# Run 300 tasks, extract failures, cluster, generate reports
+python scripts/run_failure_mining.py --tasks 300
+
+# Analyze existing trajectories only (skip run_autonomous)
+python scripts/run_failure_mining.py --skip-run
+
+# Use LLM to relabel unknown failure types
+python scripts/run_failure_mining.py --use-judge
+```
+
+Output: `reports/failure_analysis.md`, `reports/failure_stats.json`. Dataset: `tests/failure_mining_tasks.json` (300 tasks: bug fixes, refactors, feature, navigation). Metrics: `avg_steps_success`, `avg_steps_failure`, `loop_failure_rate`, `retrieval_miss_rate`, `patch_error_rate`.
 
 **Phase 4 reliability** (failure mining, stress testing):
 
@@ -1189,8 +1218,9 @@ python scripts/run_principal_engineer_suite.py --stress --stress-reps 5
 - `tests/multi_agent_tasks.json` — 30 multi-agent benchmark tasks (Phase 9: fix_test_suite, multi_file_refactor, feature_addition).
 - `tests/repository_tasks.json` — 40 repository-scale benchmark tasks (Phase 10: refactor_architecture, rename_api, multi_service_feature, config_update).
 - `tests/workflow_tasks.json` — 8 workflow benchmark tasks (Phase 12: fix_failing_test, implement_feature, refactor_module, add_logging).
+- `tests/failure_mining_tasks.json` — 300 tasks (Phase 16: 100 bug fixes, 50 refactors, 50 feature, 100 navigation).
 
-**Metrics:** `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `edit_success_rate`, `avg_latency`, `avg_files_modified`, `avg_steps_per_task`, `avg_patch_size`, `failure_rate`, `replan_rate`. **Phase 8 reflection metrics** (run_autonomous_eval.py): `attempts_per_goal`, `retry_success_rate`, `critic_accuracy`, `trajectory_reuse`. **Phase 9 multi-agent metrics** (run_multi_agent_eval.py): `goal_success_rate`, `agent_delegations`, `critic_accuracy`, `localization_accuracy`, `patch_success_rate`. **Phase 10 repository metrics** (run_repository_eval.py): `localization_accuracy`, `impact_prediction_accuracy`, `context_compression_ratio`, `long_horizon_success_rate`. **Phase 10.5 localization metrics** (run_localization_eval.py): `file_accuracy`, `function_accuracy`, `top_k_recall`, `avg_graph_nodes`. **Phase 11 intelligence metrics** (run_autonomous_eval.py, run_multi_agent_eval.py): `solution_reuse_rate`, `experience_improvement`, `repeat_failure_rate`, `developer_acceptance`. **Phase 12 workflow metrics** (run_workflow_eval.py): `pr_success_rate`, `ci_pass_rate`, `developer_acceptance_rate`, `avg_retries_per_task`, `pr_merge_latency`, `issue_to_pr_success`. See `dev/evaluation/metrics.md`.
+**Metrics:** `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `edit_success_rate`, `avg_latency`, `avg_files_modified`, `avg_steps_per_task`, `avg_patch_size`, `failure_rate`, `replan_rate`. **Phase 8 reflection metrics** (run_autonomous_eval.py): `attempts_per_goal`, `retry_success_rate`, `critic_accuracy`, `trajectory_reuse`. **Phase 9 multi-agent metrics** (run_multi_agent_eval.py): `goal_success_rate`, `agent_delegations`, `critic_accuracy`, `localization_accuracy`, `patch_success_rate`. **Phase 10 repository metrics** (run_repository_eval.py): `localization_accuracy`, `impact_prediction_accuracy`, `context_compression_ratio`, `long_horizon_success_rate`. **Phase 10.5 localization metrics** (run_localization_eval.py): `file_accuracy`, `function_accuracy`, `top_k_recall`, `avg_graph_nodes`. **Phase 11 intelligence metrics** (run_autonomous_eval.py, run_multi_agent_eval.py): `solution_reuse_rate`, `experience_improvement`, `repeat_failure_rate`, `developer_acceptance`. **Phase 12 workflow metrics** (run_workflow_eval.py): `pr_success_rate`, `ci_pass_rate`, `developer_acceptance_rate`, `avg_retries_per_task`, `pr_merge_latency`, `issue_to_pr_success`. **Phase 16 failure mining metrics** (run_failure_mining.py): `avg_steps_success`, `avg_steps_failure`, `loop_failure_rate`, `retrieval_miss_rate`, `patch_error_rate`. See `dev/evaluation/metrics.md`.
 
 **Phase 6 UX metrics** (per-task, written by `run_controller`): `reports/ux_metrics.json` — `interaction_latency`, `steps_per_task`, `tool_calls`, `patch_success`.
 
