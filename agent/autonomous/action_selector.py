@@ -6,6 +6,7 @@ import re
 
 from agent.autonomous.state_observer import ObservationBundle
 from agent.models.model_client import call_small_model
+from agent.prompt_system import get_registry
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
 from planner.planner_utils import ALLOWED_ACTIONS
@@ -13,16 +14,6 @@ from planner.planner_utils import ALLOWED_ACTIONS
 logger = logging.getLogger(__name__)
 
 STRUCTURED_ACTIONS = set(ALLOWED_ACTIONS)  # SEARCH, EDIT, EXPLAIN, INFRA
-
-ACTION_SELECTION_SYSTEM = """You are an action selector for an autonomous code agent.
-Given a goal and recent steps, output exactly one structured action as JSON.
-Output ONLY valid JSON: {"action": "ACTION", "description": "..."}
-Allowed actions: SEARCH, EDIT, EXPLAIN, INFRA.
-- SEARCH: use description as the search query (e.g. "find StepExecutor class")
-- EDIT: use description as the edit instruction (e.g. "add retry logic")
-- EXPLAIN: use description as the question (e.g. "how does dispatch work")
-- INFRA: use description as the command (e.g. "run tests")
-Output nothing else. No markdown, no explanation."""
 
 
 def select_next_action(observation: ObservationBundle) -> dict | None:
@@ -34,17 +25,18 @@ def select_next_action(observation: ObservationBundle) -> dict | None:
     prompt = _format_observation_prompt(observation)
     try:
         model_type = get_model_for_task("action_selection")
+        action_system = get_registry().get_instructions("action_selector")
         if model_type == ModelType.SMALL:
             raw = call_small_model(
                 prompt,
                 task_name="action_selection",
-                system_prompt=ACTION_SELECTION_SYSTEM,
+                system_prompt=action_system,
             )
         else:
             from agent.models.model_client import call_reasoning_model
             raw = call_reasoning_model(
                 prompt,
-                system_prompt=ACTION_SELECTION_SYSTEM,
+                system_prompt=action_system,
                 task_name="action_selection",
             )
     except Exception as e:

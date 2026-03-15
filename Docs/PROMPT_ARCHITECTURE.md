@@ -8,43 +8,66 @@ This document explains all prompts used in AutoStudio: purpose, pipeline positio
 
 AutoStudio uses a **deterministic pipeline** where LLMs plan and reason, and deterministic code dispatches and executes. Prompts enforce structured outputs (JSON, single tokens, YES/NO) to avoid free-form hallucination.
 
-### Prompt Loading
+### Phase 13: Prompt Infrastructure
 
-All YAML prompts are loaded via [`agent/prompts/__init__.py`](../agent/prompts/__init__.py):
+**PromptRegistry** is the central entry point. All production prompts are loaded via:
 
 ```python
-def get_prompt(name: str, key: str | None = None) -> str | dict:
-    """Load prompt from agent/prompts/{name}.yaml. key selects a specific key."""
+from agent.prompt_system import get_registry
+
+registry = get_registry()
+template = registry.get("planner", version="latest")  # PromptTemplate
+instructions = registry.get_instructions("planner", variables={...})  # str
+composed = registry.compose("planner", skill_name="planner_skill", repo_context=...)  # PromptTemplate
 ```
 
-- **Placeholders**: Use `{name}` for substitution; pass kwargs to `format()`.
+**Versioned prompts** live in `agent/prompt_versions/{name}/v1.yaml`. The loader tries versioned files first, then falls back to legacy `agent/prompts/*.yaml`.
+
+**Compatibility shim**: [`agent/prompts/__init__.py`](../agent/prompts/__init__.py) `get_prompt(name, key)` redirects to the registry for backward compatibility.
+
+### Prompt Loading (Phase 13)
+
+| API | Purpose |
+|-----|---------|
+| `get_registry().get(name, version, variables)` | Returns `PromptTemplate` (name, version, role, instructions, constraints, output_schema, extra) |
+| `get_registry().get_instructions(name, variables)` | Returns instructions string (drop-in for `get_prompt`) |
+| `get_registry().get_guarded(name, user_input, version, variables)` | Load with pre-load injection guard on `user_input`; raises `PromptInjectionError` if detected |
+| `get_registry().validate_response(name, response, user_input)` | Validate LLM output against constraints (injection, output_schema, safety); returns `(is_valid, error_message)` |
+| `get_registry().compose(name, skill_name, repo_context)` | Composes prompt + skill + repo context |
+| `get_registry().get_skill(skill_name)` | Loads skill YAML (goal, tools_allowed, output_format, constraints) |
+| `agent.prompt_system.versioning.get_prompt(name, version)` | Version store: `list_versions(name)`, `compare_prompts(name, v1, v2)` |
+| `agent.prompt_system.versioning.run_ab_test(...)` | A/B test two prompt versions; returns `ABTestResult` |
+
+- **Placeholders**: Use `{name}` in YAML; pass `variables={"name": value}` to `get()` or `get_instructions()`.
 - **Literal braces**: Escape as `{{` and `}}` in YAML.
 - **Structured output**: Prompts requiring JSON use schema-first design, few-shot examples, and explicit "Return JSON only" instructions.
 
 ### Model Routing
 
-Task-to-model mapping is defined in [`agent/models/models_config.json`](../agent/models/models_config.json) under `task_models`. The `model_router.yaml` prompt is used only when a task is not in config (fallback). Production uses config lookup via `get_model_for_task()`.
+Task-to-model mapping is defined in [`agent/models/models_config.json`](../agent/models/models_config.json) under `task_models`. The `model_router.yaml` prompt (registry name `router`) is used only when a task is not in config (fallback). Production uses config lookup via `get_model_for_task()`.
 
 ---
 
 ## 2. Prompt Inventory
 
-| Prompt | File / Location | Key / Name | Consumer | Model |
-|--------|-----------------|------------|----------|-------|
-| planner_system | [agent/prompts/planner_system.yaml](../agent/prompts/planner_system.yaml) | `system_prompt` | [planner/planner.py](../planner/planner.py) | REASONING |
-| replanner_system | [agent/prompts/replanner_system.yaml](../agent/prompts/replanner_system.yaml) | `system_prompt` | [agent/orchestrator/replanner.py](../agent/orchestrator/replanner.py) | REASONING |
-| critic_system | [agent/prompts/critic_system.yaml](../agent/prompts/critic_system.yaml) | `system_prompt` | [agent/meta/critic.py](../agent/meta/critic.py) | SMALL |
-| retry_planner_system | [agent/prompts/retry_planner_system.yaml](../agent/prompts/retry_planner_system.yaml) | `system_prompt` | [agent/meta/retry_planner.py](../agent/meta/retry_planner.py) | REASONING |
-| query_rewrite | [agent/prompts/query_rewrite.yaml](../agent/prompts/query_rewrite.yaml) | `prompt` | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
-| query_rewrite_with_context | [agent/prompts/query_rewrite_with_context.yaml](../agent/prompts/query_rewrite_with_context.yaml) | `main`, `end` | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
-| validate_step | [agent/prompts/validate_step.yaml](../agent/prompts/validate_step.yaml) | `prompt` | [agent/orchestrator/validator.py](../agent/orchestrator/validator.py) | REASONING |
-| model_router | [agent/prompts/model_router.yaml](../agent/prompts/model_router.yaml) | `prompt` | [agent/models/model_router.py](../agent/models/model_router.py) | SMALL (fallback) |
-| router_logit_system | [agent/prompts/router_logit_system.yaml](../agent/prompts/router_logit_system.yaml) | `system_prompt` | [router_eval/routers/logit_router.py](../router_eval/routers/logit_router.py) | SMALL |
-| _ROUTER_SYSTEM | [agent/routing/instruction_router.py](../agent/routing/instruction_router.py) (inline) | — | `instruction_router.route_instruction()` | SMALL |
-| EXPLAIN_SYSTEM_PROMPT | [agent/execution/step_dispatcher.py](../agent/execution/step_dispatcher.py) (inline) | — | `dispatch()` EXPLAIN path | REASONING/SMALL |
-| _REWRITE_SYSTEM | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) (inline) | — | `rewrite_query_with_context()` | REASONING/SMALL |
-| replanner user_prompt | [agent/orchestrator/replanner.py](../agent/orchestrator/replanner.py) (inline) | — | `replan()` | REASONING/SMALL |
-| context_ranker | [agent/retrieval/context_ranker.py](../agent/retrieval/context_ranker.py) (inline) | — | `rank_context()` | REASONING |
+| Registry Name | Versioned Location | Consumer | Model |
+|---------------|-------------------|----------|-------|
+| planner | [agent/prompt_versions/planner/v1.yaml](../agent/prompt_versions/planner/v1.yaml) | [planner/planner.py](../planner/planner.py) | REASONING |
+| replanner | [agent/prompt_versions/replanner/v1.yaml](../agent/prompt_versions/replanner/v1.yaml) | [agent/orchestrator/replanner.py](../agent/orchestrator/replanner.py) | REASONING |
+| replanner_user | [agent/prompt_versions/replanner_user/v1.yaml](../agent/prompt_versions/replanner_user/v1.yaml) | [agent/orchestrator/replanner.py](../agent/orchestrator/replanner.py) | REASONING |
+| critic | [agent/prompt_versions/critic/v1.yaml](../agent/prompt_versions/critic/v1.yaml) | [agent/meta/critic.py](../agent/meta/critic.py) | SMALL |
+| retry_planner | [agent/prompt_versions/retry_planner/v1.yaml](../agent/prompt_versions/retry_planner/v1.yaml) | [agent/meta/retry_planner.py](../agent/meta/retry_planner.py) | REASONING |
+| query_rewrite | [agent/prompt_versions/query_rewrite/v1.yaml](../agent/prompt_versions/query_rewrite/v1.yaml) | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
+| query_rewrite_with_context | [agent/prompt_versions/query_rewrite_with_context/v1.yaml](../agent/prompt_versions/query_rewrite_with_context/v1.yaml) | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
+| query_rewrite_system | [agent/prompt_versions/query_rewrite_system/v1.yaml](../agent/prompt_versions/query_rewrite_system/v1.yaml) | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | SMALL |
+| validate_step | [agent/prompt_versions/validate_step/v1.yaml](../agent/prompt_versions/validate_step/v1.yaml) | [agent/orchestrator/validator.py](../agent/orchestrator/validator.py) | REASONING |
+| router | [agent/prompt_versions/router/v1.yaml](../agent/prompt_versions/router/v1.yaml) | [agent/models/model_router.py](../agent/models/model_router.py) | SMALL (fallback) |
+| router_logit | [agent/prompt_versions/router_logit/v1.yaml](../agent/prompt_versions/router_logit/v1.yaml) | [router_eval/routers/logit_router.py](../router_eval/routers/logit_router.py) | SMALL |
+| instruction_router | [agent/prompt_versions/instruction_router/v1.yaml](../agent/prompt_versions/instruction_router/v1.yaml) | [agent/routing/instruction_router.py](../agent/routing/instruction_router.py) | SMALL |
+| explain_system | [agent/prompt_versions/explain_system/v1.yaml](../agent/prompt_versions/explain_system/v1.yaml) | [agent/execution/step_dispatcher.py](../agent/execution/step_dispatcher.py) | REASONING/SMALL |
+| action_selector | [agent/prompt_versions/action_selector/v1.yaml](../agent/prompt_versions/action_selector/v1.yaml) | [agent/autonomous/action_selector.py](../agent/autonomous/action_selector.py) | SMALL/REASONING |
+| context_ranker_single | [agent/prompt_versions/context_ranker_single/v1.yaml](../agent/prompt_versions/context_ranker_single/v1.yaml) | [agent/retrieval/context_ranker.py](../agent/retrieval/context_ranker.py) | REASONING |
+| context_ranker_batch | [agent/prompt_versions/context_ranker_batch/v1.yaml](../agent/prompt_versions/context_ranker_batch/v1.yaml) | [agent/retrieval/context_ranker.py](../agent/retrieval/context_ranker.py) | REASONING |
 | BASELINE_SYSTEM | [router_eval/prompts/router_prompts.py](../router_eval/prompts/router_prompts.py) | — | [baseline_router.py](../router_eval/routers/baseline_router.py) | SMALL |
 | FEWSHOT_SYSTEM | [router_eval/prompts/router_prompts.py](../router_eval/prompts/router_prompts.py) | — | [fewshot_router.py](../router_eval/routers/fewshot_router.py), [fewshot_logit_router.py](../router_eval/routers/fewshot_logit_router.py) | SMALL |
 | PROMPT_A/B/C | [router_eval/prompts/router_prompts.py](../router_eval/prompts/router_prompts.py) | — | [router_core.py](../router_eval/utils/router_core.py), [ensemble_router.py](../router_eval/routers/ensemble_router.py) | SMALL |
@@ -69,37 +92,39 @@ flowchart TD
     ContextRanker[Context Ranker]
 
     UserQuery --> Router
-    Router -->|"_ROUTER_SYSTEM"| Planner
-    Planner -->|"planner_system.yaml"| AgentLoop
+    Router -->|"instruction_router"| Planner
+    Planner -->|"planner"| AgentLoop
     AgentLoop --> Search
     AgentLoop --> Explain
     AgentLoop --> Edit
-    Search -->|"query_rewrite_with_context.yaml + _REWRITE_SYSTEM"| ContextRanker
-    ContextRanker -->|"context_ranker inline"| Explain
-    Explain -->|"EXPLAIN_SYSTEM_PROMPT"| Validator
+    Search -->|"query_rewrite_with_context + query_rewrite_system"| ContextRanker
+    ContextRanker -->|"context_ranker_single/batch"| Explain
+    Explain -->|"explain_system"| Validator
     Search --> Validator
     Edit --> Validator
-    Validator -->|"validate_step.yaml optional"| Replanner
-    Replanner -->|"replanner_system.yaml + user_prompt"| AgentLoop
+    Validator -->|"validate_step optional"| Replanner
+    Replanner -->|"replanner + replanner_user"| AgentLoop
 ```
 
 ### Narrative Flow
 
-1. **User Query** → Optional instruction router (`ENABLE_INSTRUCTION_ROUTER=1`) uses `_ROUTER_SYSTEM` to classify into CODE_SEARCH, CODE_EDIT, CODE_EXPLAIN, INFRA, GENERAL. CODE_SEARCH/EXPLAIN/INFRA bypass planner with single-step plans.
-2. **Planner** → Uses `planner_system.yaml` to produce `{"steps": [...]}` JSON.
+1. **User Query** → Optional instruction router (`ENABLE_INSTRUCTION_ROUTER=1`) uses `get_registry().get_instructions("instruction_router")` to classify into CODE_SEARCH, CODE_EDIT, CODE_EXPLAIN, INFRA, GENERAL. CODE_SEARCH/EXPLAIN/INFRA bypass planner with single-step plans.
+2. **Planner** → Uses `PromptRegistry.get("planner")` (planner/v1.yaml) to produce `{"steps": [...]}` JSON.
 3. **Agent Loop** → For each step: SEARCH, EDIT, EXPLAIN, or INFRA.
-4. **SEARCH** → Policy engine calls `rewrite_query_with_context()` (query_rewrite_with_context.yaml + _REWRITE_SYSTEM) → retrieval → `run_retrieval_pipeline()` → optional `rank_context()` (context_ranker inline prompt).
-5. **EXPLAIN** → Context gate ensures `ranked_context` exists; uses `EXPLAIN_SYSTEM_PROMPT` with formatted context.
-6. **Validator** → Rule-based by default; when `ENABLE_LLM_VALIDATION=1`, uses `validate_step.yaml` for SEARCH/EXPLAIN.
-7. **Replanner** → On failure, uses `replanner_system.yaml` + inline user_prompt to produce revised plan.
+4. **SEARCH** → Policy engine calls `rewrite_query_with_context()` (query_rewrite_with_context + query_rewrite_system from registry) → retrieval → `run_retrieval_pipeline()` → optional `rank_context()` (context_ranker_single / context_ranker_batch from registry).
+5. **EXPLAIN** → Context gate ensures `ranked_context` exists; uses `get_registry().get_instructions("explain_system")` with formatted context.
+6. **Validator** → Rule-based by default; when `ENABLE_LLM_VALIDATION=1`, uses `PromptRegistry.get("validate_step")` for SEARCH/EXPLAIN.
+7. **Replanner** → On failure, uses `PromptRegistry.get("replanner")` + `get_registry().get_instructions("replanner_user", variables={...})` to produce revised plan.
 
 ---
 
 ## 4. Router Prompts
 
-### 4.1 Production Router (`_ROUTER_SYSTEM`)
+### 4.1 Production Router (`instruction_router`)
 
-**Location**: [`agent/routing/instruction_router.py`](../agent/routing/instruction_router.py) lines 26–40
+**Location**: [agent/prompt_versions/instruction_router/v1.yaml](../agent/prompt_versions/instruction_router/v1.yaml) — loaded via `get_registry().get_instructions("instruction_router")`
+
+**Consumer**: [`agent/routing/instruction_router.py`](../agent/routing/instruction_router.py)
 
 **Purpose**: Classify developer query before planner. When `ENABLE_INSTRUCTION_ROUTER=1`, routes to single-step plans for CODE_SEARCH, CODE_EXPLAIN, INFRA; falls through to planner for CODE_EDIT, GENERAL.
 
@@ -183,15 +208,15 @@ flowchart TD
 
 ## 6. Replanner Prompts
 
-### replanner_system.yaml + inline user_prompt
+### replanner_system.yaml + replanner_user
 
 **Purpose**: On step failure, produce a revised plan that addresses the failure.
 
 **Pipeline Position**: Step Validator (invalid) → **Replanner** ← here → Agent Loop
 
 **Structure**:
-- SYSTEM: `replanner_system.yaml` — 6 REPLANNING RULES (analyze failure, revise plan, keep completed steps, ground actions, JSON format).
-- USER (inline in `replanner.py`):
+- SYSTEM: `replanner/v1.yaml` — 6 REPLANNING RULES (analyze failure, revise plan, keep completed steps, ground actions, JSON format).
+- USER: `replanner_user/v1.yaml` — loaded via `get_registry().get_instructions("replanner_user", variables={instruction, steps_json, failed_desc, error_msg})`:
   ```
   Original instruction: {instruction}
   Current plan (JSON): {steps_json}
@@ -280,9 +305,11 @@ Answer with exactly YES or NO.
 
 ---
 
-### EXPLAIN_SYSTEM_PROMPT (context gate)
+### explain_system (context gate)
 
-**Location**: [`agent/execution/step_dispatcher.py`](../agent/execution/step_dispatcher.py) lines 279–285
+**Location**: [agent/prompt_versions/explain_system/v1.yaml](../agent/prompt_versions/explain_system/v1.yaml) — loaded via `get_registry().get_instructions("explain_system")`
+
+**Consumer**: [agent/execution/step_dispatcher.py](../agent/execution/step_dispatcher.py)
 
 **Purpose**: Ground EXPLAIN in provided context; refuse to answer without code context.
 
@@ -332,22 +359,17 @@ Used in `router_eval/` for router benchmarking:
 
 ---
 
-## 11. Context Ranker (Inline)
+## 11. Context Ranker
 
-**Location**: [`agent/retrieval/context_ranker.py`](../agent/retrieval/context_ranker.py)
+**Location**: [agent/prompt_versions/context_ranker_single/v1.yaml](../agent/prompt_versions/context_ranker_single/v1.yaml) and [agent/prompt_versions/context_ranker_batch/v1.yaml](../agent/prompt_versions/context_ranker_batch/v1.yaml)
+
+**Consumer**: [agent/retrieval/context_ranker.py](../agent/retrieval/context_ranker.py)
 
 **Purpose**: Score retrieved snippets for relevance. Hybrid: 0.6×LLM + 0.2×symbol + 0.1×filename + 0.1×reference, minus diversity/test penalties.
 
-**Structure** (batch):
-```
-Query: {query}
-Snippets:
-1. {snippet_1}
-2. {snippet_2}
-...
-Question: How relevant is each snippet for answering the query?
-Return one number (0-1) per line, in order.
-```
+**Structure**:
+- **Single** (`context_ranker_single`): `get_registry().get_instructions("context_ranker_single", variables={query, snippet})` — one snippet at a time (fallback).
+- **Batch** (`context_ranker_batch`): `get_registry().get_instructions("context_ranker_batch", variables={query, snippets})` — multiple snippets, one score per line.
 
 **Used in**: `rank_context()` when `ENABLE_CONTEXT_RANKING=1`.
 
@@ -367,7 +389,7 @@ Prompts enforce structured responses to avoid free-form hallucination:
 
 ### Avoiding Hallucination
 
-- **EXPLAIN_SYSTEM_PROMPT**: "Answer using ONLY the provided context."
+- **explain_system**: "Answer using ONLY the provided context."
 - **Query rewrite**: "Never put file/dir names in name_path" for retrieve_graph; tool choice constrained to 4 tools.
 - **Planner**: "Ground actions in repo results"; "SEARCH must occur first."
 
@@ -396,7 +418,7 @@ The planner chooses **action types** (EDIT, SEARCH, EXPLAIN, INFRA). Tool select
 | Query Rewrite | Invalid tool name | Check against allowed set; ignore if invalid |
 | Replanner | Infinite replan loop | agent_loop: `MAX_REPLAN_ATTEMPTS=3`; agent_controller: `MAX_REPLAN_ATTEMPTS=5` (config) |
 | Validator | LLM says YES when invalid | Rule-based first; LLM only for ambiguous cases |
-| EXPLAIN | Answering without context | Context gate; exact refusal string detection |
+| explain_system | Answering without context | Context gate; exact refusal string detection |
 
 ---
 
@@ -404,6 +426,7 @@ The planner chooses **action types** (EDIT, SEARCH, EXPLAIN, INFRA). Tool select
 
 | Component | Script / Test | Metrics |
 |-----------|--------------|---------|
+| **Prompt CI (Phase 13)** | `python scripts/run_prompt_ci.py` | task_success, json_validity, tool_correctness; regression vs baseline |
 | Planner | `python -m planner.planner_eval` | structural_valid_rate, action_coverage_accuracy, dependency_order_accuracy, mean_latency_sec |
 | Router | `python -m router_eval.router_eval_v2` | accuracy, confusion matrix, calibration, avg_confidence |
 | Router (golden/adversarial) | `--golden`, `--adversarial` | Edge-case accuracy |
@@ -413,6 +436,7 @@ The planner chooses **action types** (EDIT, SEARCH, EXPLAIN, INFRA). Tool select
 
 ### Eval Datasets
 
+- **Prompt CI (Phase 13):** [tests/prompt_eval_dataset.json](../tests/prompt_eval_dataset.json) — 100 cases across navigation (15), planning (20), editing (20), refactoring (15), test-fixing (15), repo-reasoning (15); expected_actions per task; baseline: `dev/prompt_eval_results/baseline.json`
 - Planner: [planner/planner_dataset.json](../planner/planner_dataset.json)
 - Router: [router_eval/dataset_v2](../router_eval/dataset_v2.py), [golden_dataset_v2.json](../router_eval/golden_dataset_v2.json), [adversarial_dataset_v2.json](../router_eval/adversarial_dataset_v2.json)
 - Agent: [tests/agent_eval.json](../tests/agent_eval.json)
@@ -423,17 +447,27 @@ The planner chooses **action types** (EDIT, SEARCH, EXPLAIN, INFRA). Tool select
 
 When changing prompts:
 
-1. **Run planner_eval**: `python -m planner.planner_eval`
-2. **Run router_eval**: `python -m router_eval.router_eval_v2`
-3. **Run agent_eval**: `python scripts/evaluate_agent.py`
-4. **Inspect traces**: Check `.agent_memory/traces/` for prompt→output behavior
+1. **Run prompt CI**: `python scripts/run_prompt_ci.py` — gates on regression
+2. **Run planner_eval**: `python -m planner.planner_eval`
+3. **Run router_eval**: `python -m router_eval.router_eval_v2`
+4. **Run agent_eval**: `python scripts/evaluate_agent.py`
+5. **Inspect traces**: Check `.agent_memory/traces/` for prompt→output behavior
+6. **Log failures**: Use `agent.prompt_eval.failure_analysis.failure_logger.log_failure()` when prompts produce invalid output
 
-**Never modify prompts without evaluation.** Track metrics before/after changes.
+**Never modify prompts without evaluation.** Track metrics before/after changes. See [prompt_engineering_rules.md](prompt_engineering_rules.md).
 
-### Adding a New Prompt
+### Guardrails (Phase 13 Hardening)
 
-1. Create YAML in [agent/prompts/](../agent/prompts/) or add to Python module.
-2. Document in this file: purpose, pipeline position, structure, failure modes.
-3. Add to Prompt Inventory table.
-4. Add consumer to Code References.
-5. Add eval coverage if applicable.
+For user-facing prompts, use `get_registry().get_guarded(name, user_input=...)` to run injection checking before load. After LLM response, use `get_registry().validate_response(name, response, user_input)` to check constraints (injection, output_schema, safety). The loader does not inject guardrails automatically; callers opt in via `get_guarded()` and `validate_response()`.
+
+### A/B Testing (Phase 13 Scaffold)
+
+`agent.prompt_system.versioning.run_ab_test(prompt_name, variant_a, variant_b, run_fn, dataset_path)` runs two versions against the same dataset and returns `ABTestResult` with `winner`, `a_task_success`, `b_task_success`. Wires into `eval_runner` and `run_prompt_ci.py`. Automated optimization loop is Phase 14.
+
+### Adding a New Prompt (Phase 13)
+
+1. Create versioned YAML in [agent/prompt_versions/{name}/v1.yaml](../agent/prompt_versions/) with envelope: `version`, `role`, `instructions`, `constraints`, `output_schema`.
+2. Add to `_DEFAULT_REGISTRY` and `_LEGACY_MAP` in [agent/prompt_system/registry.py](../agent/prompt_system/registry.py) and [loader.py](../agent/prompt_system/loader.py) if needed.
+3. Document in this file: purpose, pipeline position, structure, failure modes.
+4. Add test case to [tests/prompt_eval_dataset.json](../tests/prompt_eval_dataset.json).
+5. Run `python scripts/run_prompt_ci.py --save-baseline` after first successful run.

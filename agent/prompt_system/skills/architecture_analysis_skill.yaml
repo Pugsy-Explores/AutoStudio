@@ -1,0 +1,7 @@
+skill: architecture_analysis_skill
+goal: "Analyze code architecture and dependencies"
+tools_allowed: [SEARCH, READ, EXPLAIN]
+output_format: "Structured analysis or explanation"
+constraints:
+  - "ground analysis in retrieved code"
+  - "cite specific files and symbols"

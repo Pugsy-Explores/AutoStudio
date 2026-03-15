@@ -1,0 +1,7 @@
+skill: code_search_skill
+goal: "Locate relevant code in the repository"
+tools_allowed: [SEARCH, READ]
+output_format: "List of file paths and symbols"
+constraints:
+  - "prefer implementation code over tests when asked how X works"
+  - "use high-recall search patterns"

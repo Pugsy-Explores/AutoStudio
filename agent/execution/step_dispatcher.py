@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from agent.execution.explain_gate import ensure_context_before_explain
+from agent.prompt_system import get_registry
 from config.agent_config import MAX_CONTEXT_CHARS
 from agent.execution.policy_engine import ExecutionPolicyEngine, InvalidStepError, _is_valid_search_result, validate_step_input
 from agent.execution.tool_graph import ToolGraph
@@ -339,13 +340,11 @@ def _rewrite_for_search(
 # - Grounding: use ONLY provided context; no hallucination from outside knowledge
 # - Fallback: when no context, instruct user to run SEARCH first
 EXPLAIN_NEEDS_CONTEXT_PREFIX = "I cannot answer without relevant code context"
-EXPLAIN_SYSTEM_PROMPT = """You are a code explanation assistant for the AutoStudio agent codebase.
 
-Rules:
-- Answer using ONLY the provided context (code snippets, search results). Do not use outside knowledge.
-- If no context is provided, or the context does not contain the answer, respond exactly: "I cannot answer without relevant code context. Please run a SEARCH step first to locate the relevant code."
-- Keep the answer concise. Focus on architecture, flow, and behavior described in the context.
-- When citing code, reference the file path from the context."""
+
+def _get_explain_system_prompt() -> str:
+    """Load EXPLAIN system prompt from registry (Phase 13)."""
+    return get_registry().get_instructions("explain_system")
 
 
 def _format_explain_context(state: AgentState) -> str:
@@ -494,12 +493,12 @@ def dispatch(step: dict, state: AgentState) -> dict:
                         out = call_small_model(
                             user_prompt,
                             task_name="EXPLAIN",
-                            system_prompt=EXPLAIN_SYSTEM_PROMPT,
+                            system_prompt=_get_explain_system_prompt(),
                         )
                     else:
                         out = call_reasoning_model(
                             user_prompt,
-                            system_prompt=EXPLAIN_SYSTEM_PROMPT,
+                            system_prompt=_get_explain_system_prompt(),
                             task_name="EXPLAIN",
                         )
                     out_str = (out or "").strip() or "[EXPLAIN: no model output]"
@@ -513,12 +512,12 @@ def dispatch(step: dict, state: AgentState) -> dict:
             out = call_small_model(
                 user_prompt,
                 task_name="EXPLAIN",
-                system_prompt=EXPLAIN_SYSTEM_PROMPT,
+                system_prompt=_get_explain_system_prompt(),
             )
         else:
             out = call_reasoning_model(
                 user_prompt,
-                system_prompt=EXPLAIN_SYSTEM_PROMPT,
+                system_prompt=_get_explain_system_prompt(),
                 task_name="EXPLAIN",
             )
         out_str = (out or "").strip() or "[EXPLAIN: no model output]"

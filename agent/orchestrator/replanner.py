@@ -8,12 +8,12 @@ from agent.memory.state import AgentState
 from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
-from agent.prompts import get_prompt
+from agent.prompt_system import get_registry
 from planner.planner_utils import normalize_actions, validate_plan
 
 logger = logging.getLogger(__name__)
 
-REPLANNER_SYSTEM_PROMPT = get_prompt("replanner_system", "system_prompt")
+REPLANNER_SYSTEM_PROMPT = get_registry().get_instructions("replanner")
 
 
 def _extract_json(text: str) -> str | None:
@@ -79,19 +79,15 @@ def replan(
     failed_desc = json.dumps(failed_step, indent=2) if failed_step else "{}"
     error_msg = ((error or "").strip() or "Unknown error")[:500]
 
-    user_prompt = f"""Original instruction:
-{instruction}
-
-Current plan (JSON):
-{steps_json}
-
-Failed step:
-{failed_desc}
-
-Error message:
-{error_msg}
-
-Produce a revised plan (JSON with "steps" array). Address the failure. Return only valid JSON."""
+    user_prompt = get_registry().get_instructions(
+        "replanner_user",
+        variables={
+            "instruction": instruction,
+            "steps_json": steps_json,
+            "failed_desc": failed_desc,
+            "error_msg": error_msg,
+        },
+    )
 
     try:
         model_type = get_model_for_task("replanner")

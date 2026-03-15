@@ -328,8 +328,28 @@ AutoStudio/
 │   │   ├── replanner.py        # LLM-based replan on failure
 │   │   └── validator.py        # validate_step (rules + optional LLM)
 │   │
-│   ├── prompts/                # YAML prompts
+│   ├── prompt_system/          # Phase 13: Prompt infrastructure
 │   │   ├── __init__.py
+│   │   ├── registry.py         # PromptRegistry.get(), get_instructions(), get_guarded(), validate_response()
+│   │   ├── loader.py           # Load YAML from prompt_versions or legacy prompts/
+│   │   ├── prompt_template.py # PromptTemplate dataclass
+│   │   ├── prompt_context_builder.py
+│   │   ├── versioning/        # prompt_version_store, prompt_diff, prompt_history, prompt_ab_test
+│   │   ├── guardrails/        # injection, output_schema, safety_policy, constraint_checker
+│   │   ├── skills/            # planner_skill, patch_generation_skill, etc. (YAML)
+│   │   ├── context/           # context_budget_manager, ranker/pruner facades, summarizer
+│   │   ├── retry_strategies/  # stricter_prompt, more_context, different_model, critic_feedback
+│   │   └── observability/     # prompt_metrics, prompt_usage_logger
+│   │
+│   ├── prompt_eval/            # Phase 13: Prompt evaluation
+│   │   ├── eval_runner.py
+│   │   ├── prompt_benchmark.py
+│   │   ├── prompt_score.py
+│   │   ├── prompt_dataset_loader.py
+│   │   └── failure_analysis/  # failure_logger, failure_patterns, failure_cluster
+│   │
+│   ├── prompts/                # Legacy YAML prompts (compat shim → PromptRegistry)
+│   │   ├── __init__.py        # get_prompt() redirects to registry
 │   │   ├── README.md
 │   │   ├── planner_system.yaml
 │   │   ├── replanner_system.yaml
@@ -337,6 +357,7 @@ AutoStudio/
 │   │   ├── retry_planner_system.yaml
 │   │   ├── query_rewrite.yaml
 │   │   ├── query_rewrite_with_context.yaml
+│   │   ├── query_rewrite_system.yaml
 │   │   ├── validate_step.yaml
 │   │   ├── model_router.yaml
 │   │   └── router_logit_system.yaml
@@ -458,6 +479,24 @@ AutoStudio/
 │   ├── routers/                # baseline, fewshot, ensemble, final, etc.
 │   └── tests/
 │
+├── agent/prompt_versions/      # Phase 13: Versioned prompts (planner/v1.yaml, etc.)
+│   ├── planner/
+│   ├── router/
+│   ├── critic/
+│   ├── retry_planner/
+│   ├── replanner/
+│   ├── replanner_user/
+│   ├── query_rewrite/
+│   ├── query_rewrite_with_context/
+│   ├── query_rewrite_system/
+│   ├── validate_step/
+│   ├── router_logit/
+│   ├── instruction_router/
+│   ├── explain_system/
+│   ├── action_selector/
+│   ├── context_ranker_single/
+│   └── context_ranker_batch/
+│
 ├── scripts/                    # Evaluation and utilities
 │   ├── run_principal_engineer_suite.py  # Phase 3/4: scenarios, failure mining, stress
 │   ├── run_capability_eval.py           # Phase 5: dev_tasks.json
@@ -466,6 +505,7 @@ AutoStudio/
 │   ├── run_repository_eval.py           # Phase 10: repository_tasks.json
 │   ├── run_localization_eval.py         # Phase 10.5: localization_tasks.json
 │   ├── run_workflow_eval.py             # Phase 12: workflow_tasks.json
+│   ├── run_prompt_ci.py                 # Phase 13: prompt CI (eval + regression)
 │   ├── evaluate_agent.py                # Legacy: agent_eval.json
 │   ├── replay_trace.py
 │   ├── report_bug.py
@@ -478,6 +518,7 @@ AutoStudio/
 │   ├── AGENT_LOOP_WORKFLOW.md
 │   ├── CONFIGURATION.md
 │   ├── PROMPT_ARCHITECTURE.md
+│   ├── prompt_engineering_rules.md  # Phase 13: governance rules
 │   ├── ROUTING_ARCHITECTURE_REPORT.md
 │   ├── REPOSITORY_SYMBOL_GRAPH.md
 │   ├── CODING_AGENT_ARCHITECTURE_GUIDE.md
@@ -503,7 +544,7 @@ AutoStudio/
 │   │   ├── editing_pipeline_tests.md
 │   │   ├── planner_improvements.md
 │   │   └── retrieval_tuning.md
-│   ├── roadmap/                # Phase 1–12 roadmap
+│   ├── roadmap/                # Phase 1–13 roadmap
 │   │   ├── phase_1_pipeline.md
 │   │   ├── phase_2_integration.md
 │   │   ├── phase_3_scenarios.md
@@ -516,7 +557,8 @@ AutoStudio/
 │   │   ├── phase_10_capability_expansion.md
 │   │   ├── phase_10-5_graph_traversal.md
 │   │   ├── phase_11_intelligence.md
-│   │   └── phase_12_last_stop.md
+│   │   ├── phase_12_last_stop.md
+│   │   └── phase_13_prompt_framwork.md
 │   └── tasks/                  # Task tracking
 │       ├── backlog.md
 │       ├── in_progress.md
@@ -525,6 +567,7 @@ AutoStudio/
 └── tests/                      # Test suite
     ├── __init__.py
     ├── conftest.py
+    ├── prompt_eval_dataset.json  # Phase 13: prompt benchmark test cases
     ├── agent_scenarios.json   # 40 scenarios (G1–G8)
     ├── dev_tasks.json         # 40 developer tasks (Phase 5)
     ├── autonomous_tasks.json  # 7 tasks (Phase 8)
@@ -884,6 +927,19 @@ Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `cal
 - Actions: EDIT, SEARCH, EXPLAIN, INFRA
 - Evaluation: `python -m planner.planner_eval`
 
+### Prompt System (Phase 13)
+
+- **PromptRegistry**: Central registry for all prompts; `get_registry().get(name)`, `get_instructions(name, variables=...)`, `get_guarded(name, user_input=...)`, `validate_response(name, response, user_input)`, `compose(prompt, skill, repo_context)`
+- **Versioning**: Prompts in `agent/prompt_versions/{name}/v1.yaml`; `get_prompt(name, version="latest")`, `compare_prompts(name, v1, v2)`, `run_ab_test(name, variant_a, variant_b, run_fn)` for A/B testing
+- **Guardrails**: Injection detection (pre-load via `get_guarded`), output schema validation, safety policy, constraint checker (post-response via `validate_response`)
+- **Skills**: Modular YAML skills (planner_skill, patch_generation_skill, etc.); compose with prompts
+- **Evaluation**: `tests/prompt_eval_dataset.json` (100 cases: navigation, planning, editing, refactoring, test-fixing, repo-reasoning), `scripts/run_prompt_ci.py` (regression detection, `--prompt NAME` for specific prompt)
+- **Observability**: `PromptUsageMetric` with `prompt_usage`, `avg_latency_ms`, `token_usage`; `generate_report()` from trace data
+- **Failure logging**: `agent/prompt_eval/failure_analysis/` — log failures to `dev/failure_logs/`
+- **Retry strategies**: Stricter prompt, more context, different model, critic feedback
+- **Governance**: Rules 6 (eval coverage per prompt), 7 (context budget); see [Docs/prompt_engineering_rules.md](Docs/prompt_engineering_rules.md)
+- See [Docs/PROMPT_ARCHITECTURE.md](Docs/PROMPT_ARCHITECTURE.md) and [Docs/prompt_engineering_rules.md](Docs/prompt_engineering_rules.md)
+
 ### Router Eval
 
 - Phased router evaluation harness; categories: EDIT, SEARCH, EXPLAIN, INFRA, GENERAL
@@ -975,7 +1031,8 @@ The **workflow layer** (`agent/workflow/`) turns AutoStudio into a developer tea
 
 | Doc | Description |
 |-----|--------------|
-| [Docs/PROMPT_ARCHITECTURE.md](Docs/PROMPT_ARCHITECTURE.md) | Prompt layer: all prompts, pipeline position, design philosophy, safety risks, testing |
+| [Docs/PROMPT_ARCHITECTURE.md](Docs/PROMPT_ARCHITECTURE.md) | Prompt layer: PromptRegistry, versioning, all prompts, pipeline position, design philosophy, safety risks, testing |
+| [Docs/prompt_engineering_rules.md](Docs/prompt_engineering_rules.md) | Phase 13: governance rules (1 prompt = 1 capability, versioning, evaluation, failure logging, Rules 6–7, guardrails, A/B testing) |
 | [Docs/CONFIGURATION.md](Docs/CONFIGURATION.md) | Centralized config: all modules, env overrides, validation |
 | [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md) | Step dispatch, SEARCH/EDIT/INFRA/EXPLAIN flows, policy engine, model routing |
 | [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md) | Full pipeline: run_controller, instruction router, safety limits, test repair, task memory |
@@ -1087,6 +1144,24 @@ python scripts/run_workflow_eval.py --mock
 # Limit tasks for quick validation
 python scripts/run_workflow_eval.py --limit 3
 ```
+
+**Phase 13 prompt CI** (prompt evaluation and regression detection):
+
+```bash
+# Run prompt eval against tests/prompt_eval_dataset.json; compare with baseline
+python scripts/run_prompt_ci.py
+
+# Save current run as baseline (run after prompt changes you want to keep)
+python scripts/run_prompt_ci.py --save-baseline
+
+# Evaluate specific prompt
+python scripts/run_prompt_ci.py --prompt planner
+
+# Use custom dataset
+python scripts/run_prompt_ci.py --dataset path/to/dataset.json
+```
+
+Exit code 1 on regression if: `task_success` drops >5%, `json_validity` drops >2%, `tool_misuse` increases >3%. Results: `dev/prompt_eval_results/`.
 
 **Phase 4 reliability** (failure mining, stress testing):
 

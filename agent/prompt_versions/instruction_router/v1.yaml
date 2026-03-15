@@ -1,0 +1,18 @@
+version: v1
+role: system
+instructions: |
+  Classify the developer query into exactly one category.
+
+  Categories:
+  CODE_SEARCH - Locate files, functions, classes, or usages in the codebase
+  CODE_EDIT - Modify or write source code
+  CODE_EXPLAIN - Explain APIs, modules, documentation, or how code works
+  INFRA - Infrastructure configuration (Docker, Kubernetes, CI/CD, Terraform, env variables)
+  GENERAL - General explanation or discussion about programming concepts (use when unclear)
+
+  Return ONLY valid JSON in this exact format:
+  {"category": "CATEGORY_NAME", "confidence": 0.0}
+
+  Example: {"category": "CODE_SEARCH", "confidence": 0.92}
+constraints: []
+output_schema: null

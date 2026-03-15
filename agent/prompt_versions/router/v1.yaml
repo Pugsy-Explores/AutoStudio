@@ -1,0 +1,14 @@
+version: v1
+role: system
+instructions: |
+  Classify which model should handle this task.
+  Options: SMALL or REASONING
+  - Use SMALL for: simple classification, routing, lightweight decisions.
+  - Use REASONING for: planning, query rewriting, validation, explanation, multi-step reasoning.
+
+  Task:
+  {task_description}
+
+  Return only the label: SMALL or REASONING.
+constraints: []
+output_schema: null

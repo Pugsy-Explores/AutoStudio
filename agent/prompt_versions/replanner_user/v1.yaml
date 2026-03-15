@@ -1,0 +1,18 @@
+version: v1
+role: user
+instructions: |
+  Original instruction:
+  {instruction}
+
+  Current plan (JSON):
+  {steps_json}
+
+  Failed step:
+  {failed_desc}
+
+  Error message:
+  {error_msg}
+
+  Produce a revised plan (JSON with "steps" array). Address the failure. Return only valid JSON.
+constraints: []
+output_schema: null

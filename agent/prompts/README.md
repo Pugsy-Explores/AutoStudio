@@ -1,17 +1,48 @@
-# Prompt Templates
+# Prompt Templates (Legacy + Compatibility)
 
-YAML prompts in this package are loaded and formatted with Python's `str.format()`.
+**Phase 13:** Prompts are now managed by the **Prompt Infrastructure** in `agent/prompt_system/`. This package provides a compatibility shim.
 
-For full architecture: [Docs/PROMPT_ARCHITECTURE.md](../../Docs/PROMPT_ARCHITECTURE.md) — purpose, pipeline position, design philosophy, safety risks, testing.
+## Current Architecture
 
-## Format string rules
+- **Versioned prompts**: `agent/prompt_versions/{name}/v1.yaml` — canonical source
+- **PromptRegistry**: `agent.prompt_system.get_registry()` — primary API
+- **Legacy YAML**: `agent/prompts/*.yaml` — kept for fallback during migration
 
-- **Placeholders**: Use `{name}` for substitution. Pass matching kwargs to `format()`.
+## Compatibility Shim
+
+`get_prompt(name, key)` in this package redirects to the registry:
+
+```python
+from agent.prompts import get_prompt
+
+# Legacy usage (still works)
+system = get_prompt("planner_system", "system_prompt")
+ctx = get_prompt("query_rewrite_with_context")  # returns {"main": ..., "end": ...}
+```
+
+## Preferred Usage (Phase 13)
+
+```python
+from agent.prompt_system import get_registry
+
+registry = get_registry()
+instructions = registry.get_instructions("planner")
+instructions = registry.get_instructions("router", variables={"task_description": "..."})
+template = registry.get("query_rewrite_with_context")
+main, end = template.extra["main"], template.extra["end"]
+
+# Guardrails (Phase 13 Hardening): for user-facing prompts
+template = registry.get_guarded("planner", user_input=user_input)  # runs injection check
+is_valid, err = registry.validate_response("planner", response, user_input)
+```
+
+## Format String Rules
+
+- **Placeholders**: Use `{name}` for substitution. Pass matching kwargs to `format()` or `variables`.
 - **Literal braces**: Escape as `{{` and `}}` so they render as `{` and `}`.
-  - Example: `Start with {{ and end with }}` → "Start with { and end with }"
 - **User input**: Values passed to `format()` are inserted as-is; braces in values are safe.
 
-## Structured output (JSON) best practices
+## Structured Output (JSON) Best Practices
 
 For prompts that require JSON-only output (e.g. query_rewrite_with_context):
 
@@ -21,13 +52,42 @@ For prompts that require JSON-only output (e.g. query_rewrite_with_context):
 4. **Explicit output format**: End with "Return JSON only:" or similar.
 5. **Avoid**: "No thinking, no explanation" — reasoning models often ignore this. Use positive framing.
 
-## Files
+## Versioned Prompts (Phase 13)
 
-- `query_rewrite.yaml` — `{text}`
-- `query_rewrite_with_context.yaml` — `{user_request}`, `{previous_attempts}`, `{planner_step}` (main); `end` is appended, not formatted. Output schema: `{tool, query, reason}`; optional `queries` (array) for variants; includes SEARCH STRATEGY RULES.
-- `validate_step.yaml` — `{step}`, `{success}`, `{output_summary}`
-- `model_router.yaml` — `{task_description}`
-- `planner_system.yaml` — system prompt; includes MULTI-STEP EXAMPLES (Phase 5): bug fix, multi-file feature, refactoring few-shot examples.
-- `replanner_system.yaml` — system prompt, not formatted
-- `critic_system.yaml` — Phase 8: critic system prompt; given goal + trace + results, output JSON `{failure_type, affected_step, suggestion}`
-- `retry_planner_system.yaml` — Phase 8: retry planner system prompt; given diagnosis + goal, output JSON `{strategy, rewrite_query, plan_override, retrieve_files}`
+All prompts live in `agent/prompt_versions/{name}/v1.yaml`. Key registry names:
+
+| Registry Name | Purpose |
+|---------------|---------|
+| planner | Planner system prompt |
+| replanner | Replanner system prompt |
+| replanner_user | Replanner user-turn template (variables: instruction, steps_json, failed_desc, error_msg) |
+| critic | Critic system prompt |
+| retry_planner | Retry planner system prompt |
+| query_rewrite | Simple query rewrite |
+| query_rewrite_with_context | Context-aware rewrite |
+| query_rewrite_system | JSON-only system for rewrite |
+| validate_step | Step validation |
+| router | Model routing fallback |
+| router_logit | Router logit |
+| instruction_router | Instruction classification (CODE_SEARCH, CODE_EDIT, etc.) |
+| explain_system | EXPLAIN context-gate system prompt |
+| action_selector | Autonomous action selection (SEARCH, EDIT, EXPLAIN, INFRA) |
+| context_ranker_single | Single-snippet relevance (variables: query, snippet) |
+| context_ranker_batch | Batch snippet relevance (variables: query, snippets) |
+
+## Legacy Files (Fallback)
+
+| File | Registry Name |
+|------|---------------|
+| planner_system.yaml | planner |
+| replanner_system.yaml | replanner |
+| critic_system.yaml | critic |
+| retry_planner_system.yaml | retry_planner |
+| query_rewrite.yaml | query_rewrite |
+| query_rewrite_with_context.yaml | query_rewrite_with_context |
+| query_rewrite_system.yaml | query_rewrite_system |
+| validate_step.yaml | validate_step |
+| model_router.yaml | router |
+| router_logit_system.yaml | router_logit |
+
+**Full architecture**: [Docs/PROMPT_ARCHITECTURE.md](../../Docs/PROMPT_ARCHITECTURE.md) — purpose, pipeline position, design philosophy, safety risks, testing, guardrails, A/B testing.

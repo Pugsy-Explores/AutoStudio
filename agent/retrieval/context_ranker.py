@@ -5,6 +5,7 @@ import os
 import re
 
 from agent.models.model_client import call_reasoning_model
+from agent.prompt_system import get_registry
 from config.retrieval_config import (
     ENABLE_CONTEXT_RANKING,
     MAX_CANDIDATES_FOR_RANKING,
@@ -68,16 +69,11 @@ def _get_llm_relevance_single(query: str, snippet: str) -> float:
     cache_key = (q_norm, snip_norm)
     if cache_key in _llm_score_cache:
         return _llm_score_cache[cache_key]
-    prompt = f"""Query:
-{query}
-
-Candidate snippet:
-{(snippet or "")[:1500]}{"..." if len(snippet or "") > 1500 else ""}
-
-Question:
-How relevant is this code snippet for answering the query?
-
-Return only a number between 0 and 1."""
+    snip_truncated = (snippet or "")[:1500] + ("..." if len(snippet or "") > 1500 else "")
+    prompt = get_registry().get_instructions(
+        "context_ranker_single",
+        variables={"query": query or "", "snippet": snip_truncated},
+    )
     try:
         out = call_reasoning_model(prompt, task_name="context_ranking", max_tokens=10)
         text = (out or "").strip()
@@ -99,17 +95,17 @@ def _get_llm_relevance_batch(query: str, snippets: list[str]) -> list[float]:
     """
     if not snippets:
         return []
-    parts = [f"Query:\n{query}\n\nSnippets:\n"]
+    snippets_formatted_parts = []
     for i, snip in enumerate(snippets, 1):
         truncated = (snip or "").strip()[:MAX_SNIPPET_CHARS_IN_BATCH]
         if len(snip or "") > MAX_SNIPPET_CHARS_IN_BATCH:
             truncated += "..."
-        parts.append(f"{i}. {truncated}\n")
-    parts.append(
-        "\nQuestion: How relevant is each snippet for answering the query?\n"
-        "Return one number (0-1) per line, in order. One score per snippet."
+        snippets_formatted_parts.append(f"{i}. {truncated}\n")
+    snippets_formatted = "".join(snippets_formatted_parts)
+    prompt = get_registry().get_instructions(
+        "context_ranker_batch",
+        variables={"query": query or "", "snippets": snippets_formatted},
     )
-    prompt = "".join(parts)
     try:
         max_tokens = min(256, 10 * len(snippets) + 20)
         out = call_reasoning_model(prompt, task_name="context_ranking", max_tokens=max_tokens)

@@ -1,0 +1,15 @@
+version: v1
+role: system
+instructions: |
+  Query:
+  {query}
+
+  Candidate snippet:
+  {snippet}
+
+  Question:
+  How relevant is this code snippet for answering the query?
+
+  Return only a number between 0 and 1.
+constraints: []
+output_schema: null

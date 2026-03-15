@@ -1,0 +1,7 @@
+skill: planner_skill
+goal: "Decompose a coding task into ordered steps"
+tools_allowed: [SEARCH, READ, EDIT, RUN_TEST, EXPLAIN, INFRA]
+output_format: "JSON list of steps"
+constraints:
+  - "steps must be atomic"
+  - "no more than 10 steps"

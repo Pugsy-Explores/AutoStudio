@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 from agent.models.model_client import call_small_model
+from agent.prompt_system import get_registry
 from config.router_config import ROUTER_TYPE
 
 logger = logging.getLogger(__name__)
@@ -20,22 +21,6 @@ class RouterDecision:
 
     category: str
     confidence: float
-
-
-_ROUTER_SYSTEM = """Classify the developer query into exactly one category.
-
-Categories:
-CODE_SEARCH - Locate files, functions, classes, or usages in the codebase
-CODE_EDIT - Modify or write source code
-CODE_EXPLAIN - Explain APIs, modules, documentation, or how code works
-INFRA - Infrastructure configuration (Docker, Kubernetes, CI/CD, Terraform, env variables)
-GENERAL - General explanation or discussion about programming concepts (use when unclear)
-
-Return ONLY valid JSON in this exact format:
-{"category": "CATEGORY_NAME", "confidence": 0.0}
-
-Example: {"category": "CODE_SEARCH", "confidence": 0.92}
-"""
 
 
 def _extract_json(text: str) -> str | None:
@@ -74,7 +59,8 @@ def route_instruction(instruction: str) -> RouterDecision:
             return router_fn(instruction)
         logger.warning("[instruction_router] ROUTER_TYPE=%r not available, using inline model", ROUTER_TYPE)
 
-    prompt = f"{_ROUTER_SYSTEM}\n\nInstruction:\n{instruction}"
+    router_system = get_registry().get_instructions("instruction_router")
+    prompt = f"{router_system}\n\nInstruction:\n{instruction}"
     try:
         response = call_small_model(
             prompt,

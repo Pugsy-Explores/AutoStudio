@@ -1,0 +1,7 @@
+skill: test_fix_skill
+goal: "Fix failing tests or add new tests"
+tools_allowed: [SEARCH, READ, EDIT, RUN_TEST]
+output_format: "Test code or patch"
+constraints:
+  - "run tests to verify fix"
+  - "match existing test style"

@@ -1,0 +1,6 @@
+version: v1
+role: system
+instructions: |
+  Reply with exactly one category word: EDIT, SEARCH, EXPLAIN, INFRA, or GENERAL.
+constraints: []
+output_schema: null

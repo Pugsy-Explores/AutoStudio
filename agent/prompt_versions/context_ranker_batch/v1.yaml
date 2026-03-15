@@ -1,0 +1,13 @@
+version: v1
+role: system
+instructions: |
+  Query:
+  {query}
+
+  Snippets:
+  {snippets}
+
+  Question: How relevant is each snippet for answering the query?
+  Return one number (0-1) per line, in order. One score per snippet.
+constraints: []
+output_schema: null

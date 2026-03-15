@@ -1,0 +1,7 @@
+skill: refactor_skill
+goal: "Refactor code while preserving behavior"
+tools_allowed: [SEARCH, READ, EDIT]
+output_format: "Patches for each modified file"
+constraints:
+  - "locate all usages before refactoring"
+  - "maintain backward compatibility"

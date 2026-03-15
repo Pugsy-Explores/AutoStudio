@@ -1,0 +1,7 @@
+skill: patch_generation_skill
+goal: "Generate a minimal patch to modify code"
+tools_allowed: [READ, EDIT]
+output_format: "Unified diff or patch block"
+constraints:
+  - "patch must be valid unified diff format"
+  - "only modify necessary lines"
