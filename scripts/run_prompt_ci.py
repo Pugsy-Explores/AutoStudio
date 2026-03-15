@@ -22,10 +22,17 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from config.agent_config import (
+    MAX_PROMPT_TOKENS,
+    MAX_REPO_CONTEXT_TOKENS,
+)
+
 from agent.models.model_client import call_reasoning_model
 from agent.prompt_eval.eval_runner import run_eval
 from agent.prompt_eval.prompt_dataset_loader import load_dataset
 from agent.prompt_system import get_registry
+from agent.prompt_system.prompt_context_builder import build_context_budgeted
+from agent.prompt_system.context import count_tokens
 
 RESULTS_DIR = _PROJECT_ROOT / "dev" / "prompt_eval_results"
 BASELINE_PATH = RESULTS_DIR / "baseline.json"
@@ -48,6 +55,61 @@ def _run_planner(task: str) -> str:
     )
 
 
+def _test_token_budget() -> list[str]:
+    """Run token budget scenarios. Returns list of failure messages."""
+    from unittest.mock import patch
+
+    failures = []
+
+    def _check(name: str, composed: str) -> None:
+        total, _ = count_tokens(composed, "default")
+        if total > MAX_PROMPT_TOKENS:
+            failures.append(f"{name}: prompt_tokens {total} > MAX_PROMPT_TOKENS {MAX_PROMPT_TOKENS}")
+        if "REPOSITORY CONTEXT:" in composed:
+            repo_section = composed.split("REPOSITORY CONTEXT:")[-1].split("---")[0].strip()
+            repo, _ = count_tokens(repo_section, "default")
+            if repo > MAX_REPO_CONTEXT_TOKENS:
+                failures.append(
+                    f"{name}: repo_context_tokens {repo} > MAX_REPO_CONTEXT_TOKENS {MAX_REPO_CONTEXT_TOKENS}"
+                )
+
+    with patch("agent.retrieval.context_ranker._get_llm_relevance_batch", return_value=[0.5] * 100):
+        with patch("agent.prompt_system.context.context_summarizer.call_small_model", return_value="[Summary]"):
+            registry = get_registry()
+            base = registry.get_instructions("planner")
+            # test_large_repo_context
+            big_snippets = [
+                {"file": f"file_{i}.py", "symbol": f"fn_{i}", "snippet": "x" * 500}
+                for i in range(50)
+            ]
+            composed, _ = build_context_budgeted(
+                base, big_snippets, "query", model_name="default", prompt_name="planner"
+            )
+            _check("test_large_repo_context", composed)
+
+            # test_multifile_edit
+            multi = [{"file": f"src/mod{i}.py", "symbol": "", "snippet": "code " * 200} for i in range(15)]
+            composed, _ = build_context_budgeted(base, multi, "edit task", model_name="default")
+            _check("test_multifile_edit", composed)
+
+            # test_long_history
+            history = [{"role": "user", "content": "msg " * 100}, {"role": "assistant", "content": "resp " * 100}] * 25
+            composed, _ = build_context_budgeted(
+                base, [], "q", history=history, user_input="final", model_name="default"
+            )
+            _check("test_long_history", composed)
+
+            # test_large_skill_block
+            skill = "Skill: " + ("constraint " * 500)
+            composed, _ = build_context_budgeted(
+                base, [{"file": "a.py", "symbol": "", "snippet": "x" * 1000}],
+                "q", skill_block=skill, model_name="default"
+            )
+            _check("test_large_skill_block", composed)
+
+    return failures
+
+
 def _load_baseline() -> dict | None:
     if not BASELINE_PATH.exists():
         return None
@@ -60,7 +122,18 @@ def main() -> int:
     parser.add_argument("--prompt", default="planner", help="Prompt name to evaluate")
     parser.add_argument("--dataset", default=None, help="Path to dataset JSON")
     parser.add_argument("--save-baseline", action="store_true", help="Save current run as baseline")
+    parser.add_argument("--token-budget-only", action="store_true", help="Run only token budget tests, then exit")
     args = parser.parse_args()
+
+    budget_failures = _test_token_budget()
+    if budget_failures:
+        print("[prompt_ci] Token budget assertions failed:")
+        for f in budget_failures:
+            print(f"  - {f}")
+        return 1
+    if args.token_budget_only:
+        print("[prompt_ci] Token budget tests passed")
+        return 0
 
     dataset_path = args.dataset or str(_PROJECT_ROOT / "tests" / "prompt_eval_dataset.json")
     cases = load_dataset(dataset_path)
