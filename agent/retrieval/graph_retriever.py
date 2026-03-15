@@ -5,10 +5,11 @@ import os
 import re
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from agent.retrieval.retrieval_expander import normalize_file_path
+from config.repo_graph_config import INDEX_SQLITE, SYMBOL_GRAPH_DIR
+from config.retrieval_config import GRAPH_EXPANSION_DEPTH, MAX_RETRIEVED_SYMBOLS
 
-MAX_RETRIEVED_SYMBOLS = 15
-EXPANSION_DEPTH = 2
+logger = logging.getLogger(__name__)
 
 # Filler words to strip when extracting symbol candidates from natural language queries
 _FILLER_WORDS = frozenset(
@@ -68,7 +69,7 @@ def retrieve_symbol_context(query: str, project_root: str | None = None) -> dict
         return {"results": [], "query": query}
 
     root = Path(project_root or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()).resolve()
-    index_path = root / ".symbol_graph" / "index.sqlite"
+    index_path = root / SYMBOL_GRAPH_DIR / INDEX_SQLITE
     if not index_path.is_file():
         logger.debug("[graph_retriever] no index at %s", index_path)
         return None
@@ -97,12 +98,16 @@ def retrieve_symbol_context(query: str, project_root: str | None = None) -> dict
         if symbol_id is None:
             return None
 
-        expanded = expand_neighbors(symbol_id, depth=EXPANSION_DEPTH, storage=storage)
+        expanded = expand_neighbors(
+            symbol_id, depth=GRAPH_EXPANSION_DEPTH, storage=storage
+        )
         expanded = expanded[:MAX_RETRIEVED_SYMBOLS]
 
         results = []
         for n in expanded:
-            file_path = n.get("file", "")
+            file_path = normalize_file_path(n.get("file", ""))
+            if not file_path:
+                continue
             name = n.get("name", "")
             line = n.get("start_line") or 0
             snippet = (n.get("docstring") or name or "")[:300]
@@ -113,7 +118,11 @@ def retrieve_symbol_context(query: str, project_root: str | None = None) -> dict
                 "snippet": snippet,
             })
 
-        logger.info("[graph_retriever] expansion depth=%d nodes=%d", EXPANSION_DEPTH, len(results))
+        logger.info(
+            "[graph_retriever] expansion depth=%d nodes=%d",
+            GRAPH_EXPANSION_DEPTH,
+            len(results),
+        )
         return {"results": results, "query": query}
     finally:
         storage.close()

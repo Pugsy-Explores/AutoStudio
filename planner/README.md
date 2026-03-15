@@ -40,7 +40,7 @@ Additional metrics: step count MAE (mean absolute error), P95 latency.
 
 Each planner step maps to **one** action. The agent loop:
 
-1. Calls `_get_plan(instruction)` — when `ENABLE_INSTRUCTION_ROUTER=1`, CODE_SEARCH/CODE_EXPLAIN/INFRA skip the planner and get a single-step plan; otherwise calls `plan(instruction)`.
+1. Calls `_get_plan(instruction)` — when `ENABLE_INSTRUCTION_ROUTER=1` (see [Docs/CONFIGURATION.md](../Docs/CONFIGURATION.md)), CODE_SEARCH/CODE_EXPLAIN/INFRA skip the planner and get a single-step plan; otherwise calls `plan(instruction)`.
 2. For each step, `dispatch` routes by `action` to the policy engine (SEARCH/EDIT/INFRA) or EXPLAIN.
 3. SEARCH uses retrieval order: retrieve_graph → retrieve_vector → retrieve_grep → Serena; EDIT uses diff planner (when `ENABLE_DIFF_PLANNER=1`) or read_file.
 

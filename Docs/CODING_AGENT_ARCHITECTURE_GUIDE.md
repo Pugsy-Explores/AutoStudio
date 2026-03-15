@@ -1,8 +1,31 @@
 # Coding Agent Architecture Guide
 
-**For AI agents and developers building code-modification systems.** This guide documents five common anti-patterns that cause agents to fail, the correct architecture patterns used in production systems, and how AutoStudio implements them. Use it when designing retrieval, editing, or execution pipelines—or when debugging agent behavior.
+**For AI agents and developers building code-modification systems.** This guide documents common anti-patterns that cause agents to fail, the correct architecture patterns used in production systems, and how AutoStudio implements them. Use it when designing retrieval, editing, or execution pipelines—or when debugging agent behavior.
 
-**Contents:** (1) Retrieval—why large context fails, (2) Code understanding—symbol graphs vs plain text, (3) Editing—structured diff/patch pipelines, (4) Fault tolerance—policy engine and retries, (5) Memory—task and repo state. Ends with the full pipeline diagram and a quick-reference checklist.
+**Contents:** (0) **Model client—never use reasoning_content as content fallback** [PRIORITY], (1) Retrieval—why large context fails, (2) Code understanding—symbol graphs vs plain text, (3) Editing—structured diff/patch pipelines, (4) Fault tolerance—policy engine and retries, (5) Memory—task and repo state. Ends with the full pipeline diagram and a quick-reference checklist.
+
+---
+
+## 0. [PRIORITY] Mistake: Using reasoning_content When content Is Empty
+
+**Do not** fall back to `reasoning_content` when `content` is empty.
+
+### Why?
+
+Reasoning models (e.g. Qwen, o1-style) emit thinking in `reasoning_content` and the actual answer in `content`. If the model never outputs to `content` (e.g. runs out of tokens during thinking), returning `reasoning_content` as if it were the answer:
+
+- Breaks structured output consumers (JSON extraction, tool calls)
+- Mixes internal reasoning with user-facing output
+- Hides the real failure (empty content) and makes debugging harder
+
+### Correct Pattern
+
+- Return `content` only. If `content` is empty, return empty and let callers handle it (fallback, retry, or clear error).
+- For tasks that require strict JSON (e.g. query rewriting), use models that output directly to `content`, or configure prompts so the model emits the answer in `content`—not in reasoning.
+
+### AutoStudio Implementation
+
+- **agent/models/model_client.py** — Returns `content` only. `reasoning_content` is streamed to terminal for visibility but never used as the returned value.
 
 ---
 
@@ -66,8 +89,9 @@ Research shows repository intelligence graphs significantly improve coding agent
 ### AutoStudio Implementation
 
 - **repo_index/** — Tree-sitter parser, parallel indexing, symbol extraction, dependency edges; optional embedding index (ChromaDB)
-- **repo_graph/** — SQLite storage, 2-hop expansion; `repo_map_builder` (architectural map); `change_detector` (affected callers, risk levels)
-- **agent/retrieval/** — `graph_retriever` (symbol lookup → expansion); `vector_retriever` (embedding search when graph returns nothing); `retrieval_cache` (LRU)
+- **repo_graph/** — SQLite storage, 2-hop expansion; `repo_map_builder` (spec format: modules, symbols, calls); `repo_map_updater` (incremental updates); `change_detector` (affected callers, risk levels)
+- **agent/retrieval/** — `repo_map_lookup` (lookup_repo_map, load_repo_map); `anchor_detector` (detect_anchor: query + repo_map → symbol + confidence); `search_pipeline` (hybrid parallel: graph + vector + grep; uses repo_map anchor when confidence ≥ 0.9); `symbol_expander` (anchor → expand depth=2 → fetch bodies → rank → prune); `graph_retriever` (symbol lookup → expansion); `vector_retriever` (embedding search); `retrieval_cache` (LRU); `context_builder_v2` (assemble_reasoning_context: FILE/SYMBOL/LINES/SNIPPET)
+- **agent/execution/explain_gate.py** — `ensure_context_before_explain` (inject SEARCH before EXPLAIN when ranked_context empty; avoids wasted LLM calls)
 
 ---
 
@@ -225,6 +249,7 @@ This matches modern agentic development systems where AI agents **plan**, **exec
 
 | Layer | Mistake | Correct Pattern |
 |-------|---------|-----------------|
+| **Model client** | Use reasoning_content when content empty | Return content only; handle empty via fallback/retry |
 | Retrieval | Load entire repo | Repo index + symbol graph + retrieval + context ranking |
 | Code understanding | Grep as plain text | Symbol graph, call graphs, dependency edges |
 | Editing | Direct file overwrite | Diff planner → patch validation → AST patching → execution |

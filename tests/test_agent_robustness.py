@@ -208,7 +208,7 @@ def test_agent_replans_on_edit_failure(tmp_path):
         remaining = [s for s in steps if isinstance(s, dict) and s.get("id") not in completed_ids]
         return {"steps": remaining}
 
-    with patch("agent.orchestrator.agent_controller.plan") as mock_plan:
+    with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
         mock_plan.return_value = {
             "steps": [
                 {"id": 1, "action": "SEARCH", "description": "find foo", "reason": "r1"},

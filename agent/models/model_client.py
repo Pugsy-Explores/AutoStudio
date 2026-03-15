@@ -184,6 +184,8 @@ def _call_chat(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     request_timeout: Optional[int] = None,
+    frequency_penalty: Optional[float] = None,
+    presence_penalty: Optional[float] = None,
 ) -> str:
     """POST to OpenAI-compatible chat completions endpoint; return assistant content."""
     temp = temperature if temperature is not None else MODEL_TEMPERATURE
@@ -199,6 +201,10 @@ def _call_chat(
     }
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
+    if frequency_penalty is not None:
+        payload["frequency_penalty"] = frequency_penalty
+    if presence_penalty is not None:
+        payload["presence_penalty"] = presence_penalty
     logger.info(
         "model call: endpoint=%s max_tokens=%s temperature=%s timeout=%s messages=%s",
         endpoint,
@@ -277,6 +283,10 @@ def _call_chat(
         }
         if max_tokens is not None:
             create_kwargs["max_tokens"] = max_tokens
+        if frequency_penalty is not None:
+            create_kwargs["frequency_penalty"] = frequency_penalty
+        if presence_penalty is not None:
+            create_kwargs["presence_penalty"] = presence_penalty
         stream = client.chat.completions.create(**create_kwargs)
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -331,25 +341,36 @@ def call_small_model(
     prompt: str,
     max_tokens: Optional[int] = None,
     task_name: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> str:
     """Call the small (fast/cheap) model with a single user prompt. Returns model output text.
-    When task_name is set, uses params from models_config task_params for that task."""
+    When task_name is set, uses params from models_config task_params for that task.
+    When system_prompt is provided, sends as system + user messages for grounding/scope."""
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
     logger.info(
-        "call_small_model: endpoint=%s task=%r prompt=%r max_tokens=%s",
+        "call_small_model: endpoint=%s task=%r prompt=%r max_tokens=%s system_prompt=%s",
         SMALL_MODEL_ENDPOINT,
         task_name,
         prompt,
         limit,
+        bool(system_prompt),
     )
-    messages = [{"role": "user", "content": prompt}]
+    if system_prompt:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+    else:
+        messages = [{"role": "user", "content": prompt}]
     return _call_chat(
         SMALL_MODEL_ENDPOINT,
         messages,
         max_tokens=limit,
         temperature=params.get("temperature"),
         request_timeout=params.get("request_timeout_seconds"),
+        frequency_penalty=params.get("frequency_penalty"),
+        presence_penalty=params.get("presence_penalty"),
     )
 
 
@@ -396,4 +417,6 @@ def call_reasoning_model(
         max_tokens=limit,
         temperature=params.get("temperature"),
         request_timeout=params.get("request_timeout_seconds"),
+        frequency_penalty=params.get("frequency_penalty"),
+        presence_penalty=params.get("presence_penalty"),
     )

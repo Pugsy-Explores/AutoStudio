@@ -1,5 +1,12 @@
 prompt: |
-  Did this step succeed?
+  Did this step succeed in the context of the agent loop?
+  User instruction: {instruction}
   Step: {step}
   Result success: {success}, output (summary): {output_summary}
+  Next step in plan: {next_step_description}
+
+  Consider: Does the output sufficiently support the next step and the user's goal?
+  For SEARCH: Are the results relevant implementation code (not just tests) when the user asks "how does X work"?
+  For EXPLAIN: Does the explanation address the question with real code context?
+
   Answer with exactly YES or NO.

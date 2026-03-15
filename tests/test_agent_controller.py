@@ -10,7 +10,7 @@ from agent.orchestrator.agent_controller import run_controller
 
 def test_run_controller_returns_summary(tmp_path):
     """run_controller returns task summary with task_id and instruction."""
-    with patch("agent.orchestrator.agent_controller.plan") as mock_plan:
+    with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
         mock_plan.return_value = {
             "steps": [
                 {"id": 1, "action": "EXPLAIN", "description": "Done", "reason": "test"},
@@ -35,7 +35,7 @@ def test_run_controller_edit_flow_mocked(tmp_path):
             return {"success": True, "output": {"results": [{"file": "a.py", "snippet": "def foo"}]}}
         return {"success": True, "output": {}}
 
-    with patch("agent.orchestrator.agent_controller.plan") as mock_plan:
+    with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
         mock_plan.return_value = {
             "steps": [
                 {"id": 1, "action": "SEARCH", "description": "find foo", "reason": "r1"},
@@ -61,7 +61,7 @@ def test_run_controller_with_instruction_router_skips_planner_for_search(tmp_pat
     with patch("agent.orchestrator.agent_controller.ENABLE_INSTRUCTION_ROUTER", True):
         with patch("agent.routing.instruction_router.route_instruction") as mock_route:
             mock_route.return_value = RouterDecision(category="CODE_SEARCH", confidence=0.9)
-            with patch("agent.orchestrator.agent_controller.plan") as mock_plan:
+            with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
                 with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
                     mock_dispatch.return_value = {
                         "success": True,

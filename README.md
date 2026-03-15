@@ -20,6 +20,7 @@ AutoStudio converts natural-language instructions into executable plans, runs co
 - [Testing](#testing)
 - [Subsystems](#subsystems)
 - [Repository Symbol Graph](#repository-symbol-graph-implemented)
+- [Evaluation](#evaluation)
 - [Documentation](#documentation)
 
 ---
@@ -48,16 +49,22 @@ flowchart TB
     end
 
     subgraph Retrieval
+        RepoMapLookup[RepoMapLookup]
+        SearchPipeline[SearchPipeline]
         GraphRetriever[GraphRetriever]
         VectorRetriever[VectorRetriever]
         SerenaGrep[Serena search_code]
+        RetrievalPipeline[RetrievalPipeline]
+        AnchorDetector[AnchorDetector]
+        SymbolExpander[SymbolExpander]
         Expand[RetrievalExpansion]
-        ContextBuilder[ContextBuilder]
+        ContextBuilder[ContextBuilderV2]
         Ranker[ContextRanker]
         Pruner[ContextPruner]
     end
 
     subgraph Reasoning
+        ExplainGate[ExplainGate]
         Explain[EXPLAIN]
     end
 
@@ -71,16 +78,24 @@ flowchart TB
     Dispatch --> ToolGraph
     ToolGraph --> Policy
     Policy --> Tools
-    Tools --> GraphRetriever
-    Tools --> VectorRetriever
-    Tools --> SerenaGrep
-    GraphRetriever --> Expand
-    VectorRetriever --> Expand
-    SerenaGrep --> Expand
+    Policy --> RepoMapLookup
+    Tools --> SearchPipeline
+    RepoMapLookup --> SearchPipeline
+    SearchPipeline --> GraphRetriever
+    SearchPipeline --> VectorRetriever
+    SearchPipeline --> SerenaGrep
+    GraphRetriever --> RetrievalPipeline
+    VectorRetriever --> RetrievalPipeline
+    SerenaGrep --> RetrievalPipeline
+    RetrievalPipeline --> AnchorDetector
+    AnchorDetector --> SymbolExpander
+    AnchorDetector --> Expand
+    SymbolExpander --> ContextBuilder
     Expand --> ContextBuilder
     ContextBuilder --> Ranker
     Ranker --> Pruner
-    Pruner --> Explain
+    Pruner --> ExplainGate
+    ExplainGate --> Explain
 ```
 
 **High-level flow:** Instruction → Instruction Router (optional) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state.
@@ -124,7 +139,7 @@ python -m agent.cli.run_agent "Explain how the dispatcher routes SEARCH steps"
 
 ```bash
 python -m repo_index.index_repo /path/to/repo
-# Creates .symbol_graph/index.sqlite, symbols.json, and optionally .symbol_graph/embeddings/ (when chromadb + sentence-transformers installed)
+# Creates .symbol_graph/index.sqlite, symbols.json, repo_map.json, and optionally .symbol_graph/embeddings/ (when chromadb + sentence-transformers installed)
 ```
 
 ### Model endpoints
@@ -140,9 +155,25 @@ Configure `agent/models/models_config.json` or set:
 
 ```
 AutoStudio/
+├── config/                   # Centralized configuration (see Docs/CONFIGURATION.md)
+│   ├── agent_config.py       # Agent loop limits (runtime, replan)
+│   ├── editing_config.py     # Patch and file limits
+│   ├── retrieval_config.py   # Retrieval budgets and flags
+│   ├── router_config.py      # Instruction router
+│   ├── tool_graph_config.py # Tool graph enable
+│   ├── repo_graph_config.py # Symbol graph paths
+│   ├── observability_config.py # Trace settings
+│   ├── logging_config.py    # Log level/format
+│   └── config_validator.py  # Startup validation
 ├── agent/                    # Core agent package
 │   ├── cli/                  # CLI entry points
 │   ├── execution/            # Step execution and dispatch
+│   │   ├── executor.py       # StepExecutor (execute_step → dispatch)
+│   │   ├── step_dispatcher.py  # Orchestrates: ToolGraph → Router → PolicyEngine; calls run_retrieval_pipeline
+│   │   ├── tool_graph.py     # Allowed tools per node; ENABLE_TOOL_GRAPH
+│   │   ├── tool_graph_router.py  # resolve_tool (preferred or first allowed; no hard reject)
+│   │   ├── policy_engine.py  # Retry + mutation for SEARCH/EDIT/INFRA
+│   │   └── explain_gate.py   # Context gate before EXPLAIN (inject SEARCH if empty)
 │   ├── memory/               # State, results, task memory, task index
 │   │   ├── state.py          # AgentState
 │   │   ├── task_memory.py    # save_task, load_task, list_tasks
@@ -154,12 +185,18 @@ AutoStudio/
 │   │   ├── agent_loop.py     # run_agent (standard loop)
 │   │   └── agent_controller.py # run_controller (full pipeline)
 │   ├── retrieval/            # Query rewrite, context building, ranking
+│   │   ├── search_pipeline.py  # Hybrid parallel retrieval (graph + vector + grep); uses repo_map anchor when present
+│   │   ├── retrieval_pipeline.py  # run_retrieval_pipeline: anchor → symbol_expander + expand → read → build_context
+│   │   ├── repo_map_lookup.py  # lookup_repo_map: tokenize query → match symbols → anchor candidates
+│   │   ├── anchor_detector.py  # detect_anchors (search results); detect_anchor (query + repo_map)
+│   │   ├── symbol_expander.py  # expand_from_anchors: graph depth=2 → fetch bodies → rank → prune (max 15 symbols, 6 snippets)
 │   │   ├── graph_retriever.py # Symbol lookup + 2-hop expansion
 │   │   ├── vector_retriever.py # Embedding-based search (optional)
 │   │   ├── retrieval_cache.py  # LRU cache for search results
 │   │   ├── query_rewriter.py
 │   │   ├── retrieval_expander.py
 │   │   ├── context_builder.py
+│   │   ├── context_builder_v2.py  # assemble_reasoning_context: FILE/SYMBOL/LINES/SNIPPET format, ~8000 char budget
 │   │   ├── context_ranker.py
 │   │   └── context_pruner.py
 │   ├── tools/                # Tool adapters
@@ -173,7 +210,8 @@ AutoStudio/
 │   ├── graph_storage.py      # SQLite nodes/edges
 │   ├── graph_builder.py      # build_graph
 │   ├── graph_query.py        # find_symbol, expand_neighbors
-│   ├── repo_map_builder.py   # High-level architectural map
+│   ├── repo_map_builder.py   # build_repo_map, build_repo_map_from_storage (spec: modules, symbols, calls)
+│   ├── repo_map_updater.py   # update_repo_map_for_file (incremental; call after update_index_for_file)
 │   └── change_detector.py    # Semantic change impact (risk levels)
 ├── editing/                  # Diff planning, conflict resolution, patches
 │   ├── diff_planner.py       # plan_diff (EDIT step)
@@ -205,7 +243,7 @@ AutoStudio/
 | **dispatch** | Routes by action to PolicyEngine (SEARCH/EDIT/INFRA) or EXPLAIN |
 | **ToolGraph** | Per-node `allowed_tools` and `preferred_tool`; restricts transitions |
 | **ExecutionPolicyEngine** | Retry loop with mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn |
-| **validate_step** | Rule-based or LLM YES/NO; fallback to rules on error |
+| **validate_step** | Rule-based or LLM YES/NO; EXPLAIN with empty-context output → invalid (triggers replanner); fallback to rules on error |
 | **replan** | LLM-based: receives failed_step, error; produces revised plan; fallback to remaining steps |
 | **instruction_router** | Classifies before planner (when ENABLE_INSTRUCTION_ROUTER=1); uses ROUTER_TYPE or inline SMALL model |
 
@@ -224,28 +262,37 @@ AutoStudio/
 
 ### SEARCH pipeline
 
+Dispatcher orchestrates only: after SEARCH success it calls `run_retrieval_pipeline(results, state, query)`. The pipeline encapsulates:
+
 ```
 SEARCH
   → policy_engine.search()
+      → _search_fn: repo_map_lookup(query) + detect_anchor(query, repo_map) → state.context[repo_map_anchor, repo_map_candidates]
       → retrieval_cache.get_cached() [if RETRIEVAL_CACHE_SIZE > 0]
-      → _search_fn: graph_retriever.retrieve_symbol_context(query) first
-      → if no results: vector_retriever.search_by_embedding(query) [if ENABLE_VECTOR_SEARCH]
-      → if still empty: search_code (Serena MCP) fallback
+      → hybrid_retrieve() [when ENABLE_HYBRID_RETRIEVAL=1]
+          → graph uses repo_map_anchor when confidence ≥ 0.9
+          → parallel: graph_retriever + vector_retriever + search_code (grep)
+          → merge_results() → top 20 candidates
+      → else: sequential fallback (graph → vector → grep)
       → retrieval_cache.set_cached() on success
-  → _run_retrieval_expansion()
-      → expand_search_results()
-      → build_context_from_symbols()
-      → context_ranker.rank_context()      [when ENABLE_CONTEXT_RANKING=1]
-      → context_pruner.prune_context()
-  → state.context["ranked_context"]
+  → run_retrieval_pipeline(results, state, query)
+      → anchor_detector.detect_anchors()  # filter to symbol/class/def matches; fallback top N
+      → symbol_expander.expand_from_anchors() [when graph exists; anchor → expand depth=2 → fetch bodies → rank → prune to 6]
+      → retrieval_expander.expand_search_results() [capped at MAX_SYMBOL_EXPANSION]
+      → read_symbol_body / read_file → find_referencing_symbols
+      → context_builder.build_context_from_symbols()
+      → context_ranker.rank_context() [when ENABLE_CONTEXT_RANKING=1]
+      → context_pruner.prune_context() [max 6 snippets, 8000 chars]
+  → state.context["ranked_context"], context_snippets (list of {file, symbol, snippet})
 ```
 
-- **Retrieval stack:** Graph retriever → vector search → Serena fallback. Graph uses `.symbol_graph/index.sqlite`; vector uses `.symbol_graph/embeddings/` (ChromaDB).
-- **Query rewrite:** `rewrite_query_with_context(planner_step, user_request, attempt_history, state)` — LLM returns `{tool, query, reason}`; wires `chosen_tool` for retrieval order; prompts include Serena and filesystem rules
-- **Retrieval expansion:** Expands search results into `read_symbol_body` / `read_file` actions (capped at 5 files)
-- **Context builder:** Deduplicates symbols, references, files; limits total chars
-- **Context ranker:** Hybrid score = 0.6×LLM + 0.2×symbol_match + 0.1×filename_match + 0.1×reference_score − same_file_penalty; **batch LLM** (one prompt for all snippets); **diversity penalty** (−0.1 per duplicate from same file); caps at 20 candidates
-- **Context pruner:** Max 6 snippets, 8000 chars; deduplicate by (file, symbol)
+- **Hybrid retrieval (default):** Runs graph, vector, grep in parallel; merges and dedupes; returns top 20. Improves recall (semantics + exact matches). Set `ENABLE_HYBRID_RETRIEVAL=0` for sequential fallback.
+- **Retrieval budgets:** MAX_SEARCH_RESULTS=20, MAX_SYMBOL_EXPANSION=10, MAX_CONTEXT_SNIPPETS=6.
+- **Query rewrite:** `rewrite_query_with_context(planner_step, user_request, attempt_history, state)` — LLM returns `{tool, query, reason}`; wires `chosen_tool`; prompts prefer high recall, regex-style patterns.
+- **Symbol expander:** When graph index exists, `expand_from_anchors()` expands anchor symbols via `expand_neighbors(depth=2)`, fetches bodies, ranks, prunes to top 6 (max 15 symbols).
+- **Context builder:** Deduplicates symbols, references, files; limits total chars. `context_builder_v2` formats ranked context for reasoning (FILE/SYMBOL/LINES/SNIPPET).
+- **Context ranker:** Hybrid score = 0.6×LLM + 0.2×symbol_match + 0.1×filename_match + 0.1×reference_score − same_file_penalty; batch LLM; caps at 20 candidates.
+- **Context pruner:** Max 6 snippets, 8000 chars; deduplicate by (file, symbol).
 
 ### EDIT pipeline (when ENABLE_DIFF_PLANNER=1)
 
@@ -259,6 +306,7 @@ EDIT
       → patch_validator.validate_patch() — compile + AST reparse
       → write on success; rollback on failure
   → repo_index.update_index_for_file() on success
+  → repo_graph.update_repo_map_for_file() on success (incremental repo_map refresh)
 ```
 
 - **Diff planner:** Identifies affected symbols, queries graph for callers.
@@ -270,9 +318,11 @@ EDIT
 
 ### EXPLAIN
 
-- Uses `ranked_context` as primary evidence when non-empty; else falls back to `search_memory` and `context_snippets`
-- Model from `task_models["EXPLAIN"]` (default: REASONING_V2 for new features)
-- Empty output → `"[EXPLAIN: no model output]"`
+- **Context gate:** Before calling the model, `ensure_context_before_explain()` checks `ranked_context`. If empty, injects SEARCH (calls `_search_fn` with step description) and runs `run_retrieval_pipeline()`. Avoids wasted LLM calls when no context.
+- **Anchored context format:** `context_builder_v2.assemble_reasoning_context()` emits FILE/SYMBOL/LINES/SNIPPET blocks (~8000 char budget); deduplicates by (file, symbol).
+- Uses `ranked_context` as primary evidence; else falls back to `search_memory` and `context_snippets`.
+- Model from `task_models["EXPLAIN"]` (default: REASONING_V2).
+- Empty output → `"[EXPLAIN: no model output]"`.
 
 ---
 
@@ -287,7 +337,7 @@ instruction
   → _get_plan() — instruction router (if enabled) or planner.plan()
   → while task_not_complete:
         step = next_step()
-        if SEARCH: dispatch (retrieve_graph → retrieve_vector → retrieve_grep → Serena)
+        if SEARCH: dispatch (hybrid_retrieve or retrieve_graph → retrieve_vector → retrieve_grep → Serena)
         if EDIT: plan_diff → conflict_resolver → run_with_repair → change_detector → update_index
         validate step; if failure: replan
   → save_task() — persist to .agent_memory/tasks/
@@ -306,6 +356,8 @@ instruction
 
 ## Configuration
 
+All configuration values are centralized under `config/`. See [Docs/CONFIGURATION.md](Docs/CONFIGURATION.md) for the full reference, including environment variable overrides and validation rules.
+
 ### models_config.json
 
 ```json
@@ -319,6 +371,7 @@ instruction
     "query rewriting": "REASONING",
     "validation": "REASONING",
     "EXPLAIN": "REASONING_V2",
+    "EDIT": "REASONING_V2",
     "routing": "REASONING",
     "planner": "REASONING_V2",
     "context_ranking": "REASONING_V2"
@@ -339,6 +392,8 @@ instruction
 
 ## Environment Variables
 
+All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIGURATION.md) for the complete list.
+
 | Variable | Purpose |
 |----------|---------|
 | `ENABLE_INSTRUCTION_ROUTER` | 1 or 0 (default) — route instruction before planner; CODE_SEARCH/CODE_EXPLAIN/INFRA skip planner |
@@ -353,6 +408,7 @@ instruction
 | `ENABLE_TOOL_GRAPH` | 1 (default) or 0 — restrict tools by graph |
 | `ENABLE_CONTEXT_RANKING` | 1 (default) or 0 — rank and prune context before EXPLAIN |
 | `ENABLE_VECTOR_SEARCH` | 1 (default) or 0 — use embedding search when graph returns nothing |
+| `ENABLE_HYBRID_RETRIEVAL` | 1 (default) or 0 — run graph, vector, grep in parallel; 0 = sequential fallback |
 | `RETRIEVAL_CACHE_SIZE` | LRU cache size for search results (default 100); 0 to disable. Read at runtime from env. |
 | `INDEX_EMBEDDINGS` | 1 (default) or 0 — build ChromaDB embedding index during index_repo |
 | `INDEX_PARALLEL_WORKERS` | Parallel file parsing workers (default 8) |
@@ -390,7 +446,7 @@ instruction
 python -m repo_index.index_repo /path/to/repo
 ```
 
-Creates `.symbol_graph/index.sqlite` and `symbols.json`. SEARCH uses graph retriever when index exists. Programmatic use supports `include_dirs` to index only specific subdirs (e.g. `("agent", "editing")`).
+Creates `.symbol_graph/index.sqlite`, `symbols.json`, and `repo_map.json`. SEARCH uses repo_map lookup and anchor detection before graph retrieval when index exists. Programmatic use supports `include_dirs` to index only specific subdirs (e.g. `("agent", "editing")`).
 
 ---
 
@@ -405,13 +461,15 @@ python -m pytest AutoStudio/tests/test_agent_e2e.py -v
 
 # Specific suites
 python -m pytest AutoStudio/tests/test_context_ranker.py -v
+python -m pytest AutoStudio/tests/test_explain_gate.py -v
 python -m pytest AutoStudio/tests/test_tool_graph.py -v
 python -m pytest AutoStudio/tests/test_policy_engine.py -v
 python -m pytest AutoStudio/tests/test_agent_robustness.py -v  # failure scenarios, replan, fallback, no corruption
 python -m pytest AutoStudio/tests/test_agent_trajectory.py -v --mock  # complex trajectories: multi-search, conflict resolver, repair loop
 python -m pytest AutoStudio/tests/test_observability.py -v  # trace creation, plan, tool calls, errors, patch results
-python -m pytest AutoStudio/tests/test_indexer.py AutoStudio/tests/test_symbol_graph.py -v  # repo index + graph
+python -m pytest AutoStudio/tests/test_indexer.py AutoStudio/tests/test_symbol_graph.py AutoStudio/tests/test_repo_map.py -v  # repo index + graph + repo map
 INDEX_EMBEDDINGS=0 python -m pytest AutoStudio/tests/test_retrieval_pipeline.py AutoStudio/tests/test_graph_retriever.py -v  # retrieval pipeline
+python -m pytest AutoStudio/tests/test_symbol_expansion.py AutoStudio/tests/test_context_builder_v2.py -v  # symbol expander, context builder v2
 
 # Repo index/graph with debug logging (when failures occur)
 INDEX_EMBEDDINGS=0 python -m pytest AutoStudio/tests/test_indexer.py AutoStudio/tests/test_symbol_graph.py -v --log-cli-level=DEBUG
@@ -484,9 +542,12 @@ AutoStudio includes **repository structure awareness**:
 
 - **Indexing:** `repo_index` — Tree-sitter parser, parallel file parsing, symbol extraction, dependency edges; optional embedding index
 - **Graph:** `repo_graph` — SQLite storage, 2-hop expansion
-- **Repo map:** `repo_graph/repo_map_builder` — high-level architectural map (modules, dependencies)
+- **Repo map:** `repo_graph/repo_map_builder` — spec format `{modules, symbols, calls}`; `build_repo_map_from_storage`; `repo_map.json`
+- **Repo map lookup:** `agent/retrieval/repo_map_lookup` — `lookup_repo_map(query)` → anchor candidates; `load_repo_map()`
+- **Anchor detection:** `detect_anchor(query, repo_map)` — exact/fuzzy symbol match → `{symbol, confidence}`; seeds graph retrieval
+- **Incremental updates:** `repo_graph/repo_map_updater` — `update_repo_map_for_file()` after `update_index_for_file`
 - **Change detector:** `repo_graph/change_detector` — affected callers, risk levels (LOW/MEDIUM/HIGH)
-- **Retrieval:** `graph_retriever` → `vector_retriever` → Serena fallback
+- **Retrieval:** repo_map lookup → anchor → graph_retriever (when anchor confidence ≥ 0.9) → vector_retriever → Serena fallback
 - **Diff planning:** `editing/diff_planner` — planned changes with affected symbols and callers
 - **Conflict resolution:** `editing/conflict_resolver` — same symbol, same file, semantic overlap
 - **Test repair:** `editing/test_repair_loop` — run tests, repair on failure, flaky detection, compile step
@@ -499,11 +560,34 @@ See [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md) for detai
 
 | Doc | Description |
 |-----|--------------|
+| [Docs/CONFIGURATION.md](Docs/CONFIGURATION.md) | Centralized config: all modules, env overrides, validation |
 | [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md) | Step dispatch, SEARCH/EDIT/INFRA/EXPLAIN flows, policy engine, model routing |
 | [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md) | Full pipeline: run_controller, instruction router, safety limits, test repair, task memory |
 | [Docs/ROUTING_ARCHITECTURE_REPORT.md](Docs/ROUTING_ARCHITECTURE_REPORT.md) | Routing architecture: instruction router, tool graph, categories, replanner |
 | [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md) | Symbol graph, repo map, change detector, vector search |
 | [Docs/CODING_AGENT_ARCHITECTURE_GUIDE.md](Docs/CODING_AGENT_ARCHITECTURE_GUIDE.md) | Architecture patterns, anti-patterns, production practices |
+
+---
+
+## Evaluation
+
+Agent evaluation dataset and script:
+
+```bash
+# Light eval (get_plan only, no model execution)
+python scripts/evaluate_agent.py --plan-only
+
+# Full eval (run_agent per task; requires model endpoints)
+python scripts/evaluate_agent.py
+
+# Filter tasks and metrics
+python scripts/evaluate_agent.py --tasks explain_step_executor,where_retry --metrics planner_accuracy,latency
+python scripts/evaluate_agent.py --json  # JSON output
+```
+
+**Dataset:** `tests/agent_eval.json` — tasks such as "Explain StepExecutor", "Where is retry logic implemented", "Add retry logic to executor".
+
+**Metrics:** `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `latency`.
 
 ---
 

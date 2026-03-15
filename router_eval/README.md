@@ -63,5 +63,6 @@ from router_eval.routers.baseline_router import route
 
 ## See also
 
+- [Docs/CONFIGURATION.md](../Docs/CONFIGURATION.md) — Centralized config (ROUTER_TYPE, etc.)
 - [Docs/AGENT_LOOP_WORKFLOW.md](../Docs/AGENT_LOOP_WORKFLOW.md) — Agent execution flow
 - [README.md](../README.md) — Project overview

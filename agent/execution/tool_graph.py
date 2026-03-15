@@ -13,11 +13,10 @@ Filesystem rules:
 """
 
 import logging
-import os
+
+from config.tool_graph_config import ENABLE_TOOL_GRAPH
 
 logger = logging.getLogger(__name__)
-
-ENABLE_TOOL_GRAPH = os.environ.get("ENABLE_TOOL_GRAPH", "1").lower() in ("1", "true", "yes")
 
 
 def _normalize_node_value(val) -> tuple[list[str], str | None]:

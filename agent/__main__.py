@@ -3,9 +3,12 @@
 import logging
 import sys
 
+from config.config_validator import validate_config
+from config.logging_config import LOG_FORMAT, LOG_LEVEL
 from agent.orchestrator.agent_loop import run_agent
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+validate_config()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format=LOG_FORMAT)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

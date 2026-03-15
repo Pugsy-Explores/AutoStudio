@@ -9,6 +9,7 @@ from agent.execution.mutation_strategies import (
 )
 from agent.memory.state import AgentState
 from agent.retrieval.query_rewriter import SearchAttempt
+from agent.retrieval.retrieval_expander import normalize_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def _build_search_memory(query: str, raw: dict) -> dict:
         "query": query,
         "results": [
             {
-                "file": (r.get("file") or r.get("path") or ""),
+                "file": normalize_file_path(r.get("file") or r.get("path") or ""),
                 "snippet": (r.get("snippet") or "")[: _SEARCH_MEMORY_SNIPPET_MAX],
             }
             for r in results
@@ -161,14 +162,23 @@ class ExecutionPolicyEngine:
                 desc = (step.get("description") or "").strip()
                 user_req = getattr(state, "instruction", "") or ""
                 if self._rewrite_query_fn is not None:
-                    q = self._rewrite_query_fn(desc, user_req, [], state)
+                    q_ret = self._rewrite_query_fn(desc, user_req, [], state)
+                    q_list = [q_ret] if isinstance(q_ret, str) else (q_ret or [])
                 else:
-                    q = desc
-                print(f"[workflow] SEARCH (single) query={q!r}")
-                raw = self._search_fn(q, state)
-                if isinstance(raw, dict) and _is_failure("SEARCH", ["empty_results"], raw):
-                    return {"success": False, "output": {"attempt_history": []}, "error": "empty results"}
-                return {"success": True, "output": raw}
+                    q_list = [desc]
+                q_list = [x for x in q_list if isinstance(x, str) and (x or "").strip()]
+                if not q_list:
+                    q_list = [desc or ""]
+                raw = None
+                for q in q_list:
+                    q = (q or "").strip() or desc
+                    if not q:
+                        continue
+                    print(f"[workflow] SEARCH (single) query={q!r}")
+                    raw = self._search_fn(q, state)
+                    if isinstance(raw, dict) and not _is_failure("SEARCH", ["empty_results"], raw):
+                        return {"success": True, "output": raw}
+                return {"success": False, "output": raw if isinstance(raw, dict) else {"attempt_history": []}, "error": "empty results"}
             if action == "EDIT":
                 raw = self._edit_fn(step, state)
                 return raw if isinstance(raw, dict) else {"success": False, "output": {}, "error": "edit failed"}
@@ -198,6 +208,7 @@ class ExecutionPolicyEngine:
             if self._rewrite_query_fn is not None:
                 attempt_slice: list[SearchAttempt] = [
                     {
+                        "tool": h.get("tool", ""),
                         "query": h.get("query", ""),
                         "result_count": h.get("result_count", 0),
                         "result_summary": h.get("result_summary", ""),
@@ -205,67 +216,84 @@ class ExecutionPolicyEngine:
                     }
                     for h in attempt_history
                 ]
-                query = self._rewrite_query_fn(description, user_request, attempt_slice, state)
+                try:
+                    rewrite_ret = self._rewrite_query_fn(description, user_request, attempt_slice, state)
+                    queries_to_try = [rewrite_ret] if isinstance(rewrite_ret, str) else (rewrite_ret or [])
+                except Exception as e:
+                    logger.warning("[policy] Rewriter failed, using description: %s", e)
+                    queries_to_try = [description or ""]
             else:
-                query = description or ""
-            if not query or not query.strip():
-                query = description
+                queries_to_try = [description or ""]
+            queries_to_try = [q for q in queries_to_try if isinstance(q, str) and (q or "").strip()]
+            if not queries_to_try:
+                queries_to_try = [description or ""]
 
-            print(f"[workflow] SEARCH attempt {attempt_num}/{max_attempts} query={query!r}")
-            logger.info(
-                "[policy] SEARCH attempt %s: %s",
-                attempt_num,
-                (query[:80] + "..." if len(query) > 80 else query),
-            )
-            try:
-                raw = self._search_fn(query, state)
-            except Exception as e:
-                attempt_history.append({
-                    "query": query,
-                    "result_count": 0,
-                    "result_summary": "",
-                    "error": str(e),
-                })
-                print(f"[workflow] SEARCH attempt {attempt_num} error: {e}")
-                logger.warning("[policy] SEARCH attempt %s failed: %s", attempt_num, e)
-                continue
-
-            if raw is None or not isinstance(raw, dict):
-                raw = {"results": [], "query": query}
-
-            result_count = len(raw.get("results") or [])
-            result_summary = _search_result_summary(raw)
-            attempt_history.append({
-                "query": query,
-                "result_count": result_count,
-                "result_summary": result_summary,
-            })
-
-            print(f"[workflow] SEARCH attempt {attempt_num} result: {result_summary}")
-            if not _is_failure("SEARCH", retry_on, raw):
-                if isinstance(raw, dict):
-                    raw = dict(raw)
-                    raw["attempt_history"] = attempt_history
-                state.context["search_query_rewritten"] = query
-                state.context["search_results"] = raw
-                state.context["files"] = [r.get("file") for r in (raw.get("results") or []) if r.get("file")]
-                state.context["snippets"] = [r.get("snippet", "") for r in (raw.get("results") or [])]
-                # Structured memory for EXPLAIN and tool_memories
-                state.context["search_memory"] = _build_search_memory(query, raw)
-                _append_tool_memory(
-                    state,
-                    {
-                        "tool": "search_code",
-                        "query": query,
-                        "result_count": result_count,
-                        "files": state.context["files"],
-                        "snippets_preview": [((r.get("snippet") or "")[:200]) for r in (raw.get("results") or [])],
-                    },
+            success_in_attempt = False
+            for q_idx, query in enumerate(queries_to_try):
+                query = (query or "").strip() or description
+                if not query:
+                    continue
+                print(f"[workflow] SEARCH attempt {attempt_num}/{max_attempts} query={query!r}" + (f" (variant {q_idx + 1}/{len(queries_to_try)})" if len(queries_to_try) > 1 else ""))
+                logger.info(
+                    "[policy] SEARCH attempt %s: %s",
+                    attempt_num,
+                    (query[:80] + "..." if len(query) > 80 else query),
                 )
-                print("[workflow] SEARCH success")
-                logger.info("[policy] SEARCH success")
-                return {"success": True, "output": raw}
-            logger.info("[policy] SEARCH attempt %s: %s", attempt_num, result_summary)
+                try:
+                    raw = self._search_fn(query, state)
+                except Exception as e:
+                    attempt_history.append({
+                        "tool": state.context.get("chosen_tool", ""),
+                        "query": query,
+                        "result_count": 0,
+                        "result_summary": "",
+                        "error": str(e),
+                    })
+                    print(f"[workflow] SEARCH attempt {attempt_num} error: {e}")
+                    logger.warning("[policy] SEARCH attempt %s failed: %s", attempt_num, e)
+                    continue
+
+                if raw is None or not isinstance(raw, dict):
+                    raw = {"results": [], "query": query}
+
+                result_count = len(raw.get("results") or [])
+                result_summary = _search_result_summary(raw)
+                attempt_history.append({
+                    "tool": state.context.get("chosen_tool", ""),
+                    "query": query,
+                    "result_count": result_count,
+                    "result_summary": result_summary,
+                })
+
+                print(f"[workflow] SEARCH attempt {attempt_num} result: {result_summary}")
+                if not _is_failure("SEARCH", retry_on, raw):
+                    if isinstance(raw, dict):
+                        raw = dict(raw)
+                        raw["attempt_history"] = attempt_history
+                    state.context["search_query_rewritten"] = query
+                    state.context["search_results"] = raw
+                    state.context["files"] = [
+                        normalize_file_path(r.get("file") or "")
+                        for r in (raw.get("results") or [])
+                        if r and (r.get("file") or r.get("path"))
+                    ]
+                    state.context["snippets"] = [r.get("snippet", "") for r in (raw.get("results") or [])]
+                    # Structured memory for EXPLAIN and tool_memories
+                    state.context["search_memory"] = _build_search_memory(query, raw)
+                    _append_tool_memory(
+                        state,
+                        {
+                            "tool": "search_code",
+                            "query": query,
+                            "result_count": result_count,
+                            "files": state.context["files"],
+                            "snippets_preview": [((r.get("snippet") or "")[:200]) for r in (raw.get("results") or [])],
+                        },
+                    )
+                    print("[workflow] SEARCH success")
+                    logger.info("[policy] SEARCH success")
+                    return {"success": True, "output": raw}
+                logger.info("[policy] SEARCH attempt %s: %s", attempt_num, result_summary)
 
         print(f"[workflow] SEARCH exhausted after {len(attempt_history)} attempts")
         logger.warning("[policy] SEARCH exhausted after %s attempts", len(attempt_history))

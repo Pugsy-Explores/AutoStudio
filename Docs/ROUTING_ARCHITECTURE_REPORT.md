@@ -186,7 +186,7 @@ edit     (terminal)
 1. **allowed_tools:** From `ToolGraph.get_allowed_tools(current_node)`; if disabled or unknown node, effectively no restriction.
 2. **preferred_tool:** From `ToolGraph.get_preferred_tool(current_node)`.
 3. **Fallback:** If preferred not in allowed, use first allowed tool.
-4. **Transitions:** `state.context["tool_node"]` is updated after each step (e.g. SEARCH → `chosen_tool`). For SEARCH, `current_node` is reset to `"START"` before tool resolution.
+4. **Transitions:** `state.context["tool_node"]` is updated after each step (e.g. SEARCH → `chosen_tool`). The graph evolves naturally (no reset on SEARCH); `current_node = state.context.get("tool_node", "START")`.
 
 ---
 

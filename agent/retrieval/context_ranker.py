@@ -5,12 +5,14 @@ import os
 import re
 
 from agent.models.model_client import call_reasoning_model
+from config.retrieval_config import (
+    ENABLE_CONTEXT_RANKING,
+    MAX_CANDIDATES_FOR_RANKING,
+    MAX_SNIPPET_CHARS_IN_BATCH,
+)
 
 logger = logging.getLogger(__name__)
 
-ENABLE_CONTEXT_RANKING = os.environ.get("ENABLE_CONTEXT_RANKING", "1").lower() in ("1", "true", "yes")
-MAX_CANDIDATES_FOR_RANKING = 20
-MAX_SNIPPET_CHARS_IN_BATCH = 400  # Truncate per snippet in batch prompt
 SAME_FILE_PENALTY = 0.1  # Penalty per duplicate snippet from same file
 
 # Hybrid score weights
@@ -18,6 +20,13 @@ WEIGHT_LLM = 0.6
 WEIGHT_SYMBOL = 0.2
 WEIGHT_FILENAME = 0.1
 WEIGHT_REFERENCE = 0.1
+
+# Penalty when query suggests implementation (how/route/handle) but candidate is from tests/
+TEST_FILE_PENALTY = 0.25
+_IMPL_QUERY_PATTERN = re.compile(
+    r"\b(how\s+does|routes?|handles?|implementation|step_|def\s+dispatch)\b",
+    re.IGNORECASE,
+)
 
 # In-memory cache: (query_normalized, snippet) -> llm_score (for batch fallback / single calls)
 _llm_score_cache: dict[tuple[str, str], float] = {}
@@ -151,11 +160,13 @@ def rank_context(query: str, candidates: list[dict]) -> list[dict]:
     if not candidates:
         return []
     if len(candidates) > MAX_CANDIDATES_FOR_RANKING:
-        logger.info("[context_ranker] truncated to %d candidates (had %d)", MAX_CANDIDATES_FOR_RANKING, len(candidates))
+        logger.info("[search_budget] truncated to %d candidates (had %d)", MAX_CANDIDATES_FOR_RANKING, len(candidates))
         candidates = candidates[:MAX_CANDIDATES_FOR_RANKING]
     logger.info("[context_ranker] ranking %d candidates (batch LLM)", len(candidates))
     snippets = [c.get("snippet") or "" for c in candidates]
     llm_scores = _get_llm_relevance_batch(query, snippets)
+    query_lower = (query or "").strip().lower()
+    wants_implementation = bool(_IMPL_QUERY_PATTERN.search(query_lower))
     scored: list[tuple[dict, float]] = []
     for i, c in enumerate(candidates):
         file_path = c.get("file") or ""
@@ -165,6 +176,14 @@ def rank_context(query: str, candidates: list[dict]) -> list[dict]:
         file_score = compute_filename_match(query, file_path)
         ref_score = compute_reference_score(c)
         total = WEIGHT_LLM * llm_score + WEIGHT_SYMBOL * sym_score + WEIGHT_FILENAME * file_score + WEIGHT_REFERENCE * ref_score
+        # Bias toward implementation: penalize test files when query asks about implementation
+        path_lower = file_path.lower()
+        is_test_file = (
+            "/tests/" in path_lower or "\\tests\\" in path_lower
+            or path_lower.endswith("/tests") or os.path.basename(path_lower).startswith("test_")
+        )
+        if wants_implementation and is_test_file:
+            total -= TEST_FILE_PENALTY
         scored.append((dict(c), total))
     scored = _apply_diversity_penalty(scored)
     scored.sort(key=lambda x: x[1], reverse=True)

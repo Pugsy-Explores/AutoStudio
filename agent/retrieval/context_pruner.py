@@ -2,10 +2,13 @@
 
 import logging
 
-logger = logging.getLogger(__name__)
+from config.retrieval_config import (
+    DEFAULT_MAX_CHARS,
+    DEFAULT_MAX_SNIPPETS,
+    MAX_CONTEXT_SNIPPETS,
+)
 
-DEFAULT_MAX_SNIPPETS = 6
-DEFAULT_MAX_CHARS = 8000
+logger = logging.getLogger(__name__)
 
 
 def prune_context(
@@ -40,5 +43,5 @@ def prune_context(
         seen.add(key)
         result.append(dict(c))
         total_chars += snip_len
-    logger.info("[context_pruner] selected %d snippets", len(result))
+    logger.info("[search_budget] pruned to %d snippets (max %d)", len(result), max_snippets)
     return result

@@ -2,10 +2,9 @@
 
 import logging
 
-logger = logging.getLogger(__name__)
+from config.retrieval_config import DEFAULT_MAX_CONTEXT_CHARS
 
-# Approximate token cap for combined snippets (chars / 4)
-DEFAULT_MAX_CONTEXT_CHARS = 16_000
+logger = logging.getLogger(__name__)
 
 
 def build_context(search_results) -> dict:
@@ -62,7 +61,7 @@ def build_context_from_symbols(
         references.append(r)
 
     files = []
-    snippets = []
+    snippets = []  # each item: {"file": str, "symbol": str, "snippet": str}
     seen_files = set()
     total_chars = 0
     for s in (file_snippets or []):
@@ -74,11 +73,12 @@ def build_context_from_symbols(
         seen_files.add(path)
         files.append(path)
         snip = (s.get("snippet") or s.get("content") or "")[:2000]
+        symbol = s.get("symbol") or ""
         if snip and total_chars + len(snip) <= max_context_chars:
-            snippets.append(snip)
+            snippets.append({"file": path, "symbol": symbol, "snippet": snip})
             total_chars += len(snip)
         else:
-            snippets.append("")  # keep files/snippets aligned when over char limit
+            snippets.append({"file": path, "symbol": symbol, "snippet": ""})
 
     logger.info("[context_builder] %d symbols, %d references, %d files, %d snippets", len(symbols), len(references), len(files), len(snippets))
     return {

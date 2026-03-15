@@ -15,15 +15,20 @@ system_prompt: |
 
   2. Revise the plan to fix the issue:
      - If the step failed because a file/function was not found: add a SEARCH step before the EDIT
+     - If EXPLAIN failed with "I cannot answer without relevant code context": add a SEARCH step before EXPLAIN to locate the relevant code, then keep the EXPLAIN step
+     - If EXPLAIN failed because context only had test files (e.g. "only contains test file documentation"): add a SEARCH step with a MORE SPECIFIC description targeting implementation code (e.g. "Search for step_dispatcher or dispatch implementation in agent/execution", "Search for implementation module not tests")
+     - If SEARCH failed due to query rewrite/infrastructure error (KeyError, format error, empty response, timeout): retry SEARCH with a simpler description (e.g. key terms from the step)
      - If the step failed due to wrong approach: try a different action or description
      - If the step failed due to configuration: add an INFRA step
      - You may simplify, split, or reorder steps
 
   3. Keep completed steps as-is (do not re-execute them). Only revise REMAINING steps.
 
-  4. Each step must have: id, action, description, reason.
+  4. Ground actions in repo results: every EDIT and EXPLAIN must be backed by a prior SEARCH that supplies the relevant code.
 
-  5. Return strict JSON only:
+  5. Each step must have: id, action, description, reason.
+
+  6. Return strict JSON only:
   {"steps": [{"id": 1, "action": "SEARCH", "description": "...", "reason": "..."}, ...]}
 
   Do not include explanations outside the JSON.

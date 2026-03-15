@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent.retrieval.retrieval_expander import normalize_file_path
+
 # Optional MCP client; fallback to placeholder if unavailable
 try:
     from mcp import ClientSession, StdioServerParameters, stdio_client
@@ -158,7 +160,9 @@ def _parse_serena_json_results(text: str) -> list[dict]:
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                rel = item.get("relative_path") or item.get("file") or ""
+                rel = normalize_file_path(item.get("relative_path") or item.get("file") or "")
+                if not rel:
+                    continue
                 name_path = item.get("name_path") or item.get("symbol") or ""
                 body_loc = item.get("body_location") or item.get("location") or {}
                 line = body_loc.get("line") if isinstance(body_loc, dict) else 0
@@ -189,7 +193,9 @@ def _parse_serena_text_to_results(text: str) -> list[dict]:
             continue
         match = path_line.search(line)
         if match:
-            file_path = match.group(1)
+            file_path = normalize_file_path(match.group(1))
+            if not file_path:
+                continue
             line_no = int(match.group(2)) if match.group(2) else 0
             snippet = line[:200] + ("..." if len(line) > 200 else "")
             results.append({

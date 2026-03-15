@@ -43,7 +43,7 @@ class TestExecutionPolicyEngineSearch(unittest.TestCase):
             return {"results": [{"file": "x.py", "snippet": "y"}], "query": query}
 
         # Rewriter returns different query per attempt so we get 3 distinct searches
-        def mock_rewrite(description: str, user_request: str, attempt_history: list) -> str:
+        def mock_rewrite(description: str, user_request: str, attempt_history: list, state=None) -> str:
             n = len(attempt_history)
             if n == 0:
                 return "router_eval2"
@@ -78,7 +78,7 @@ class TestExecutionPolicyEngineSearch(unittest.TestCase):
         """Rewriter is called with (planner step, user request, previous attempts); attempt_history grows each attempt."""
         rewrite_calls = []
 
-        def mock_rewrite(description: str, user_request: str, attempt_history: list) -> str:
+        def mock_rewrite(description: str, user_request: str, attempt_history: list, state=None) -> str:
             rewrite_calls.append({
                 "description": description,
                 "user_request": user_request,

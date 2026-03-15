@@ -1,26 +1,48 @@
 """Retrieval expansion: turn search results into follow-up actions (read_file / read_symbol_body). Capped for large repos."""
 
 import logging
+import re
+
+from config.retrieval_config import MAX_SEARCH_RESULTS, MAX_SYMBOL_EXPANSION
 
 logger = logging.getLogger(__name__)
 
-MAX_EXPANDED_FILES = 5
+# Re-export for backward compatibility
+__all__ = ["expand_search_results", "normalize_file_path", "MAX_SEARCH_RESULTS", "MAX_SYMBOL_EXPANSION"]
+
+# Strip JSON/formatting artifacts that can appear when search results are mis-parsed
+# (e.g. Serena text fallback, cached results with embedded JSON)
+_PATH_ARTIFACT_PATTERN = re.compile(r'^[\s{"\']+|[\s}"\']+$')
+
+
+def normalize_file_path(path: str) -> str:
+    """
+    Normalize file path by stripping JSON/formatting artifacts.
+    Handles malformed paths like '{"tests/test_agent_e2e.py' or '"path/to/file.py"'.
+    """
+    if not path or not isinstance(path, str):
+        return ""
+    s = path.strip()
+    # Strip common JSON/quote artifacts
+    s = _PATH_ARTIFACT_PATTERN.sub("", s)
+    return s.strip() if s else ""
 
 
 def expand_search_results(results: list[dict]) -> list[dict]:
     """
     Expand search results into a list of actions (read_file or read_symbol_body).
     Input: list of items with at least "file", optionally "symbol".
-    Output: list of {"file", "symbol", "action"} capped at MAX_EXPANDED_FILES.
+    Output: list of {"file", "symbol", "action"} capped at MAX_SYMBOL_EXPANSION.
     When symbol is present, action is "read_symbol_body"; else "read_file".
     """
     if not results or not isinstance(results, list):
         return []
     expanded = []
-    for r in results[:MAX_EXPANDED_FILES]:
+    for r in results[:MAX_SYMBOL_EXPANSION]:
         if not isinstance(r, dict):
             continue
-        file_path = r.get("file") or r.get("path") or ""
+        raw_path = r.get("file") or r.get("path") or ""
+        file_path = normalize_file_path(raw_path)
         if not file_path:
             continue
         symbol = r.get("symbol") or ""

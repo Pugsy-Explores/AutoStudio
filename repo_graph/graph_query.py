@@ -3,11 +3,10 @@
 import logging
 from collections import deque
 
+from config.repo_graph_config import MAX_EXPANSION_DEPTH
 from repo_graph.graph_storage import GraphStorage
 
 logger = logging.getLogger(__name__)
-
-MAX_EXPANSION_DEPTH = 2
 
 
 def find_symbol(symbol_name: str, storage: GraphStorage) -> dict | None:
@@ -22,7 +21,11 @@ def find_symbol(symbol_name: str, storage: GraphStorage) -> dict | None:
     return result
 
 
-def expand_neighbors(symbol_id: int, depth: int = 2, storage: GraphStorage | None = None) -> list[dict]:
+def expand_neighbors(
+    symbol_id: int,
+    depth: int = MAX_EXPANSION_DEPTH,
+    storage: GraphStorage | None = None,
+) -> list[dict]:
     """
     BFS expansion from symbol_id up to depth hops.
     Returns list of node dicts (including the start node).

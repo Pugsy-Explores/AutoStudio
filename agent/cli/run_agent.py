@@ -3,13 +3,16 @@
 import logging
 import sys
 
+from config.config_validator import validate_config
+from config.logging_config import LOG_FORMAT, LOG_LEVEL
 from agent.models.model_config import REASONING_MODEL_NAME, REASONING_V2_MODEL_NAME, SMALL_MODEL_NAME
 from agent.orchestrator.agent_loop import run_agent
 
+validate_config()
 # Ensure process logs (agent steps) appear when run from CLI
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format=LOG_FORMAT,
 )
 # Suppress only DEBUG from serena/solidlsp so process logs stay visible
 for _name in ("serena", "solidlsp"):

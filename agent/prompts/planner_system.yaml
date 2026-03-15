@@ -52,6 +52,18 @@ system_prompt: |
 
   If the previous steps succeeded, continue from the next logical step.
 
+  8. Ground actions in repo results.
+
+  Every EDIT, EXPLAIN, or INFRA step must be backed by results from the repository in some form.
+  - EDIT: SEARCH must occur first to locate the code to modify.
+  - EXPLAIN: SEARCH must occur first to locate the code to explain (no explaining without code context).
+  - INFRA: SEARCH or list_dir must occur first when modifying config/files (locate before changing).
+  Never plan EDIT or EXPLAIN without a prior SEARCH step that will supply the relevant code.
+
+  9. SEARCH steps: be specific for implementation.
+
+  When the user asks "how does X work" or "how does X route/handle Y", the SEARCH step should target implementation code, not tests. Prefer descriptions like "Locate X implementation in agent/execution" or "Find step_X or X module" over generic "Locate X".
+
   OUTPUT FORMAT
 
   Return strict JSON only.

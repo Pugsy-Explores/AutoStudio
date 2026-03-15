@@ -22,7 +22,7 @@ result = run_controller(
 
 ```
 instruction
-  → build_repo_map() — high-level architectural map (repo_map.json)
+  → build_repo_map() — spec format {modules, symbols, calls} → repo_map.json
   → search_similar_tasks() — vector index of past tasks (optional)
   → _get_plan(instruction)
        → [if ENABLE_INSTRUCTION_ROUTER=1] route_instruction() → category
@@ -63,6 +63,7 @@ plan_diff(instruction, context)
           → flaky detection: re-run failing test with pytest --count=2
           → compile step (py_compile) before tests when COMPILE_BEFORE_TEST=1
   → update_index_for_file() for each modified file
+  → update_repo_map_for_file() for each modified file (incremental repo_map refresh)
 ```
 
 ---
@@ -74,6 +75,8 @@ plan_diff(instruction, context)
 | `MAX_FILES_EDITED` | 5 | Max files per edit step |
 | `MAX_PATCH_SIZE` | 200 lines | Max lines per patch |
 | `MAX_TASK_RUNTIME_SECONDS` | 900 (15 min) | Max task runtime |
+
+All limits are defined in `config/` and support env overrides. See [CONFIGURATION.md](CONFIGURATION.md).
 
 ---
 
@@ -100,6 +103,8 @@ plan_diff(instruction, context)
 ---
 
 ## Environment Variables
+
+See [CONFIGURATION.md](CONFIGURATION.md) for the full list. Key variables:
 
 | Variable | Purpose |
 |----------|---------|
@@ -155,3 +160,4 @@ python -m pytest tests/test_agent_e2e.py -v --mock   # always use mock
 - **Conflict resolver:** `editing/conflict_resolver.py`
 - **Test repair:** `editing/test_repair_loop.py`
 - **Change detector:** `repo_graph/change_detector.py`
+- **Repo map updater:** `repo_graph/repo_map_updater.py` — update_repo_map_for_file (after update_index_for_file)

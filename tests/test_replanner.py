@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.memory.state import AgentState
+from agent.models.model_types import ModelType
 from agent.orchestrator.replanner import replan
 
 
@@ -45,18 +46,17 @@ def test_replan_fallback_returns_remaining_only():
 
 def test_replan_llm_returns_valid_plan():
     """When LLM returns valid JSON, replanner uses it."""
-    mock_response = '''{"steps": [
-        {"id": 1, "action": "SEARCH", "description": "Locate login handler first", "reason": "Need to find before edit"},
-        {"id": 2, "action": "EDIT", "description": "Update login handler", "reason": "Apply change"}
-    ]}'''
+    mock_response = '{"steps": [{"id": 1, "action": "SEARCH", "description": "Locate login handler first", "reason": "Need to find before edit"}, {"id": 2, "action": "EDIT", "description": "Update login handler", "reason": "Apply change"}]}'
     state = _make_state(
         "Update login",
         [{"id": 1, "action": "EDIT", "description": "Update login", "reason": "direct edit"}],
     )
     failed = {"id": 1, "action": "EDIT", "description": "Update login", "reason": "direct edit"}
 
-    with patch("agent.orchestrator.replanner.call_reasoning_model") as mock:
-        mock.return_value = mock_response
+    with (
+        patch("agent.orchestrator.replanner.get_model_for_task", return_value=ModelType.REASONING),
+        patch("agent.orchestrator.replanner.call_reasoning_model", return_value=mock_response),
+    ):
         result = replan(state, failed_step=failed, error="symbol_not_found")
 
     assert "steps" in result

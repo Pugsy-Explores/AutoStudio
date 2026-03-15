@@ -67,6 +67,17 @@ def _parse_temperature(v) -> float:
         return _DEFAULT_TEMPERATURE
 
 
+def _parse_penalty(v, default: float = 0.0) -> float:
+    """Return float penalty in [-2, 2] (OpenAI frequency_penalty/presence_penalty)."""
+    if v is None:
+        return default
+    try:
+        p = float(v)
+        return max(-2.0, min(2.0, p))
+    except (TypeError, ValueError):
+        return default
+
+
 def _get_model_call(data: dict) -> dict:
     """Merge model_call block with top-level fallbacks for backward compatibility."""
     out = {
@@ -137,6 +148,8 @@ def _load_config() -> dict:
                         "temperature": _parse_temperature(v.get("temperature")) if "temperature" in v else defaults["model_call"]["temperature"],
                         "max_tokens": _parse_max_tokens(v.get("max_tokens")) if "max_tokens" in v else defaults["model_call"]["max_tokens"],
                         "request_timeout_seconds": _parse_timeout(v.get("request_timeout_seconds")) if "request_timeout_seconds" in v else defaults["model_call"]["request_timeout_seconds"],
+                        "frequency_penalty": _parse_penalty(v.get("frequency_penalty")) if "frequency_penalty" in v else None,
+                        "presence_penalty": _parse_penalty(v.get("presence_penalty")) if "presence_penalty" in v else None,
                     }
             defaults["task_params"] = out_params
         else:
@@ -167,11 +180,16 @@ def get_model_call_params(task_name: str | None) -> dict:
     if not task_name or task_name not in _task_params_loaded:
         return base.copy()
     over = _task_params_loaded[task_name]
-    return {
+    out = {
         "temperature": over.get("temperature", base["temperature"]),
         "max_tokens": over.get("max_tokens") if "max_tokens" in over else base["max_tokens"],
         "request_timeout_seconds": over.get("request_timeout_seconds", base["request_timeout_seconds"]),
     }
+    if "frequency_penalty" in over and over["frequency_penalty"] is not None:
+        out["frequency_penalty"] = over["frequency_penalty"]
+    if "presence_penalty" in over and over["presence_penalty"] is not None:
+        out["presence_penalty"] = over["presence_penalty"]
+    return out
 
 # Models registry: model_key -> {name, endpoint}
 _MODELS_REGISTRY = _loaded.get("models", _DEFAULT_MODELS)

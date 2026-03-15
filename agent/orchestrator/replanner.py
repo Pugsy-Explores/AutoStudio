@@ -17,24 +17,29 @@ REPLANNER_SYSTEM_PROMPT = get_prompt("replanner_system", "system_prompt")
 
 
 def _extract_json(text: str) -> str | None:
-    """Strip markdown code fences and return the first JSON object string, or None."""
+    """Extract first valid JSON object from LLM output. Handles markdown fences, reasoning-before-JSON."""
     if not text or not text.strip():
         return None
     text = text.strip()
+    # Try markdown code fence first
     match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
     if match:
-        text = match.group(1).strip()
+        try:
+            json.loads(match.group(1).strip())
+            return match.group(1).strip()
+        except json.JSONDecodeError:
+            pass
+    # Find first {...} (outermost JSON object)
     start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
+    if start >= 0:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
     return None
 
 
@@ -68,11 +73,11 @@ def replan(
     if not failed_step and not error:
         return _fallback_remaining(state)
 
-    instruction = getattr(state, "instruction", "") or ""
+    instruction = (getattr(state, "instruction", "") or "")[:1500]
     current_plan = state.current_plan
     steps_json = json.dumps(current_plan.get("steps") or [], indent=2)
     failed_desc = json.dumps(failed_step, indent=2) if failed_step else "{}"
-    error_msg = (error or "").strip() or "Unknown error"
+    error_msg = ((error or "").strip() or "Unknown error")[:500]
 
     user_prompt = f"""Original instruction:
 {instruction}

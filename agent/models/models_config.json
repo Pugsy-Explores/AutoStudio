@@ -8,11 +8,11 @@
   "models": {
     "SMALL": {
       "name": "Qwen 2B",
-      "endpoint": "http://localhost:8081/v1/chat/completions"
+      "endpoint": "http://localhost:8082/v1/chat/completions"
     },
     "REASONING": {
       "name": "Qwen 9B",
-      "endpoint": "http://localhost:8002/v1/chat/completions"
+      "endpoint": "http://localhost:8081/v1/chat/completions"
     },
     "REASONING_V2": {
       "name": "Qwen 14B",
@@ -20,18 +20,21 @@
     }
   },
   "task_models": {
-    "query rewriting": "SMALL",
-    "validation": "SMALL",
-    "EXPLAIN": "SMALL",
-    "routing": "SMALL",
-    "planner": "SMALL",
+    "query rewriting": "REASONING",
+    "validation": "REASONING",
+    "EXPLAIN": "REASONING_V2",
+    "EDIT": "REASONING_V2",
+    "routing": "REASONING",
+    "planner": "REASONING",
     "replanner": "REASONING",
-    "context_ranking": "SMALL"
+    "context_ranking": "REASONING"
   },
   "task_params": {
     "query rewriting": {
       "temperature": 0.0,
-      "max_tokens": null,
+      "max_tokens": 2048,
+      "frequency_penalty": 0.5,
+      "presence_penalty": 0.2,
       "request_timeout_seconds": 600
     },
     "validation": {

@@ -10,17 +10,14 @@ from agent.execution.step_dispatcher import dispatch
 from agent.memory.state import AgentState
 from agent.memory.task_memory import save_task
 from agent.observability.trace_logger import finish_trace, log_event, start_trace
+from agent.orchestrator.plan_resolver import get_plan
 from agent.orchestrator.replanner import replan
 from agent.orchestrator.validator import validate_step
-from planner.planner import plan
+from config.agent_config import MAX_REPLAN_ATTEMPTS, MAX_TASK_RUNTIME_SECONDS
+from config.editing_config import MAX_FILES_EDITED, MAX_PATCH_SIZE
+from config.router_config import ENABLE_INSTRUCTION_ROUTER
 
 logger = logging.getLogger(__name__)
-
-ENABLE_INSTRUCTION_ROUTER = os.environ.get("ENABLE_INSTRUCTION_ROUTER", "0").lower() in ("1", "true", "yes")
-MAX_FILES_EDITED = 5
-MAX_PATCH_SIZE = 200
-MAX_TASK_RUNTIME_SECONDS = 15 * 60  # 15 minutes
-MAX_REPLAN_ATTEMPTS = 5  # Prevent infinite replan loop when same step keeps failing
 
 
 def run_controller(
@@ -34,7 +31,7 @@ def run_controller(
     """
     root = Path(project_root or os.environ.get("SERENA_PROJECT_DIR", os.getcwd())).resolve()
     task_id = str(uuid.uuid4())
-    trace_id = start_trace(task_id, str(root))
+    trace_id = start_trace(task_id, str(root), query=instruction)
 
     try:
         # Build repo map for high-level context
@@ -53,7 +50,7 @@ def run_controller(
         except Exception as e:
             logger.debug("[agent_controller] task_index search skipped: %s", e)
 
-        plan_result = _get_plan(instruction, trace_id)
+        plan_result = get_plan(instruction, trace_id=trace_id, log_event_fn=log_event)
         log_event(trace_id, "planner_decision", {"plan": plan_result})
 
         state = AgentState(
@@ -95,6 +92,7 @@ def run_controller(
 
             step_id = step.get("id", "?")
             action = (step.get("action") or "EXPLAIN").upper()
+            state.context["current_step_id"] = step_id
             logger.info("[agent_controller] step executed step_id=%s action=%s", step_id, action)
 
             if action == "EDIT":
@@ -149,14 +147,17 @@ def run_controller(
                 continue
 
             step_result = _result_to_step_result(step, result)
-            if not validate_step(step, step_result):
+            valid, validation_feedback = validate_step(step, step_result, state=state)
+            if not valid:
                 replan_count += 1
                 if replan_count >= MAX_REPLAN_ATTEMPTS:
                     logger.warning("[agent_controller] max replan attempts exceeded, stopping")
                     log_event(trace_id, "error", {"type": "max_replan_attempts_exceeded"})
                     break
                 err = getattr(step_result, "error", None) or result.get("error", "")
-                new_plan = replan(state, failed_step=step, error=str(err) if err else "Validation failed")
+                out_str = str(step_result.output or "")[:400] if step_result.output else ""
+                error_msg = validation_feedback or str(err) or out_str or "Validation failed"
+                new_plan = replan(state, failed_step=step, error=error_msg)
                 state.update_plan(new_plan)
                 continue
 
@@ -200,57 +201,6 @@ def run_controller(
         "files_modified": list(dict.fromkeys(files_modified)),
         "errors": errors_encountered,
     }
-
-
-def _get_plan(instruction: str, trace_id: str | None = None) -> dict:
-    """Get plan: use instruction router when enabled, else planner."""
-    if not ENABLE_INSTRUCTION_ROUTER:
-        return plan(instruction)
-
-    from agent.routing.instruction_router import route_instruction
-
-    decision = route_instruction(instruction)
-    category = decision.category
-    if trace_id:
-        log_event(trace_id, "instruction_router", {"category": category, "confidence": decision.confidence})
-
-    if category == "CODE_SEARCH":
-        return {
-            "steps": [
-                {
-                    "id": 1,
-                    "action": "SEARCH",
-                    "description": instruction,
-                    "reason": "Routed by instruction router",
-                }
-            ],
-        }
-    if category == "CODE_EXPLAIN":
-        return {
-            "steps": [
-                {
-                    "id": 1,
-                    "action": "EXPLAIN",
-                    "description": instruction,
-                    "reason": "Routed by instruction router",
-                }
-            ],
-        }
-    if category == "INFRA":
-        return {
-            "steps": [
-                {
-                    "id": 1,
-                    "action": "INFRA",
-                    "description": instruction,
-                    "reason": "Routed by instruction router",
-                }
-            ],
-        }
-    if category == "CODE_EDIT" or category == "GENERAL":
-        return plan(instruction)
-
-    return plan(instruction)
 
 
 def _result_to_step_result(step: dict, result: dict):
@@ -340,6 +290,11 @@ def _run_edit_flow(step: dict, state: AgentState) -> dict:
 
     for file_path in all_modified:
         update_index_for_file(file_path, project_root)
+        try:
+            from repo_graph.repo_map_updater import update_repo_map_for_file
+            update_repo_map_for_file(file_path, project_root)
+        except Exception:
+            pass
 
     return {
         "success": True,

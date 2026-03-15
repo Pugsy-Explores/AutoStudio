@@ -4,6 +4,8 @@ import logging
 import os
 from pathlib import Path
 
+from agent.retrieval.retrieval_expander import normalize_file_path
+
 logger = logging.getLogger(__name__)
 
 EMBEDDINGS_DIR = ".symbol_graph"
@@ -106,7 +108,9 @@ def search_by_embedding(
     results = []
     for doc, meta in zip(documents[0], metadatas[0] if metadatas else []):
         meta = meta or {}
-        path = meta.get("path", "")
+        path = normalize_file_path(meta.get("path", ""))
+        if not path:
+            continue
         symbol = meta.get("symbol", "")
         line = meta.get("line", 0)
         snippet = (doc or "")[:500] if isinstance(doc, str) else str(doc)[:500]

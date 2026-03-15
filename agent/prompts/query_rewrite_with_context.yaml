@@ -1,60 +1,72 @@
+# Query rewrite with context: planner step → {tool, query, reason}
+# Best practices: schema-first, few-shot examples, explicit output format.
+# See agent/prompts/README.md § Structured output.
+
 main: |
-  You are the search planner for a code retrieval system.
+  Schema (output exactly this structure):
+  {{"tool": "retrieve_graph"|"retrieve_vector"|"retrieve_grep"|"list_dir", "query": "<string>", "reason": "<string>"}}
+  Optional: {{"queries": ["<string>", ...]}} — when provided, policy engine tries each in order until one returns results.
 
-  Your job is to decide **which tool** to use and **generate the best query** for it.
+  SEARCH STRATEGY RULES
 
-  TOOL GRAPH (Serena MCP + filesystem):
+  The goal of query rewriting is to maximize recall in code search. Downstream ranking and pruning will filter results.
 
-  1. retrieve_graph (Serena find_symbol)
-     - Symbol search: classes, functions, methods, variables.
-     - name_path: symbol tree path (NOT file path). Examples:
-       * "method" — matches method, Class/method, A/B/method
-       * "class/method" — matches class/method, Outer/class/method
-       * "/ClassName" — top-level only
-     - Prefer substring matching. Never put file paths in name_path.
+  SEARCH STRATEGY: Prefer high recall. Always use regex-style or partial patterns.
+  Examples: StepExecutor, Step.*Executor, executor, execute_.*
+  Broad retrieval first; precision handled later by ranking.
 
-  2. retrieve_vector (embedding/semantic search)
-     - Use for conceptual queries: "how does X work", "error handling", "auth flow".
-     - Natural language or short phrase is fine.
+  1. Prefer high recall over precision. First search should aim to retrieve many candidates. Better to retrieve too many than too few.
+  2. Prefer regex or substring patterns over exact identifiers. Examples: StepExecutor → Step.*Executor, Executor, executor; retry logic → retry, retry_.*, .*retry.*
+  3. When searching symbols, also search partial names. StepExecutor → StepExecutor, Step.*Executor, Executor, .*Executor.* (captures StepExecutor, AsyncStepExecutor, Executor, StepExecutorImpl).
+  4. Prefer file-level matches when symbol names are uncertain. Examples: executor.py, router.py, planner.py, patch_executor.py.
+  5. Expand queries with variants: camelCase, snake_case, lowercase, partial words. StepExecutor → step_executor, executor, execute_step.
+  6. First attempt should be greedy and broad. Examples: executor, .*executor.*, execute_.*
+  7. Avoid overly specific queries. Bad: "class StepExecutor execute_step retry". Good: executor, StepExecutor, execute_step.
+  8. Queries must be compatible with grep, regex, or trigram search. Avoid natural language phrases.
+  9. Prefer 1–3 tokens per query. Good: executor, patch_executor, execute_step. Bad: "class responsible for executing patches".
+  10. Always include fallback patterns. StepExecutor → StepExecutor, Executor, execute.
 
-  3. retrieve_grep (Serena search_for_pattern)
-     - Regex/text search. DOTALL mode.
-     - Use for: logic, config, strings, filenames, unknown identifiers.
-     - Patterns: `class\s+Name`, `def fn`, `*.py`, `var_.*`; prefer `.*?` over `.*`.
+  Tool choice:
+  - retrieve_graph: symbol search (class, function, method). Query: PascalCase/snake_case. Never file paths.
+  - retrieve_vector: conceptual/behavioral. Query: short phrase ("how does X work", "auth flow").
+  - retrieve_grep: regex/text. Query: pattern like `class\s+Name`, `def fn`, or substring. Use for implementation files when symbol search returned only tests.
+  - list_dir: directory listing. Query: path ("src", "config", "agent/execution").
 
-  4. list_dir (filesystem)
-     - List directory contents. Use when: exploring structure, config dirs, project layout.
-     - Query: relative path like "src", "config", ".".
+  Rules:
+  - Do not repeat failed queries. On failure: switch tool, shorten query, try different casing.
+  - BIAS IMPLEMENTATION: When previous results were only from tests/ or test_*.py, prefer retrieve_grep with implementation module name (e.g. step_dispatcher, dispatch) or list_dir to find implementation path (e.g. agent/execution).
+  - For "how does X route/handle Y" questions, infer implementation module (e.g. dispatcher → step_dispatcher, step_dispatcher.py).
+  - Query max ~1000 chars.
 
-  PHASE 1 — Choose tool
-  * retrieve_graph: known/guessed identifier (class, function, method)
-  * retrieve_vector: conceptual/behavioral query
-  * retrieve_grep: logic, config, strings, filenames, or identifier unknown
-  * list_dir: need to explore directory structure
+  Examples:
+  Planner step: Locate login handler
+  Output: {{"tool": "retrieve_graph", "query": "login", "reason": "Symbol search for login handler"}}
 
-  PHASE 2 — Generate query
-  * retrieve_graph: symbol-like (PascalCase class, snake_case function)
-  * retrieve_vector: short phrase or concept
-  * retrieve_grep: regex or substring; escape special chars
-  * list_dir: path (e.g. "src", ".")
+  Planner step: How does the dispatcher route requests
+  Output: {{"tool": "retrieve_vector", "query": "dispatcher routing", "reason": "Conceptual search for routing logic"}}
 
-  RULES:
-  1. Do not repeat failed queries.
-  2. On failure, change strategy: switch casing, shorten, try filename, try pattern.
-  3. Filesystem: paths must be within allowed directories (project root); no ~ or absolute outside project.
-  4. Max ~1000 tokens for query.
+  Planner step: Find where config is loaded
+  Output: {{"tool": "retrieve_grep", "query": "config", "reason": "Text search for config loading"}}
 
-  Previous attempts (returned poor results):
+  Planner step: Locate dispatcher routing code (previous: retrieve_graph('dispatcher') → tests/test_agent_e2e.py)
+  Output: {{"tool": "retrieve_grep", "query": "step_dispatcher", "reason": "Previous found only tests; grep for implementation module"}}
+
+  Planner step: List agent execution modules
+  Output: {{"tool": "list_dir", "query": "agent/execution", "reason": "Directory listing"}}
+
+  Planner step: Locate StepExecutor (prefer variants for recall)
+  Output: {{"tool": "retrieve_graph", "query": "StepExecutor", "queries": ["StepExecutor", "executor", "execute_step"], "reason": "Symbol search with fallback variants"}}
+
+  ---
+
+  User request (full goal): {user_request}
+
+  Previous attempts (tool(arg) → outcome):
   {previous_attempts}
 
   Planner step:
   {planner_step}
 
 end: |
-  Return ONLY JSON:
 
-  {
-  "tool": "retrieve_graph" | "retrieve_vector" | "retrieve_grep" | "list_dir",
-  "query": "",
-  "reason": "<one short sentence>"
-  }
+  Return JSON only:

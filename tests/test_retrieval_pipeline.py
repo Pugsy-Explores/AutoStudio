@@ -6,7 +6,7 @@ import pytest
 
 from agent.retrieval.context_builder import build_context, build_context_from_symbols
 from agent.retrieval.graph_retriever import retrieve_symbol_context
-from agent.retrieval.retrieval_expander import expand_search_results
+from agent.retrieval.retrieval_expander import expand_search_results, normalize_file_path
 from agent.tools import search_code
 from repo_index.indexer import index_repo
 
@@ -113,7 +113,7 @@ def test_retrieval_pipeline_step_executor(indexed_autostudio):
     assert "snippets" in built
     assert len(built.get("symbols", [])) <= 15
     for s in built.get("snippets", []):
-        assert s is not None
+        assert s is not None and isinstance(s, dict) and "snippet" in s
     for f in built.get("files", []):
         if not f:
             continue
@@ -264,7 +264,7 @@ def test_build_context_from_search_results():
 
 
 def test_context_builder_files_snippets_aligned():
-    """build_context_from_symbols keeps files and snippets aligned."""
+    """build_context_from_symbols returns snippets as list of {file, symbol, snippet}."""
     symbol_results = [{"file": "/x/a.py", "symbol": "foo", "snippet": "def foo"}]
     reference_results = []
     file_snippets = [
@@ -274,5 +274,85 @@ def test_context_builder_files_snippets_aligned():
     built = build_context_from_symbols(symbol_results, reference_results, file_snippets)
     assert len(built["files"]) == len(built["snippets"])
     assert built["files"] == ["/x/a.py", "/x/b.py"]
-    assert built["snippets"][0] == "content a"
-    assert built["snippets"][1] == ""  # empty but aligned
+    assert built["snippets"][0]["file"] == "/x/a.py" and built["snippets"][0]["snippet"] == "content a"
+    assert built["snippets"][1]["file"] == "/x/b.py" and built["snippets"][1]["snippet"] == ""
+
+
+def test_normalize_file_path_strips_json_artifacts():
+    """normalize_file_path strips malformed prefixes/suffixes from search result paths."""
+    assert normalize_file_path('{"tests/test_agent_e2e.py') == "tests/test_agent_e2e.py"
+    assert normalize_file_path('"agent/execution/step_dispatcher.py"') == "agent/execution/step_dispatcher.py"
+    assert normalize_file_path("  tests/foo.py  ") == "tests/foo.py"
+    assert normalize_file_path("agent/retrieval/graph_retriever.py") == "agent/retrieval/graph_retriever.py"
+    assert normalize_file_path("") == ""
+    assert normalize_file_path('{"') == ""
+
+
+def test_expand_search_results_normalizes_malformed_paths():
+    """expand_search_results produces valid paths from malformed search results."""
+    malformed = [
+        {"file": '{"tests/test_agent_e2e.py', "symbol": "", "snippet": "..."},
+        {"file": "agent/execution/step_dispatcher.py", "symbol": "dispatch", "snippet": "..."},
+    ]
+    expanded = expand_search_results(malformed)
+    assert len(expanded) == 2
+    assert expanded[0]["file"] == "tests/test_agent_e2e.py"
+    assert expanded[1]["file"] == "agent/execution/step_dispatcher.py"
+
+
+def test_hybrid_retrieve_merges_sources(monkeypatch):
+    """Hybrid retrieval merges results from graph, vector, grep."""
+    from agent.retrieval.search_pipeline import hybrid_retrieve, _merge_results
+
+    # Test merge logic directly
+    graph_out = {"results": [{"file": "a.py", "symbol": "foo", "snippet": "def foo"}]}
+    vector_out = {"results": [{"file": "b.py", "symbol": "", "snippet": "class Bar"}]}
+    grep_out = {"results": [{"file": "a.py", "symbol": "foo", "line": 10, "snippet": "foo()"}]}
+    merged = _merge_results(graph_out, vector_out, grep_out)
+    assert len(merged) >= 2
+    files = [r.get("file") for r in merged]
+    assert "a.py" in files
+    assert "b.py" in files
+
+
+def test_search_budget_enforced():
+    """Retrieval budgets: expand caps at MAX_SYMBOL_EXPANSION, prune caps at MAX_CONTEXT_SNIPPETS."""
+    from agent.retrieval.context_pruner import prune_context
+    from agent.retrieval.retrieval_expander import MAX_SYMBOL_EXPANSION
+
+    # Expand caps at MAX_SYMBOL_EXPANSION
+    many_results = [{"file": f"file{i}.py", "symbol": "", "snippet": "x"} for i in range(30)]
+    expanded = expand_search_results(many_results)
+    assert len(expanded) <= MAX_SYMBOL_EXPANSION
+
+    # Prune caps at max_snippets
+    ranked = [{"file": f"f{i}.py", "symbol": "", "snippet": "snippet"} for i in range(10)]
+    pruned = prune_context(ranked, max_snippets=6, max_chars=8000)
+    assert len(pruned) == 6
+
+
+def test_context_anchors_format():
+    """Context format uses FILE/SYMBOL/LINES/SNIPPET anchored blocks."""
+    from agent.execution.step_dispatcher import _format_explain_context
+    from agent.memory.state import AgentState
+
+    state = AgentState(
+        instruction="Explain",
+        current_plan={"steps": []},
+        context={
+            "ranked_context": [
+                {
+                    "file": "agent/execution/executor.py",
+                    "symbol": "StepExecutor",
+                    "line": 14,
+                    "snippet": "class StepExecutor:\n    def execute_step(self, step, state):",
+                }
+            ]
+        },
+    )
+    formatted = _format_explain_context(state)
+    assert "FILE: agent/execution/executor.py" in formatted
+    assert "SYMBOL: StepExecutor" in formatted
+    assert "LINES: 14-14" in formatted
+    assert "SNIPPET:" in formatted
+    assert "class StepExecutor" in formatted

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
@@ -19,8 +20,9 @@ MAX_ATTEMPT_HISTORY_FOR_REWRITE = 3
 
 
 class SearchAttempt(TypedDict, total=False):
-    """One search attempt: query used and a short result summary for the rewriter."""
+    """One search attempt: tool, argument (query), and outcome for the rewriter."""
 
+    tool: str
     query: str
     result_count: int
     result_summary: str
@@ -28,11 +30,12 @@ class SearchAttempt(TypedDict, total=False):
 
 
 class RewriteResult(TypedDict, total=False):
-    """Structured output from context rewrite: tool, query, reason."""
+    """Structured output from context rewrite: tool, query, reason, optional queries."""
 
     tool: str
     query: str
     reason: str
+    queries: list[str]
 
 # Load once at module import
 _REWRITE_PROMPT = get_prompt("query_rewrite", "prompt")
@@ -41,34 +44,72 @@ _REWRITE_WITH_CONTEXT_MAIN = _CTX_PROMPTS["main"]
 _REWRITE_WITH_CONTEXT_END = _CTX_PROMPTS["end"]
 
 
-def _parse_rewrite_json(raw: str) -> RewriteResult:
-    """Parse JSON output { tool, query, reason }; return structured result; fallback to query-only."""
-    raw = raw.strip()
-    # Strip markdown code fence if present
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        raw = "\n".join(lines)
+def _extract_json_from_text(text: str) -> dict | None:
+    """Extract first valid JSON object from text (handles reasoning-before-JSON output)."""
+    if not text or not text.strip():
+        return None
+    text = text.strip()
+    # Try direct parse first
     try:
-        obj = json.loads(raw)
-        if isinstance(obj, dict):
-            query = (obj.get("query") or "").strip() or raw
-            return RewriteResult(
-                tool=(obj.get("tool") or "").strip() or "",
-                query=query,
-                reason=(obj.get("reason") or "").strip() or "",
-            )
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
     except (json.JSONDecodeError, TypeError):
         pass
+    # Strip markdown code fence
+    if "```" in text:
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+        if match:
+            try:
+                obj = json.loads(match.group(1).strip())
+                return obj if isinstance(obj, dict) else None
+            except (json.JSONDecodeError, TypeError):
+                pass
+    # Find last {...} (model often outputs reasoning then JSON at end)
+    start = text.rfind("{")
+    if start >= 0:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start : i + 1])
+                        return obj if isinstance(obj, dict) else None
+                    except (json.JSONDecodeError, TypeError):
+                        break
+    return None
+
+
+def _parse_rewrite_json(raw: str) -> RewriteResult:
+    """Parse JSON output { tool, query, reason, queries? }; return structured result; fallback to query-only."""
+    raw = raw.strip()
+    obj = _extract_json_from_text(raw)
+    if obj:
+        query = (obj.get("query") or "").strip() or raw
+        queries_raw = obj.get("queries")
+        queries: list[str] = []
+        if isinstance(queries_raw, list):
+            queries = [(q or "").strip() for q in queries_raw if isinstance(q, str) and (q or "").strip()]
+        result: RewriteResult = RewriteResult(
+            tool=(obj.get("tool") or "").strip() or "",
+            query=query,
+            reason=(obj.get("reason") or "").strip() or "",
+        )
+        if queries:
+            result["queries"] = queries
+        return result
     return RewriteResult(tool="", query=raw, reason="")
 
 
 # Common filler words to strip in heuristic (no-LLM) mode for token-like queries
+# Aligns with prompt rules: "Extract main technical concepts; remove filler"
 _HEURISTIC_FILLER_WORDS = frozenset(
-    {"find", "where", "the", "is", "a", "an", "to", "of", "for", "in", "on", "at"}
+    {
+        "find", "where", "the", "is", "a", "an", "to", "of", "for", "in", "on", "at",
+        "locate", "show", "get", "code", "please", "can", "you", "me",
+    }
 )
 
 
@@ -85,22 +126,23 @@ def _heuristic_rewrite_no_llm(text: str) -> str:
 
 
 def _format_attempts_for_prompt(attempts: list[SearchAttempt]) -> str:
-    """Format previous search attempts for the rewrite prompt (last N only)."""
+    """Format previous attempts as tool(arg) → outcome for compact rewriter context."""
     if not attempts:
         return "(none yet)"
     limited = attempts[-MAX_ATTEMPT_HISTORY_FOR_REWRITE:]
     lines = []
-    for i, a in enumerate(limited, start=1):
-        q = a.get("query", "")
-        count = a.get("result_count", 0)
-        summary = a.get("result_summary", "")
-        err = a.get("error", "")
+    for a in limited:
+        tool = (a.get("tool") or "").strip() or "?"
+        arg = (a.get("query") or "").strip()[:120]
+        err = (a.get("error") or "").strip()[:100]
+        summary = (a.get("result_summary") or "").strip()[:80]
         if err:
-            lines.append(f"  {i}. Query: \"{q}\" → Error: {err}")
+            outcome = f"Error: {err}"
         elif summary:
-            lines.append(f"  {i}. Query: \"{q}\" → {summary}")
+            outcome = summary
         else:
-            lines.append(f"  {i}. Query: \"{q}\" → {count} result(s)")
+            outcome = f"{a.get('result_count', 0)} result(s)"
+        lines.append(f'{tool}({arg!r}) → {outcome}')
     return "\n".join(lines) if lines else "(none yet)"
 
 
@@ -110,7 +152,7 @@ def rewrite_query_with_context(
     previous_attempts: list[SearchAttempt] | None = None,
     use_llm: bool = True,
     state: "AgentState | None" = None,
-) -> str:
+) -> str | list[str]:
     """
     Rewrite the planner step into a search query using full execution context.
 
@@ -136,42 +178,75 @@ def rewrite_query_with_context(
         model_name = "REASONING" if model_type == ModelType.REASONING else "SMALL"
         print("    [workflow] rewriter model:", model_name)
 
+        # Truncate long inputs to avoid token overflow; escape braces in user content
+        # (format() substitutes values as-is; braces in values are safe)
+        planner_step_safe = (planner_step or "").strip()[:2000]
+        previous_attempts_safe = _format_attempts_for_prompt(attempts_slice)[:1500]
+        user_request_safe = (user_request or "").strip()[:500]
         prompt = _REWRITE_WITH_CONTEXT_MAIN.format(
-            previous_attempts=_format_attempts_for_prompt(attempts_slice),
-            planner_step=(planner_step or "").strip(),
+            user_request=user_request_safe or "(none)",
+            previous_attempts=previous_attempts_safe,
+            planner_step=planner_step_safe,
         )
         prompt += _REWRITE_WITH_CONTEXT_END
 
+        # System prompt: role-based API contract (prompt best practice for structured output)
+        _REWRITE_SYSTEM = (
+            "You are a code-search API. Return ONLY valid JSON with keys: tool, query, reason. "
+            "Optional: queries (array of strings) for multiple variants; policy engine tries each until success. "
+            "Never include explanations, thinking, or markdown. Your output must be parseable by json.loads()."
+        )
+
         if model_type == ModelType.REASONING:
-            out = call_reasoning_model(prompt, task_name="query rewriting")
+            out = call_reasoning_model(
+                prompt,
+                system_prompt=_REWRITE_SYSTEM,
+                task_name="query rewriting",
+            )
         else:
-            out = call_small_model(prompt, task_name="query rewriting")
+            out = call_small_model(
+                prompt,
+                task_name="query rewriting",
+                system_prompt=_REWRITE_SYSTEM,
+            )
 
         raw = (out or "").strip()
         if not raw:
             raise ValueError("Query rewrite returned empty response")
         result = _parse_rewrite_json(raw)
         query = (result.get("query") or "").strip() or raw
+        queries = result.get("queries") or []
         tool = (result.get("tool") or "").strip()
         reason = (result.get("reason") or "").strip()
         print("    [workflow] rewriter tool:", tool or "(none)")
         print("    [workflow] rewriter query:", query)
+        if queries:
+            print("    [workflow] rewriter queries:", queries[:5], "..." if len(queries) > 5 else "")
         if reason:
             print("    [workflow] rewriter reason:", reason)
         logger.info(
-            "rewriter result: tool=%s query=%s reason=%s",
+            "rewriter result: tool=%s query=%s queries=%s reason=%s",
             tool or "(none)",
             query[:80] + ("..." if len(query) > 80 else ""),
+            len(queries) if queries else 0,
             reason[:80] + ("..." if len(reason) > 80 else "") if reason else "(none)",
         )
         # Wire rewriter tool choice to chosen_tool for retrieval order
         if state and tool and tool in ("retrieve_graph", "retrieve_vector", "retrieve_grep", "list_dir"):
             state.context["chosen_tool"] = tool
+        # Return query variants when present; policy engine will try each until success
+        if queries:
+            return queries
         return query
 
     except Exception as e:
         logger.warning("LLM query rewrite with context failed: %s", e)
-        raise
+        # Fallback to heuristic so SEARCH can proceed and produce results for replanner
+        fallback = _heuristic_rewrite_no_llm(planner_step)
+        if fallback:
+            return fallback
+        # Last resort: return stripped planner_step so policy engine can use description
+        return (planner_step or "").strip()
 
 
 def rewrite_query(text: str, use_llm: bool = False) -> str:
@@ -215,4 +290,5 @@ def rewrite_query(text: str, use_llm: bool = False) -> str:
 
     except Exception as e:
         logger.warning("LLM query rewrite failed: %s", e)
-        raise
+        # Fallback: return stripped text so caller can proceed
+        return text.strip()

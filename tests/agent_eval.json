@@ -1,0 +1,41 @@
+[
+  {
+    "id": "explain_step_executor",
+    "instruction": "Explain StepExecutor",
+    "expected_action": "EXPLAIN",
+    "expects_context": true,
+    "expected_file_pattern": "executor"
+  },
+  {
+    "id": "where_retry",
+    "instruction": "Where is retry logic implemented?",
+    "expected_action": "SEARCH",
+    "expects_context": false
+  },
+  {
+    "id": "add_retry",
+    "instruction": "Add retry logic to executor",
+    "expected_action": "EDIT",
+    "expects_context": false
+  },
+  {
+    "id": "why_fail",
+    "instruction": "Why does this function fail?",
+    "expected_action": "EXPLAIN",
+    "expects_context": true
+  },
+  {
+    "id": "explain_dispatch",
+    "instruction": "Explain how dispatch works in step_dispatcher",
+    "expected_action": "EXPLAIN",
+    "expects_context": true,
+    "expected_file_pattern": "step_dispatcher"
+  },
+  {
+    "id": "find_validate_step",
+    "instruction": "Where is validate_step defined?",
+    "expected_action": "SEARCH",
+    "expects_context": false,
+    "expected_file_pattern": "validator"
+  }
+]

@@ -2,15 +2,13 @@
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 
 from agent.models.model_client import call_small_model
+from config.router_config import ROUTER_TYPE
 
 logger = logging.getLogger(__name__)
-
-ROUTER_TYPE = os.environ.get("ROUTER_TYPE", "").strip().lower()
 
 ROUTER_CATEGORIES = ("CODE_SEARCH", "CODE_EDIT", "CODE_EXPLAIN", "INFRA", "GENERAL")
 _ROUTER_CATEGORIES_SET = set(ROUTER_CATEGORIES)

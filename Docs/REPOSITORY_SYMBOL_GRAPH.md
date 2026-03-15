@@ -18,18 +18,25 @@ Research systems (e.g. code understanding, program synthesis) use knowledge grap
 
 - **repo_index/** — Tree-sitter parser, parallel indexing, symbol extraction, dependency extraction; optional embedding index (ChromaDB at `.symbol_graph/embeddings/`)
 - **repo_graph/** — SQLite graph storage, 2-hop expansion; `repo_map_builder` (architectural map); `change_detector` (affected callers, risk levels)
-- **agent/retrieval/** — `graph_retriever` (symbol lookup → expansion); `vector_retriever` (embedding search); `retrieval_cache` (LRU)
+- **agent/retrieval/** — `search_pipeline` (hybrid parallel retrieval); `symbol_expander` (expand_from_anchors: anchor → expand depth=2 → fetch bodies → rank → prune; max 15 symbols, 6 snippets); `graph_retriever` (symbol lookup → expansion); `vector_retriever` (embedding search); `retrieval_cache` (LRU); `context_builder_v2` (assemble_reasoning_context: FILE/SYMBOL/LINES/SNIPPET, ~8000 chars)
 - **editing/** — `diff_planner`, `patch_generator`, `ast_patcher`, `patch_validator`, `patch_executor`, `conflict_resolver`, `test_repair_loop`
 
 ### Retrieval flow
 
-1. SEARCH → `retrieval_cache.get_cached(query)` (if enabled)
-2. `graph_retriever.retrieve_symbol_context(query)` (when `.symbol_graph/index.sqlite` exists)
-3. If no results → `vector_retriever.search_by_embedding(query)` (when `ENABLE_VECTOR_SEARCH` and embeddings index exists)
-4. Fallback → Serena `find_symbol` / `search_for_pattern` (tool graph: retrieve_graph → retrieve_vector → retrieve_grep → list_dir; query rewriter can set chosen_tool; set `SERENA_GREP_FALLBACK=0` to disable ripgrep)
-5. Retrieval expansion → `read_symbol_body`, `read_file`, `find_referencing_symbols`
-6. Context builder → symbols, references, files
-7. Ranker + pruner → final context
+1. SEARCH → `repo_map_lookup.lookup_repo_map(query)` + `anchor_detector.detect_anchor(query, repo_map)` → `state.context["repo_map_anchor"]`, `state.context["repo_map_candidates"]`
+2. `retrieval_cache.get_cached(query)` (if enabled)
+3. **Hybrid retrieval** (when `ENABLE_HYBRID_RETRIEVAL=1`): `search_pipeline.hybrid_retrieve()` — when `repo_map_anchor` has confidence ≥ 0.9, graph retriever uses anchor symbol; runs graph, vector, grep in parallel; merges and returns top 20
+4. **Sequential fallback**: `graph_retriever.retrieve_symbol_context(query)` → `vector_retriever.search_by_embedding(query)` → Serena `search_for_pattern`
+5. **Symbol expansion** (when graph exists): `symbol_expander.expand_from_anchors` — anchor (from search results or repo_map) → expand_neighbors(depth=2) → fetch symbol bodies → rank → prune to 6 (max 15 symbols)
+6. Retrieval expansion (capped at MAX_SYMBOL_EXPANSION=10) → `read_symbol_body`, `read_file`, `find_referencing_symbols`
+7. Context builder → symbols, references, files
+8. Ranker (max 20 candidates) + pruner (max 6 snippets) → final context; `context_builder_v2.assemble_reasoning_context` formats for EXPLAIN
+
+All retrieval budgets and flags are configurable via `config/retrieval_config.py`; see [CONFIGURATION.md](CONFIGURATION.md).
+
+### Path normalization
+
+Search results from graph, vector, Serena, or grep may occasionally contain malformed file paths (e.g. JSON artifacts like `{"path` from mis-parsed output). `retrieval_expander.normalize_file_path()` strips these artifacts before expansion. Relative paths are resolved against `project_root` in `_run_retrieval_expansion`. The agent loop sets `project_root` in context (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve paths correctly.
 
 ---
 
@@ -89,16 +96,22 @@ StepExecutor
 - **Storage:** SQLite `nodes` (id, name, type, file, start_line, end_line, docstring, type_info, signature), `edges` (source_id, target_id, edge_type)
 - **Query:** `find_symbol`, `expand_neighbors(depth=2)`
 
-### Retrieval (graph_retriever, vector_retriever)
+### Retrieval (search_pipeline, graph_retriever, vector_retriever)
 
-- **graph_retriever:** `retrieve_symbol_context(query, project_root)` → extracts symbol candidates from natural language (CamelCase, snake_case, tokens) → find_symbol → expand_neighbors(2) → cap at 15 symbols
-- **vector_retriever:** `search_by_embedding(query)` — semantic search when graph returns nothing; uses ChromaDB at `.symbol_graph/embeddings/`
+- **search_pipeline:** `hybrid_retrieve(query, state)` — runs graph, vector, grep in parallel; merges and dedupes; returns top 20. Set `ENABLE_HYBRID_RETRIEVAL=0` for sequential fallback.
+- **graph_retriever:** `retrieve_symbol_context(query, project_root)` → extracts symbol candidates (CamelCase, snake_case, tokens) → find_symbol → expand_neighbors(2) → cap at 15 symbols
+- **vector_retriever:** `search_by_embedding(query)` — semantic search; uses ChromaDB at `.symbol_graph/embeddings/`
 - **retrieval_cache:** LRU cache for search results (`RETRIEVAL_CACHE_SIZE`)
-- Fallback to `search_code` when no index or no matches
+- **symbol_expander:** `expand_from_anchors(anchors, query, project_root)` — uses graph for context expansion; max 15 symbols, 6 snippets
+- **context_builder_v2:** `assemble_reasoning_context(snippets, max_chars=8000)` — FILE/SYMBOL/LINES/SNIPPET format for reasoning
+- **Budgets:** MAX_SEARCH_RESULTS=20, MAX_SYMBOL_EXPANSION=10, MAX_CONTEXT_SNIPPETS=6
 
 ### Repo map and change detector (repo_graph)
 
-- **repo_map_builder:** `build_repo_map(project_root)` → high-level architectural map (modules, dependencies) → `repo_map.json`
+- **repo_map_builder:** `build_repo_map(project_root)` → high-level architectural map; `build_repo_map_from_storage(graph_storage)` → spec format `{modules: {}, symbols: {}, calls: {}}` → `repo_map.json`
+- **repo_map_lookup:** `lookup_repo_map(query, project_root)` → tokenize query, match against `repo_map["symbols"]` → `[{anchor, file}, ...]`; `load_repo_map(project_root)` loads `repo_map.json`
+- **anchor_detector:** `detect_anchor(query, repo_map)` → exact/fuzzy symbol match → `{symbol, confidence}` (1.0 exact, 0.9 fuzzy); seeds graph retrieval when confidence ≥ 0.9
+- **repo_map_updater:** `update_repo_map_for_file(file_path, project_root)` → rebuilds `repo_map.json` from updated graph; call after `update_index_for_file`
 - **change_detector:** `detect_change_impact(project_root, changed_files)` → affected files/symbols, risk level (LOW/MEDIUM/HIGH)
 
 ### Diff planner and editing (editing)
@@ -111,7 +124,7 @@ StepExecutor
 - **conflict_resolver:** same symbol, same file, semantic overlap → sequential groups
 - **test_repair_loop:** run tests after patch; repair on failure (max 3 attempts); flaky detection; compile step
 
-**Tests:** `tests/test_agent_e2e.py` (full pipeline), `tests/test_agent_trajectory.py` (complex trajectories), `tests/test_patch_generator.py`, `tests/test_ast_patcher.py`, `tests/test_patch_validator.py`, `tests/test_patch_executor.py`, `tests/test_editing_pipeline.py`, `tests/test_diff_planner.py`
+**Tests:** `tests/test_agent_e2e.py` (full pipeline), `tests/test_agent_trajectory.py` (complex trajectories), `tests/test_repo_map.py` (repo_map build, lookup, anchor detection, incremental update), `tests/test_patch_generator.py`, `tests/test_ast_patcher.py`, `tests/test_patch_validator.py`, `tests/test_patch_executor.py`, `tests/test_editing_pipeline.py`, `tests/test_diff_planner.py`
 
 ---
 
@@ -158,6 +171,7 @@ The indexing system is validated by `tests/test_indexer.py`, `tests/test_symbol_
 | `test_index_repo_on_fixtures_repo` | End-to-end: index `tests/fixtures/repo` → SQLite has nodes/edges → `find_symbol`, `expand_neighbors` work |
 | `test_find_symbol_and_expand_neighbors_sqlite` | `find_symbol` and `expand_neighbors` against graph built by `index_repo` |
 | `test_retrieval_pipeline_*` | Query → graph retrieval → context builder; symbols ≤15; fallback search when graph fails; requires `tree-sitter` |
+| `test_symbol_expansion.py` | expand_from_anchors: no index, caps, integration with graph; no tree-sitter required for unit tests |
 
 **Retrieval pipeline tests** (`test_retrieval_pipeline.py`): session-scoped index over `agent/` and `editing/`; skip when `tree-sitter-python` not installed; `-m "not slow"` excludes full-index tests.
 

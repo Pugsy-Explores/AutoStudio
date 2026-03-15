@@ -11,7 +11,8 @@ class AgentState:
     current_plan: dict
     completed_steps: list = field(default_factory=list)
     step_results: list[StepResult] = field(default_factory=list)
-    # context: tool_node (str), retrieved_files, retrieved_symbols, retrieved_references, context_snippets (list)
+    # context: tool_node, retrieved_files, retrieved_symbols, retrieved_references,
+    # context_snippets (list of {"file": str, "symbol": str, "snippet": str})
     context: dict = field(default_factory=dict)
 
     def is_finished(self) -> bool:
@@ -31,6 +32,13 @@ class AgentState:
         """Append result and step to step_results and completed_steps."""
         self.step_results.append(result)
         self.completed_steps.append(step)
+
+    def undo_last_step(self) -> None:
+        """Remove the last recorded step (used when validation fails and replan is triggered)."""
+        if self.step_results:
+            self.step_results.pop()
+        if self.completed_steps:
+            self.completed_steps.pop()
 
     def update_plan(self, new_plan: dict) -> None:
         """Replace current_plan with new_plan (e.g. after replanning)."""
