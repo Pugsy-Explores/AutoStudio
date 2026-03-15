@@ -3,7 +3,7 @@
 [![GitHub license](https://img.shields.io/github/license/Pugsy-Explores/AutoCodeStudio)](https://github.com/Pugsy-Explores/AutoCodeStudio/blob/main/LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Pugsy-Explores/AutoCodeStudio)](https://github.com/Pugsy-Explores/AutoCodeStudio/stargazers)
 
-> **Plan. Search. Edit. Explain.** — A repository-aware autonomous coding agent that turns natural language into structured execution. LLM-powered planning, hybrid retrieval, and deterministic tool dispatch.
+> **Plan. Search. Edit. Explain.** — A repository-aware autonomous coding agent that turns natural language into structured execution. LLM-powered planning, smart efficient routing, hybrid retrieval, and deterministic tool dispatch.
 
 **A repository-aware autonomous coding agent** that plans, searches, edits, and explains codebases using LLMs and structured tool execution.
 
