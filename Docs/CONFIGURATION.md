@@ -19,10 +19,26 @@ All configuration values are centralized under the top-level `config/` directory
 
 ### agent_config.py
 
+Used by `agent_controller`. `agent_loop` uses its own constants in `agent/orchestrator/agent_loop.py` (Phase 4: 60s runtime, 3 replans, 20 steps, 50 tool calls).
+
 | Variable | Default | Env Override | Description |
 |----------|---------|--------------|-------------|
 | MAX_TASK_RUNTIME_SECONDS | 900 | MAX_TASK_RUNTIME_SECONDS | Max seconds before task times out |
 | MAX_REPLAN_ATTEMPTS | 5 | MAX_REPLAN_ATTEMPTS | Max replan attempts on step failure |
+
+### agent_loop constants (agent/orchestrator/agent_loop.py)
+
+Phase 4 reliability limits; not configurable via env:
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| MAX_REPLAN_ATTEMPTS | 3 | Max replan attempts on step failure |
+| MAX_STEP_RETRIES | 2 | Retry same step before triggering replan |
+| MAX_STEPS | 20 | Hard step count per task |
+| MAX_TOOL_CALLS | 50 | Max tool invocations per task |
+| MAX_TASK_RUNTIME_SECONDS | 60 | Wall-clock timeout per task |
+| MAX_LOOP_ITERATIONS | 100 | Stall detection |
+| MAX_STEP_TIMEOUT_SECONDS | 15 (from config) | Per-step timeout; Phase 7 |
 
 ### editing_config.py
 
@@ -85,7 +101,7 @@ All configuration values are centralized under the top-level `config/` directory
 
 | Variable | Default | Env Override | Description |
 |----------|---------|--------------|-------------|
-| ENABLE_INSTRUCTION_ROUTER | False | ENABLE_INSTRUCTION_ROUTER | 1/0 or true/false |
+| ENABLE_INSTRUCTION_ROUTER | True | ENABLE_INSTRUCTION_ROUTER | Route instruction before planner; CODE_SEARCH/CODE_EXPLAIN/INFRA skip planner |
 | ROUTER_TYPE | "" | ROUTER_TYPE | baseline, fewshot, ensemble, or final |
 | ROUTER_CONFIDENCE_THRESHOLD | 0.7 | ROUTER_CONFIDENCE_THRESHOLD | Confidence threshold |
 
@@ -104,8 +120,8 @@ export MAX_CONTEXT_SNIPPETS=8
 # Disable hybrid retrieval (sequential fallback)
 export ENABLE_HYBRID_RETRIEVAL=0
 
-# Enable instruction router
-export ENABLE_INSTRUCTION_ROUTER=1
+# Disable instruction router (default: enabled)
+export ENABLE_INSTRUCTION_ROUTER=0
 
 # Use baseline router
 export ROUTER_TYPE=baseline

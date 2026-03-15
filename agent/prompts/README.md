@@ -27,4 +27,5 @@ For prompts that require JSON-only output (e.g. query_rewrite_with_context):
 - `query_rewrite_with_context.yaml` — `{user_request}`, `{previous_attempts}`, `{planner_step}` (main); `end` is appended, not formatted. Output schema: `{tool, query, reason}`; optional `queries` (array) for variants; includes SEARCH STRATEGY RULES.
 - `validate_step.yaml` — `{step}`, `{success}`, `{output_summary}`
 - `model_router.yaml` — `{task_description}`
-- `planner_system.yaml`, `replanner_system.yaml` — system prompts, not formatted
+- `planner_system.yaml` — system prompt; includes MULTI-STEP EXAMPLES (Phase 5): bug fix, multi-file feature, refactoring few-shot examples.
+- `replanner_system.yaml` — system prompt, not formatted

@@ -5,14 +5,15 @@ import os
 from pathlib import Path
 
 from agent.execution.explain_gate import ensure_context_before_explain
-from agent.execution.policy_engine import ExecutionPolicyEngine, _is_valid_search_result
+from config.agent_config import MAX_CONTEXT_CHARS
+from agent.execution.policy_engine import ExecutionPolicyEngine, InvalidStepError, _is_valid_search_result, validate_step_input
 from agent.execution.tool_graph import ToolGraph
 from agent.execution.tool_graph_router import resolve_tool
 from agent.memory.state import AgentState
 from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
-from agent.observability.trace_logger import trace_stage
+from agent.observability.trace_logger import log_event, trace_stage
 from agent.retrieval import rewrite_query_with_context
 from agent.retrieval.context_builder_v2 import assemble_reasoning_context
 from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline
@@ -158,6 +159,29 @@ def _search_fn(query: str, state: AgentState):
         if result is None or not isinstance(result, dict):
             result = {"results": [], "query": query or ""}
 
+        # Phase 4: guarantee at least 1 snippet - fallback to file search
+        retrieval_fallback_used = None
+        if not (result.get("results") or []):
+            try:
+                root = Path(project_root or ".")
+                entries = list_files(str(root))
+                if entries:
+                    result = {
+                        "results": [
+                            {"file": str(root / e), "symbol": "", "line": 0, "snippet": e}
+                            for e in entries[:10]
+                        ],
+                        "query": query or "",
+                        "retrieval_fallback": "file_search",
+                    }
+                    retrieval_fallback_used = "file_search"
+                    logger.info("[workflow] retrieval empty, fallback to file_search: %d entries", len(entries))
+            except Exception as e:
+                logger.warning("[workflow] file_search fallback failed: %s", e)
+
+        if retrieval_fallback_used:
+            state.context["retrieval_fallback_used"] = retrieval_fallback_used
+
         if cache_size > 0 and result:
             try:
                 from agent.retrieval.retrieval_cache import set_cached
@@ -175,6 +199,8 @@ def _search_fn(query: str, state: AgentState):
             results = result.get("results", [])
             summary["results"] = len(results)
             summary["top_files"] = [r.get("file", "")[:80] for r in results[:5]]
+            if state.context.get("retrieval_fallback_used"):
+                summary["retrieval_fallback"] = state.context["retrieval_fallback_used"]
             return result
     return _do_search()
 
@@ -343,6 +369,11 @@ def dispatch(step: dict, state: AgentState) -> dict:
     Map step action to tool call. ToolGraph restricts tools; Router chooses (with fallback); PolicyEngine runs.
     Returns dict with success, output, error (optional).
     """
+    try:
+        validate_step_input(step)
+    except InvalidStepError as e:
+        return {"success": False, "output": {}, "error": f"Invalid step: {e}", "classification": "FATAL_FAILURE"}
+
     action = (step.get("action") or "EXPLAIN").upper()
     description = step.get("description") or ""
     print(f"[workflow] dispatch {action}")
@@ -402,28 +433,45 @@ def dispatch(step: dict, state: AgentState) -> dict:
         model_name = model_type.value if model_type else "REASONING"
         print("  [EXPLAIN] model from config:", model_name)
         context_block = _format_explain_context(state)
+        # Context guardrail: hard cap before LLM call
+        if context_block and len(context_block) > MAX_CONTEXT_CHARS:
+            original_len = len(context_block)
+            context_block = context_block[:MAX_CONTEXT_CHARS] + "\n\n[context truncated by guardrail]"
+            if trace_id:
+                log_event(
+                    trace_id,
+                    "context_guardrail_triggered",
+                    {"original_chars": original_len, "capped_chars": MAX_CONTEXT_CHARS},
+                )
+            logger.info("[context_guardrail] truncated context from %d to %d chars", original_len, MAX_CONTEXT_CHARS)
         if context_block:
             user_prompt = f"Question:\n{description}\n\nContext:\n{context_block}"
         else:
             user_prompt = f"Question:\n{description}\n\nContext:\n(none provided - run a SEARCH step first to locate the relevant code)"
         if trace_id:
             with trace_stage(trace_id, "reasoning", step_id=step_id) as summary:
-                if model_type == ModelType.SMALL:
-                    out = call_small_model(
-                        user_prompt,
-                        task_name="EXPLAIN",
-                        system_prompt=EXPLAIN_SYSTEM_PROMPT,
-                    )
-                else:
-                    out = call_reasoning_model(
-                        user_prompt,
-                        system_prompt=EXPLAIN_SYSTEM_PROMPT,
-                        task_name="EXPLAIN",
-                    )
-                out_str = (out or "").strip() or "[EXPLAIN: no model output]"
-                summary["first_200_chars"] = out_str[:200]
-                print("  [model] output:", out_str[:120] + ("..." if len(out_str) > 120 else ""))
-                return {"success": True, "output": out_str}
+                summary["question"] = (description or "")[:300]
+                summary["context_chars"] = len(context_block) if context_block else 0
+                try:
+                    if model_type == ModelType.SMALL:
+                        out = call_small_model(
+                            user_prompt,
+                            task_name="EXPLAIN",
+                            system_prompt=EXPLAIN_SYSTEM_PROMPT,
+                        )
+                    else:
+                        out = call_reasoning_model(
+                            user_prompt,
+                            system_prompt=EXPLAIN_SYSTEM_PROMPT,
+                            task_name="EXPLAIN",
+                        )
+                    out_str = (out or "").strip() or "[EXPLAIN: no model output]"
+                    summary["first_200_chars"] = out_str[:200]
+                    print("  [model] output:", out_str[:120] + ("..." if len(out_str) > 120 else ""))
+                    return {"success": True, "output": out_str}
+                except Exception as e:
+                    summary["error"] = str(e)[:200]
+                    raise
         if model_type == ModelType.SMALL:
             out = call_small_model(
                 user_prompt,

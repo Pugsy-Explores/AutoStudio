@@ -1,5 +1,6 @@
 """Repository indexer: scan repo, parse files, extract symbols."""
 
+import fnmatch
 import json
 import logging
 import os
@@ -16,6 +17,51 @@ SYMBOL_GRAPH_DIR = ".symbol_graph"
 SYMBOLS_JSON = "symbols.json"
 INDEX_SQLITE = "index.sqlite"
 INDEX_PARALLEL_WORKERS = int(os.environ.get("INDEX_PARALLEL_WORKERS", "8"))
+
+
+def _load_gitignore_patterns(root: Path) -> list[tuple[str, bool]]:
+    """Load .gitignore from repo root. Returns list of (pattern, is_dir) tuples."""
+    gitignore = root / ".gitignore"
+    if not gitignore.exists():
+        return []
+    patterns: list[tuple[str, bool]] = []
+    for line in gitignore.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("!"):
+            continue
+        if line.startswith("/"):
+            line = line[1:]
+        is_dir = line.endswith("/")
+        if is_dir:
+            line = line[:-1]
+        patterns.append((line, is_dir))
+    return patterns
+
+
+def _is_ignored(path: Path, root: Path, patterns: list[tuple[str, bool]]) -> bool:
+    """True if path (relative to root) matches any .gitignore pattern."""
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    parts = rel.parts
+    rel_str = str(rel).replace("\\", "/")
+
+    for pat, is_dir in patterns:
+        # Directory pattern (e.g. venv/): match if any path segment equals or matches
+        if is_dir:
+            for part in parts:
+                if fnmatch.fnmatch(part, pat) or part == pat:
+                    return True
+            continue
+        # File pattern: match full path
+        if fnmatch.fnmatch(rel_str, pat) or fnmatch.fnmatch(rel_str, "**/" + pat):
+            return True
+        if "/" not in pat and any(fnmatch.fnmatch(p, pat) for p in parts):
+            return True
+    return False
 
 
 def _parse_single_file(path: Path, root: Path) -> tuple[list[dict], dict]:
@@ -41,9 +87,16 @@ def scan_repo(root_dir: str) -> list[dict]:
     return symbols
 
 
-def _scan_repo_with_trees(root_dir: str, include_dirs: tuple[str, ...] | None = None) -> tuple[list[dict], dict]:
+def _scan_repo_with_trees(
+    root_dir: str,
+    include_dirs: tuple[str, ...] | None = None,
+    ignore_gitignore: bool = True,
+    verbose: bool = False,
+) -> tuple[list[dict], dict]:
     """Scan repo and return (symbols, ast_trees). Uses parallel workers when INDEX_PARALLEL_WORKERS > 1.
-    include_dirs: if set, only scan these subdirs of root_dir (e.g. ("agent", "editing"))."""
+    include_dirs: if set, only scan these subdirs of root_dir (e.g. ("agent", "editing")).
+    ignore_gitignore: if True, exclude paths matching .gitignore.
+    verbose: if True, log each file indexed or skipped."""
     root = Path(root_dir).resolve()
     if not root.is_dir():
         logger.warning("[indexer] not a directory: %s", root_dir)
@@ -57,6 +110,14 @@ def _scan_repo_with_trees(root_dir: str, include_dirs: tuple[str, ...] | None = 
                 py_files.extend(d.rglob("*.py"))
     else:
         py_files = list(root.rglob("*.py"))
+
+    if ignore_gitignore:
+        gitignore_patterns = _load_gitignore_patterns(root)
+        before = len(py_files)
+        py_files = [p for p in py_files if not _is_ignored(p, root, gitignore_patterns)]
+        if verbose and before != len(py_files):
+            logger.info("[indexer] .gitignore excluded %d files", before - len(py_files))
+
     logger.debug("[indexer] scan_repo found %d Python files in %s", len(py_files), root)
     if not py_files:
         logger.warning("[indexer] no Python files found in %s", root)
@@ -64,21 +125,30 @@ def _scan_repo_with_trees(root_dir: str, include_dirs: tuple[str, ...] | None = 
     ast_trees: dict[str, "Tree"] = {}
     workers = max(1, min(INDEX_PARALLEL_WORKERS, 16))
 
+    def _log_file(path: Path, status: str = "indexed") -> None:
+        if verbose:
+            rel = path.relative_to(root) if path.is_relative_to(root) else path
+            logger.info("[indexer] %s %s", status, rel)
+
     if workers <= 1:
         for path in py_files:
             symbols, trees = _parse_single_file(path, root)
+            _log_file(path)
             all_symbols.extend(symbols)
             ast_trees.update(trees)
     else:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futures = {ex.submit(_parse_single_file, p, root): p for p in py_files}
             for fut in as_completed(futures):
+                path = futures.get(fut)
                 try:
                     symbols, trees = fut.result()
+                    if path:
+                        _log_file(path)
                     all_symbols.extend(symbols)
                     ast_trees.update(trees)
                 except Exception as e:
-                    logger.warning("[indexer] parse failed for %s: %s", futures.get(fut), e)
+                    logger.warning("[indexer] parse failed for %s: %s", path, e)
 
     return all_symbols, ast_trees
 
@@ -157,18 +227,27 @@ def index_repo(
     root_dir: str,
     output_dir: str | None = None,
     include_dirs: tuple[str, ...] | None = None,
+    ignore_gitignore: bool = True,
+    verbose: bool = False,
 ) -> tuple[list[dict], str]:
     """
     Scan repo, extract symbols and dependencies, build graph, write to output.
     Returns (symbols, output_path).
     include_dirs: if set, only index these subdirs (e.g. ("agent", "editing")).
+    ignore_gitignore: if True, exclude paths matching .gitignore (default True).
+    verbose: if True, log each file indexed.
     """
     root = Path(root_dir).resolve()
     out = output_dir or str(root / SYMBOL_GRAPH_DIR)
     out_path = Path(out)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    symbols, ast_trees = _scan_repo_with_trees(root_dir, include_dirs=include_dirs)
+    symbols, ast_trees = _scan_repo_with_trees(
+        root_dir,
+        include_dirs=include_dirs,
+        ignore_gitignore=ignore_gitignore,
+        verbose=verbose,
+    )
     edges = extract_edges(symbols, ast_trees, str(root))
 
     # Write symbols JSON

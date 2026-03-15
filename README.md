@@ -146,7 +146,7 @@ flowchart TB
                   └─────────────────────────────┘
 ```
 
-**High-level flow:** Instruction → Plan resolver (instruction router when enabled, else planner) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state. SEARCH uses `_search_fn` (RepoMapLookup → SearchPipeline) then `run_retrieval_pipeline` on success. EXPLAIN uses ExplainGate to inject SEARCH when `ranked_context` is empty.
+**High-level flow:** Instruction → Plan resolver (instruction router by default, else planner) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state. SEARCH uses `_search_fn` (RepoMapLookup → SearchPipeline) then `run_retrieval_pipeline` on success. EXPLAIN uses ExplainGate to inject SEARCH when `ranked_context` is empty.
 
 ---
 
@@ -173,14 +173,28 @@ Core: `openai`, `PyYAML`, `tree-sitter`, `tree-sitter-python`. Serena adapter re
 ### Run the agent
 
 ```bash
-# From project root — standard agent loop (plan → execute steps)
+# Install CLI (optional): pip install -e .
+# Then use autostudio subcommands:
+autostudio explain StepExecutor
+autostudio edit "add logging to execute_step"
+autostudio chat                    # Interactive session (slash-commands: /explain, /fix, /refactor, /add-logging, /find)
+autostudio chat --live             # Session with live step visualization
+autostudio trace <task_id>         # View trace by task_id
+autostudio debug last-run          # Interactive trace viewer for most recent run
+
+# Or run directly without installing:
+python -m agent.cli.entrypoint explain StepExecutor
+python -m agent.cli.entrypoint chat
+
+# Mode 2 — Autonomous loop (goal-driven; Phase 7)
+python -c "from agent.autonomous import run_autonomous; run_autonomous('Fix failing test', project_root='.')"
+
+# Legacy — standard agent loop (plan → execute steps)
 python -m agent "Find where the StepExecutor class is defined"
+python -m agent "Explain how StepExecutor works"
 
-# Full pipeline — agent controller (repo map, conflict resolution, test repair, task memory)
-python -c "from agent.orchestrator.agent_controller import run_controller; run_controller('Add logging to execute_step', project_root='.')"
-
-# Or with explicit CLI
-python -m agent.cli.run_agent "Explain how the dispatcher routes SEARCH steps"
+# Legacy — single-shot with optional live visualization
+python -m agent.cli.run_agent "Explain how the dispatcher routes SEARCH steps" [--live]
 ```
 
 ### Index repository (symbol graph + optional embeddings)
@@ -188,6 +202,8 @@ python -m agent.cli.run_agent "Explain how the dispatcher routes SEARCH steps"
 ```bash
 python -m repo_index.index_repo /path/to/repo
 # Creates .symbol_graph/index.sqlite, symbols.json, repo_map.json, and optionally .symbol_graph/embeddings/ (when chromadb + sentence-transformers installed)
+# Uses .gitignore to exclude venv, __pycache__, etc. Use --no-gitignore to index everything.
+# Use --verbose to log each file indexed.
 ```
 
 ### Model endpoints
@@ -203,8 +219,9 @@ Configure `agent/models/models_config.json` or set:
 
 ```
 AutoStudio/
+├── pyproject.toml            # Package config; autostudio CLI entrypoint (Phase 6)
 ├── config/                   # Centralized configuration (see Docs/CONFIGURATION.md)
-│   ├── agent_config.py       # Agent loop limits (runtime, replan)
+│   ├── agent_config.py       # Agent loop limits (runtime, replan, step timeout, context chars)
 │   ├── editing_config.py     # Patch and file limits
 │   ├── retrieval_config.py   # Retrieval budgets and flags
 │   ├── router_config.py      # Instruction router
@@ -214,23 +231,35 @@ AutoStudio/
 │   ├── logging_config.py    # Log level/format
 │   └── config_validator.py  # Startup validation
 ├── agent/                    # Core agent package
-│   ├── cli/                  # CLI entry points
+│   ├── autonomous/           # Mode 2: goal-driven loop (Phase 7)
+│   │   ├── goal_manager.py   # Goal tracking, limit checks (max_steps, max_tool_calls, max_runtime, max_edits)
+│   │   ├── state_observer.py # ObservationBundle from repo_map, trace, retrieval
+│   │   ├── action_selector.py # Small-model structured action selection (SEARCH/EDIT/EXPLAIN/INFRA)
+│   │   └── agent_loop.py     # run_autonomous(goal, project_root)
+│   ├── cli/                  # CLI entry points (Phase 6)
+│   │   ├── entrypoint.py     # autostudio: explain, edit, trace, chat, debug, run
+│   │   ├── run_agent.py      # Single-shot (legacy); --live for step visualization
+│   │   ├── session.py        # Interactive chat REPL
+│   │   ├── command_parser.py # Slash-commands: /explain, /fix, /refactor, /add-logging, /find
+│   │   └── live_viz.py       # Live trace event listeners
 │   ├── execution/            # Step execution and dispatch
 │   │   ├── executor.py       # StepExecutor (execute_step → dispatch)
 │   │   ├── step_dispatcher.py  # Orchestrates: ToolGraph → Router → PolicyEngine; calls run_retrieval_pipeline
 │   │   ├── tool_graph.py     # Allowed tools per node; ENABLE_TOOL_GRAPH
 │   │   ├── tool_graph_router.py  # resolve_tool (preferred or first allowed; no hard reject)
-│   │   ├── policy_engine.py  # Retry + mutation for SEARCH/EDIT/INFRA
+│   │   ├── policy_engine.py  # Retry + mutation; validate_step_input pre-dispatch (Phase 7)
 │   │   └── explain_gate.py   # Context gate before EXPLAIN (inject SEARCH if empty)
 │   ├── memory/               # State, results, task memory, task index
 │   │   ├── state.py          # AgentState
 │   │   ├── task_memory.py    # save_task, load_task, list_tasks
-│   │   └── task_index.py     # Vector index for past tasks (optional)
+│   │   ├── task_index.py     # Vector index for past tasks (optional)
+│   │   └── session_memory.py # Session: conversation_history, recent_files, recent_symbols (Phase 6)
 │   ├── models/               # Model client and config
 │   ├── observability/        # Trace logging
-│   │   └── trace_logger.py   # start_trace, log_event, finish_trace
+│   │   ├── trace_logger.py   # start_trace, log_event, finish_trace; event/stage listeners (Phase 6)
+│   │   └── ux_metrics.py     # Session metrics: interaction_latency, steps_per_task, patch_success (Phase 6)
 │   ├── orchestrator/         # Agent loop, controller, validation
-│   │   ├── agent_loop.py     # run_agent (standard loop)
+│   │   ├── agent_loop.py     # run_agent (Mode 1: standard loop; per-step timeout Phase 7)
 │   │   └── agent_controller.py # run_controller (full pipeline)
 │   ├── retrieval/            # Query rewrite, context building, ranking
 │   │   ├── search_pipeline.py  # Hybrid parallel retrieval (graph + vector + grep); uses repo_map anchor when present
@@ -250,7 +279,8 @@ AutoStudio/
 │   ├── tools/                # Tool adapters
 │   └── prompts/              # YAML prompts
 ├── repo_index/               # Repository indexing (Tree-sitter)
-│   ├── indexer.py            # scan_repo, index_repo (parallel, optional embeddings)
+│   ├── index_repo.py         # CLI: index_repo (--verbose, --no-gitignore)
+│   ├── indexer.py            # scan_repo, index_repo (parallel, .gitignore, optional embeddings)
 │   ├── parser.py             # parse_file
 │   ├── symbol_extractor.py   # extract_symbols
 │   └── dependency_extractor.py # extract_edges
@@ -273,10 +303,20 @@ AutoStudio/
 │   └── test_repair_loop.py   # Run tests, repair on failure
 ├── planner/
 ├── router_eval/
+├── scripts/                  # Evaluation and utilities
+│   ├── run_principal_engineer_suite.py  # Phase 3/4 scenario eval, failure mining, stress
+│   ├── run_capability_eval.py            # Phase 5: dev_tasks.json → reports/eval_report.json
+│   ├── evaluate_agent.py                 # Legacy: agent_eval.json
+│   ├── replay_trace.py                   # Trace replay
+│   └── verify_phase2_exit.py             # Phase 2 verification
 ├── Docs/                     # See Docs/README.md for index
 ├── mcp_retriever.py          # Optional ChromaDB retrieval API (legacy)
 ├── index_repo.py             # Legacy embedding indexer
 └── tests/
+    ├── agent_scenarios.json   # 40 scenarios (G1–G8)
+    ├── dev_tasks.json         # 40 developer tasks (Phase 5 capability eval)
+    ├── test_multifile_edits.py # Multi-file patch pipeline
+    └── ...
 ```
 
 ---
@@ -287,13 +327,13 @@ AutoStudio/
 |-----------|------|
 | **run_agent** | Entry point: plan → state → execute loop → validate → replan until finished |
 | **plan(instruction)** | Planner: LLM + JSON parse → `{steps: [{id, action, description, reason}]}` |
-| **StepExecutor** | Calls `dispatch(step, state)`; wraps result in `StepResult` |
-| **dispatch** | Routes by action to PolicyEngine (SEARCH/EDIT/INFRA) or EXPLAIN |
+| **StepExecutor** | Calls `dispatch(step, state)`; wraps result in `StepResult` (includes `files_modified`, `patch_size` for EDIT steps) |
+| **dispatch** | Routes by action to PolicyEngine (SEARCH/EDIT/INFRA) or EXPLAIN; pre-dispatch validate_step_input (Phase 7) |
 | **ToolGraph** | Per-node `allowed_tools` and `preferred_tool`; restricts transitions |
-| **ExecutionPolicyEngine** | Retry loop with mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn |
+| **ExecutionPolicyEngine** | Retry loop with mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn; validate_step_input pre-dispatch |
 | **validate_step** | Rule-based or LLM YES/NO; EXPLAIN with empty-context output → invalid (triggers replanner); fallback to rules on error |
 | **replan** | LLM-based: receives failed_step, error; produces revised plan; fallback to remaining steps |
-| **instruction_router** | Classifies before planner (when ENABLE_INSTRUCTION_ROUTER=1); uses ROUTER_TYPE or inline SMALL model |
+| **instruction_router** | Classifies before planner (default: enabled); uses ROUTER_TYPE or inline SMALL model |
 
 ---
 
@@ -382,7 +422,7 @@ EDIT
 instruction
   → build_repo_map() — high-level architectural map
   → search_similar_tasks() — vector index of past tasks (optional)
-  → get_plan() — instruction router (if enabled) or planner.plan()
+  → get_plan() — instruction router (default) or planner.plan()
   → while task_not_complete:
         step = next_step()
         if SEARCH: dispatch (hybrid_retrieve or retrieve_graph → retrieve_vector → retrieve_grep → Serena)
@@ -392,9 +432,9 @@ instruction
   → return task summary
 ```
 
-**Safety limits:** max 5 files edited, 200 lines per patch, 15 min task runtime.
+**Safety limits:** max 5 files edited, 200 lines per patch. Task runtime: agent_loop 60s (Phase 4); agent_controller 15 min (configurable via `MAX_TASK_RUNTIME_SECONDS`). **Phase 7 reliability:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`), pre-dispatch tool validation (`validate_step_input`), context guardrail (`MAX_CONTEXT_CHARS`). **Mode 2 (autonomous):** `run_autonomous(goal)` — goal-driven loop with observe → select → dispatch; reuses dispatcher, retrieval, editing pipeline; limits: max_steps, max_tool_calls, max_runtime, max_edits.
 
-**Failure handling:** On step failure or validation failure, the agent replans (up to 5 attempts) using an LLM-based replanner that receives the failed step and error. SEARCH exhausts fallback chain (retrieve_graph → retrieve_vector → retrieve_grep → Serena) and retries with rewritten queries. EDIT failures trigger rollback before any files are written; patch validator ensures syntax and AST integrity.
+**Failure handling:** On step failure or validation failure, the agent replans. agent_loop: up to 3 replans, 2 step retries before replan; agent_controller: up to 5 replans (configurable). SEARCH exhausts fallback chain (retrieve_graph → retrieve_vector → retrieve_grep → file_search) and retries with rewritten queries. EDIT failures trigger rollback before any files are written; patch validator ensures syntax and AST integrity.
 
 **Test repair loop:** After patch execution, runs tests (pytest); on failure, plans repair and retries (max 3 attempts). Supports flaky test detection and compile step before tests.
 
@@ -415,7 +455,8 @@ All configuration values are centralized under `config/`. See [Docs/CONFIGURATIO
     "REASONING": { "name": "Qwen 9B", "endpoint": "http://localhost:8002/v1/chat/completions" },
     "REASONING_V2": { "name": "Qwen 14B", "endpoint": "http://localhost:8003/v1/chat/completions" }
   },
-  "task_models": {
+    "task_models": {
+    "action_selection": "SMALL",
     "query rewriting": "REASONING",
     "validation": "REASONING",
     "EXPLAIN": "REASONING_V2",
@@ -444,7 +485,7 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 
 | Variable | Purpose |
 |----------|---------|
-| `ENABLE_INSTRUCTION_ROUTER` | 1 or 0 (default) — route instruction before planner; CODE_SEARCH/CODE_EXPLAIN/INFRA skip planner |
+| `ENABLE_INSTRUCTION_ROUTER` | 1 (default) or 0 — route instruction before planner; CODE_SEARCH/CODE_EXPLAIN/INFRA skip planner |
 | `ROUTER_TYPE` | baseline, fewshot, ensemble, or final — use router from registry when instruction router enabled |
 | `SMALL_MODEL_ENDPOINT` | Override small model URL |
 | `REASONING_MODEL_ENDPOINT` | Override reasoning model URL |
@@ -464,6 +505,8 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `SERENA_USE_PLACEHOLDER` | 1 to disable Serena (return empty results) |
 | `SERENA_GREP_FALLBACK` | 1 (default) or 0 — use ripgrep when Serena MCP unavailable |
 | `SERENA_VERBOSE` | 1 for Serena debug logs |
+| `MAX_STEP_TIMEOUT_SECONDS` | Per-step timeout (default 15); prevents single slow tool from consuming full task budget |
+| `MAX_CONTEXT_CHARS` | Hard cap on context before LLM reasoning call (default 32000); truncation logs `context_guardrail_triggered` |
 | `PLANNER_MAX_TOKENS` | Max tokens for planner (default 1024) |
 | `ENABLE_DIFF_PLANNER` | 1 (default) or 0 — EDIT returns planned changes vs read_file |
 | `TEST_REPAIR_ENABLED` | 1 (default) or 0 — run tests after patch; 0 = patch only |
@@ -491,10 +534,12 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 **Repository indexing:** Build a symbol graph for instant graph-based retrieval:
 
 ```bash
-python -m repo_index.index_repo /path/to/repo
+python -m repo_index.index_repo /path/to/repo          # default: respects .gitignore
+python -m repo_index.index_repo /path/to/repo -v      # verbose: log each file indexed
+python -m repo_index.index_repo /path/to/repo --no-gitignore  # index everything (including venv, __pycache__)
 ```
 
-Creates `.symbol_graph/index.sqlite`, `symbols.json`, and `repo_map.json`. SEARCH uses repo_map lookup and anchor detection before graph retrieval when index exists. Programmatic use supports `include_dirs` to index only specific subdirs (e.g. `("agent", "editing")`).
+Creates `.symbol_graph/index.sqlite`, `symbols.json`, and `repo_map.json`. By default, paths matching `.gitignore` (e.g. `venv/`, `.venv/`, `__pycache__/`) are excluded. SEARCH uses repo_map lookup and anchor detection before graph retrieval when index exists. Programmatic use supports `include_dirs`, `ignore_gitignore`, and `verbose` (e.g. `index_repo(path, include_dirs=("agent", "editing"), verbose=True)`).
 
 ---
 
@@ -508,13 +553,23 @@ python -m pytest AutoStudio/tests/ -v
 python -m pytest AutoStudio/tests/test_agent_e2e.py -v
 
 # Specific suites
+python -m pytest AutoStudio/tests/test_agent_loop.py -v      # Execution loop, planner→executor→results; ExplainGate
+python -m pytest AutoStudio/tests/test_developer_workflow.py -v  # Phase 6: session memory, slash-commands, multi-turn
 python -m pytest AutoStudio/tests/test_context_ranker.py -v
-python -m pytest AutoStudio/tests/test_explain_gate.py -v
-python -m pytest AutoStudio/tests/test_tool_graph.py -v
+python -m pytest AutoStudio/tests/test_explain_gate.py -v   # Context gate: ensure_context_before_explain
+python -m pytest AutoStudio/tests/test_tool_graph.py -v      # Step→tool mapping (SEARCH→retrieve_graph, etc.)
 python -m pytest AutoStudio/tests/test_policy_engine.py -v
 python -m pytest AutoStudio/tests/test_agent_robustness.py -v  # failure scenarios, replan, fallback, no corruption
 python -m pytest AutoStudio/tests/test_agent_trajectory.py -v --mock  # complex trajectories: multi-search, conflict resolver, repair loop
+
+# Phase 3 scenario evaluation (40 tasks via run_controller; output: reports/eval_report.json)
+python scripts/run_principal_engineer_suite.py --scenarios
+
+# Phase 5 capability eval (dev_tasks.json; output: reports/eval_report.json)
+python scripts/run_capability_eval.py --mock       # CI: no agent calls
+python scripts/run_capability_eval.py --limit 5   # Quick smoke test
 python -m pytest AutoStudio/tests/test_observability.py -v  # trace creation, plan, tool calls, errors, patch results
+python -m pytest AutoStudio/tests/test_multifile_edits.py -v  # Multi-file patch pipeline (two-file, three-file, rollback)
 python -m pytest AutoStudio/tests/test_indexer.py AutoStudio/tests/test_symbol_graph.py AutoStudio/tests/test_repo_map.py -v  # repo index + graph + repo map
 INDEX_EMBEDDINGS=0 python -m pytest AutoStudio/tests/test_retrieval_pipeline.py AutoStudio/tests/test_graph_retriever.py -v  # retrieval pipeline
 python -m pytest AutoStudio/tests/test_symbol_expansion.py AutoStudio/tests/test_context_builder_v2.py -v  # symbol expander, context builder v2
@@ -545,8 +600,8 @@ Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `cal
 | Multiple search steps | ≥2 SEARCH steps hit retriever (use `RETRIEVAL_CACHE_SIZE=0`) |
 | Conflict resolver | Invoked when multiple edits target same file |
 | Repair loop | `run_with_repair` invoked when `TEST_REPAIR_ENABLED=1` |
-| No infinite loop | Stops after `MAX_REPLAN_ATTEMPTS` on repeated failure |
-| Runtime | Completes within 15 minutes |
+| No infinite loop | Stops after MAX_REPLAN_ATTEMPTS (agent_loop: 3; agent_controller: 5) on repeated failure |
+| Runtime | agent_loop: 60s; agent_controller: 15 min (configurable) |
 
 **Agent robustness** (`test_agent_robustness.py`): Failure-scenario tests ensure the agent replans, triggers fallback search, and avoids repository corruption:
 
@@ -555,7 +610,7 @@ Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `cal
 | Nonexistent symbol search | Policy retries with rewritten query; falls back to vector → Serena; returns failure with `attempt_history` when exhausted |
 | Invalid edit instruction | Patch validator rejects; rollback restores files; no corruption |
 | Patch validator failure | Rollback restores all modified files |
-| Graph lookup empty | Fallback to vector search, then Serena |
+| Graph lookup empty | Fallback to vector search, then Serena, then file_search (Phase 4) |
 | Search exception | Caught by policy engine; no unhandled crash |
 
 ---
@@ -615,28 +670,70 @@ See [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md) for detai
 | [Docs/ROUTING_ARCHITECTURE_REPORT.md](Docs/ROUTING_ARCHITECTURE_REPORT.md) | Routing architecture: instruction router, tool graph, categories, replanner |
 | [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md) | Symbol graph, repo map, change detector, vector search |
 | [Docs/CODING_AGENT_ARCHITECTURE_GUIDE.md](Docs/CODING_AGENT_ARCHITECTURE_GUIDE.md) | Architecture patterns, anti-patterns, production practices |
+| [dev/roadmap/phase_1_pipeline.md](dev/roadmap/phase_1_pipeline.md) | Phase 1 pipeline convergence: steps 1–8, verification tests, full system test |
+| [dev/roadmap/phase_3_scenarios.md](dev/roadmap/phase_3_scenarios.md) | Phase 3 scenario evaluation: 40-task benchmark, run_principal_engineer_suite --scenarios |
+| [dev/roadmap/phase_4_reliability.md](dev/roadmap/phase_4_reliability.md) | Phase 4 reliability: failure policies, execution limits, failure mining, stress testing |
+| [dev/roadmap/phase_5_metrics.md](dev/roadmap/phase_5_metrics.md) | Phase 5 capability expansion: dev_tasks.json, run_capability_eval, metrics dashboard |
+| [dev/roadmap/phase_6_developer_experience.md](dev/roadmap/phase_6_developer_experience.md) | Phase 6 developer experience: autostudio CLI, interactive chat, slash-commands, session memory, live viz, UX metrics |
+| [dev/roadmap/phase_7_reliability_hardening.md](dev/roadmap/phase_7_reliability_hardening.md) | Phase 7 reliability hardening: per-step timeout, tool validation, context guardrail; autonomous mode (agent/autonomous/, run_autonomous) |
 
 ---
 
 ## Evaluation
 
-Agent evaluation dataset and script:
+**Phase 3 scenario evaluation** (40 real tasks via `run_controller`):
 
 ```bash
-# Light eval (get_plan only, no model execution)
-python scripts/evaluate_agent.py --plan-only
+# Run all 40 scenarios; output: reports/eval_report.json
+python scripts/run_principal_engineer_suite.py --scenarios
 
-# Full eval (run_agent per task; requires model endpoints)
-python scripts/evaluate_agent.py
+# Run with agent_loop for Phase 4 metrics (replan_rate, failure_rate)
+python scripts/run_principal_engineer_suite.py --scenarios --use-agent-loop
 
-# Filter tasks and metrics
-python scripts/evaluate_agent.py --tasks explain_step_executor,where_retry --metrics planner_accuracy,latency
-python scripts/evaluate_agent.py --json  # JSON output
+# Run full principal engineer suite (explain, edit, router_eval, failure tests, scenarios)
+python scripts/run_principal_engineer_suite.py
 ```
 
-**Dataset:** `tests/agent_eval.json` — tasks such as "Explain StepExecutor", "Where is retry logic implemented", "Add retry logic to executor".
+**Phase 5 capability eval** (40 developer tasks via `run_agent`):
 
-**Metrics:** `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `latency`.
+```bash
+# Run dev_tasks.json through agent; output: reports/eval_report.json
+python scripts/run_capability_eval.py
+
+# Mock mode for CI (no LLM calls)
+python scripts/run_capability_eval.py --mock
+
+# Limit tasks for quick validation
+python scripts/run_capability_eval.py --limit 5
+```
+
+**Phase 4 reliability** (failure mining, stress testing):
+
+```bash
+# Aggregate failures from 10 scenario runs → dev/evaluation/failure_patterns.md
+python scripts/run_principal_engineer_suite.py --failure-mining --mining-reps 10
+
+# Stress test with varied seeds → reports/stress_report.json
+python scripts/run_principal_engineer_suite.py --stress --stress-reps 5
+```
+
+**Datasets:**
+- `tests/agent_scenarios.json` — 40 structured scenarios across 8 groups (code_understanding, navigation, simple_edits, multi_line_fixes, multi_file, bug_fixing, feature_addition, refactoring).
+- `tests/dev_tasks.json` — 40 developer tasks for Phase 5 capability eval (bug_fixing, feature_addition, refactoring, code_generation).
+- `tests/autonomous_tasks.json` — 3 autonomous-mode benchmark tasks (Phase 7).
+
+**Metrics:** `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `edit_success_rate`, `avg_latency`, `avg_files_modified`, `avg_steps_per_task`, `avg_patch_size`, `failure_rate`, `replan_rate`. See `dev/evaluation/metrics.md`.
+
+**Phase 6 UX metrics** (per-task, written by `run_controller`): `reports/ux_metrics.json` — `interaction_latency`, `steps_per_task`, `tool_calls`, `patch_success`.
+
+**Legacy agent eval** (get_plan / run_agent):
+
+```bash
+python scripts/evaluate_agent.py --plan-only   # Light: get_plan only
+python scripts/evaluate_agent.py              # Full: run_agent per task
+```
+
+**Dataset:** `tests/agent_eval.json`. **Metrics:** `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `latency`.
 
 ---
 

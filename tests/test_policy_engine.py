@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from agent.execution.mutation_strategies import generate_query_variants
-from agent.execution.policy_engine import ExecutionPolicyEngine, POLICIES
+from agent.execution.policy_engine import ExecutionPolicyEngine, InvalidStepError, POLICIES, validate_step_input
 from agent.memory.state import AgentState
 
 
@@ -142,6 +142,37 @@ class TestExecutionPolicyEngineSearch(unittest.TestCase):
         self.assertNotIn("results", result["output"])
         self.assertIn("attempt_history", result["output"])
         self.assertGreater(len(result["output"]["attempt_history"]), 0)
+
+
+class TestValidateStepInput(unittest.TestCase):
+    """Pre-dispatch schema validation."""
+
+    def test_valid_search_step_passes(self):
+        validate_step_input({"action": "SEARCH", "description": "find foo"})
+
+    def test_valid_edit_step_passes(self):
+        validate_step_input({"action": "EDIT", "description": "change bar"})
+
+    def test_valid_explain_step_passes(self):
+        validate_step_input({"action": "EXPLAIN", "description": "explain baz"})
+
+    def test_valid_infra_step_passes(self):
+        validate_step_input({"action": "INFRA", "description": ""})
+
+    def test_invalid_action_raises(self):
+        with self.assertRaises(InvalidStepError) as ctx:
+            validate_step_input({"action": "UNKNOWN", "description": "x"})
+        self.assertIn("action must be one of", str(ctx.exception))
+
+    def test_non_dict_raises(self):
+        with self.assertRaises(InvalidStepError) as ctx:
+            validate_step_input([])
+        self.assertIn("must be a dict", str(ctx.exception))
+
+    def test_description_too_long_raises(self):
+        with self.assertRaises(InvalidStepError) as ctx:
+            validate_step_input({"action": "SEARCH", "description": "x" * 50_001})
+        self.assertIn("exceeds max length", str(ctx.exception))
 
 
 class TestPolicies(unittest.TestCase):

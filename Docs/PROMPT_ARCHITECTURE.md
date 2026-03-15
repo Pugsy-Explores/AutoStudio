@@ -154,6 +154,7 @@ flowchart TD
 - Minimal steps: reduces unnecessary work.
 - EXPLAIN only when explicit: avoids over-explaining.
 - Rule 9: SEARCH steps target implementation, not tests, for "how does X work" questions.
+- **MULTI-STEP EXAMPLES** (Phase 5): Few-shot examples for bug fix (SEARCH → EDIT), multi-file feature (SEARCH → EDIT config → EDIT executor), and refactoring (SEARCH → SEARCH → EDIT → EDIT).
 
 **Example Input**: "Explain how StepExecutor runs steps"
 
@@ -391,7 +392,7 @@ The planner chooses **action types** (EDIT, SEARCH, EXPLAIN, INFRA). Tool select
 | Router | GENERAL overuse | "use when unclear" in prompt |
 | Query Rewrite | Over-expansion of queries | "1–3 tokens"; "Query max ~1000 chars" |
 | Query Rewrite | Invalid tool name | Check against allowed set; ignore if invalid |
-| Replanner | Infinite replan loop | `MAX_REPLAN_ATTEMPTS=5` |
+| Replanner | Infinite replan loop | agent_loop: `MAX_REPLAN_ATTEMPTS=3`; agent_controller: `MAX_REPLAN_ATTEMPTS=5` (config) |
 | Validator | LLM says YES when invalid | Rule-based first; LLM only for ambiguous cases |
 | EXPLAIN | Answering without context | Context gate; exact refusal string detection |
 

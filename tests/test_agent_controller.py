@@ -55,13 +55,13 @@ def test_run_controller_edit_flow_mocked(tmp_path):
 
 
 def test_run_controller_with_instruction_router_skips_planner_for_search(tmp_path):
-    """When instruction router is enabled and routes to CODE_SEARCH, planner is not called."""
+    """When instruction router is enabled and routes to CODE_SEARCH, planner (plan) is not called."""
     from agent.routing.instruction_router import RouterDecision
 
-    with patch("agent.orchestrator.agent_controller.ENABLE_INSTRUCTION_ROUTER", True):
+    with patch("agent.orchestrator.plan_resolver.ENABLE_INSTRUCTION_ROUTER", True):
         with patch("agent.routing.instruction_router.route_instruction") as mock_route:
             mock_route.return_value = RouterDecision(category="CODE_SEARCH", confidence=0.9)
-            with patch("agent.orchestrator.agent_controller.get_plan") as mock_plan:
+            with patch("planner.planner.plan") as mock_planner:
                 with patch("agent.orchestrator.agent_controller.dispatch") as mock_dispatch:
                     mock_dispatch.return_value = {
                         "success": True,
@@ -72,5 +72,5 @@ def test_run_controller_with_instruction_router_skips_planner_for_search(tmp_pat
                         project_root=str(tmp_path),
                     )
     assert mock_route.called
-    assert not mock_plan.called
+    assert not mock_planner.called, "Planner should be skipped when router returns CODE_SEARCH"
     assert "task_id" in result

@@ -1,9 +1,16 @@
-"""Unit tests for ToolGraph and tool_graph_router."""
+"""Unit tests for ToolGraph and tool_graph_router.
+
+Step 6 — Dispatcher and Tool Graph:
+- step type → correct tool mapping
+- SEARCH → retrieval_pipeline (retrieve_graph preferred)
+- EXPLAIN → reasoning model (explain)
+- EDIT → editing pipeline (edit)
+"""
 
 import unittest
 
 from agent.execution.tool_graph import ToolGraph
-from agent.execution.tool_graph_router import resolve_tool
+from agent.execution.tool_graph_router import resolve_tool, ACTION_TO_PREFERRED_TOOL
 
 
 class TestToolGraph(unittest.TestCase):
@@ -63,3 +70,17 @@ class TestToolGraphRouter(unittest.TestCase):
     def test_resolve_edit_and_explain(self):
         self.assertEqual(resolve_tool("EDIT", ["edit", "read_file"]), "edit")
         self.assertEqual(resolve_tool("EXPLAIN", ["explain"]), "explain")
+
+    def test_step_type_maps_to_correct_tool(self):
+        """Step 6: SEARCH→retrieval, EXPLAIN→reasoning, EDIT→editing pipeline."""
+        allowed_search = ["retrieve_graph", "retrieve_vector", "retrieve_grep", "list_dir"]
+        self.assertEqual(resolve_tool("SEARCH", allowed_search), "retrieve_graph")
+        self.assertEqual(resolve_tool("EXPLAIN", ["explain"]), "explain")
+        self.assertEqual(resolve_tool("EDIT", ["edit"]), "edit")
+        self.assertEqual(resolve_tool("INFRA", ["list_dir"]), "list_dir")
+
+    def test_action_to_preferred_tool_mapping(self):
+        """ACTION_TO_PREFERRED_TOOL defines step→tool mapping."""
+        self.assertEqual(ACTION_TO_PREFERRED_TOOL["SEARCH"], "retrieve_graph")
+        self.assertEqual(ACTION_TO_PREFERRED_TOOL["EXPLAIN"], "explain")
+        self.assertEqual(ACTION_TO_PREFERRED_TOOL["EDIT"], "edit")

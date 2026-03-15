@@ -4,6 +4,8 @@ End-to-end flow of the AutoStudio agent: instruction → plan → execute steps 
 
 **Architecture (phase.md):** router decides, planner plans, dispatcher executes.
 
+**Instruction router:** Enabled by default (`ENABLE_INSTRUCTION_ROUTER=1`). Classifies before planner; CODE_SEARCH/CODE_EXPLAIN/INFRA skip planner. Set to 0 to disable.
+
 ---
 
 ## High-level flow
@@ -60,7 +62,7 @@ flowchart TB
   User instruction ──► run_agent ──► get_plan
                                         │
                     ┌──────────────────┴──────────────────┐
-                    │ ENABLE_INSTRUCTION_ROUTER?           │
+                    │ ENABLE_INSTRUCTION_ROUTER? (default: yes) │
                     │ yes: route_instruction ──► category  │
                     │   CODE_SEARCH ──► Single SEARCH       │
                     │   CODE_EXPLAIN ──► Single EXPLAIN     │
@@ -84,7 +86,9 @@ flowchart TB
 
 **Context initialization:** `run_agent` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
 
-**Termination conditions (best practice):** task complete, max replan (5), max runtime (15 min), max iterations (100). `agent_controller` uses `config/agent_config.py`; `agent_loop` uses module-level constants. See [CONFIGURATION.md](CONFIGURATION.md).
+**Termination conditions (Phase 4):** task complete, max replan (3), max step retries (2), max steps (20), max tool calls (50), max runtime (60s), max iterations (100). **Phase 7:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`, default 15s) via ThreadPoolExecutor around `execute_step`; step timeout returns FATAL_FAILURE and logs `step_timeout`. `agent_loop` uses module-level constants in `agent/orchestrator/agent_loop.py`; `agent_controller` uses `config/agent_config.py` (15 min, 5 replans). See [CONFIGURATION.md](CONFIGURATION.md).
+
+**Recovery policy (Phase 4):** Every step result is classified SUCCESS, RETRYABLE_FAILURE, or FATAL_FAILURE. On FATAL_FAILURE the loop stops without replanning. On RETRYABLE_FAILURE: retry same step (up to MAX_STEP_RETRIES) then replan. Policy engine injects classification; trace logs it.
 
 ---
 
@@ -115,9 +119,10 @@ flowchart LR
                     └───────────────────────────────────────────────────────────────┘
 ```
 
+- **Pre-dispatch validation (Phase 7):** `validate_step_input(step)` in `policy_engine` runs before any tool call; checks action in allowed set, required description for SEARCH/EDIT/EXPLAIN, max description length; raises `InvalidStepError` on failure; dispatcher returns FATAL_FAILURE without invoking tools.
 - **ToolGraph → Router:** Dispatcher reads `current_node` from state; ToolGraph returns allowed tools; Router chooses tool (preferred for action, or first allowed if preferred not in set—no hard reject). Dispatcher sets `state.context["tool_node"]` after each step.
 - **SEARCH / EDIT / INFRA** → `ExecutionPolicyEngine.execute_with_policy` (retries, mutation).
-- **EXPLAIN** → Direct model call in `step_dispatcher`; no policy engine.
+- **EXPLAIN** → Direct model call in `step_dispatcher`; no policy engine; context guardrail truncates if `len(context) > MAX_CONTEXT_CHARS` and logs `context_guardrail_triggered`.
 
 ---
 
@@ -353,6 +358,7 @@ flowchart TB
 ```
 
 - **Context gate:** If `ranked_context` is empty, inject SEARCH (call `_search_fn` with step description; no LLM rewrite), then `run_retrieval_pipeline()`. If no valid results, return failure without calling the model. Avoids wasted LLM calls.
+- **Context guardrail (Phase 7):** Before LLM call, if `len(context_block) > MAX_CONTEXT_CHARS` (default 32000), truncate and log `context_guardrail_triggered` to trace.
 - **Anchored context:** `context_builder_v2.assemble_reasoning_context()` emits FILE/SYMBOL/LINES/SNIPPET blocks (~8000 char budget); deduplicates by (file, symbol).
 - **Fallback**: If model returns empty → `"[EXPLAIN: no model output]"`.
 - No retries; single attempt.
@@ -474,7 +480,7 @@ flowchart LR
 | `run_agent`            | Entry; get_plan → state → loop execute → validate → replan until finished. |
 | `get_plan`             | Plan resolver; instruction router (when enabled) or planner; single-step for CODE_SEARCH/CODE_EXPLAIN/INFRA. |
 | `plan(instruction)`    | Planner; reasoning model + JSON parse; fallback single EXPLAIN step. |
-| `StepExecutor`         | Calls `dispatch(step, state)`; wraps result in `StepResult`. |
+| `StepExecutor`         | Calls `dispatch(step, state)`; wraps result in `StepResult` (includes `files_modified`, `patch_size` for EDIT steps). |
 | `dispatch`             | Routes by action to policy engine (SEARCH/EDIT/INFRA) or EXPLAIN. |
 | `ExecutionPolicyEngine`| Retry loop + mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn. |
 | `rewrite_query_with_context` | LLM returns `{tool, query, reason}`; wires `chosen_tool` when valid; prompts: Serena rules, filesystem rules; **empty LLM output → raise**. |
@@ -494,7 +500,7 @@ flowchart LR
 - **Dispatch**: `agent/execution/step_dispatcher.py` — `dispatch`, _search_fn, _edit_fn, _infra_fn, _rewrite_for_search, _format_explain_context, EXPLAIN.
 - **Explain gate**: `agent/execution/explain_gate.py` — `ensure_context_before_explain` (inject SEARCH when ranked_context empty).
 - **Search pipeline**: `agent/retrieval/search_pipeline.py` — `hybrid_retrieve` (parallel graph + vector + grep), `_merge_results`.
-- **Policy**: `agent/execution/policy_engine.py` — POLICIES, _execute_search, _execute_edit, _execute_infra, _run_once.
+- **Policy**: `agent/execution/policy_engine.py` — POLICIES, validate_step_input, InvalidStepError, _execute_search, _execute_edit, _execute_infra, _run_once.
 - **Query rewriter**: `agent/retrieval/query_rewriter.py` — rewrite_query_with_context (wires chosen_tool), rewrite_query; prompts: `agent/prompts/query_rewrite.yaml`, `query_rewrite_with_context.yaml`.
 - **Mutation**: `agent/execution/mutation_strategies.py` — symbol_retry, retry_same, generate_query_variants.
 - **Model**: `agent/models/model_client.py` — _call_chat, call_reasoning_model, call_small_model; `agent/models/model_router.py` — get_model_for_task.
@@ -511,6 +517,7 @@ flowchart LR
 - **Diff planner**: `editing/diff_planner.py` — plan_diff.
 - **Patch pipeline**: `editing/patch_generator.py` — to_structured_patches; `editing/ast_patcher.py` — apply_patch; `editing/patch_validator.py` — validate_patch; `editing/patch_executor.py` — execute_patch (rollback on failure).
 - **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (full pipeline); get_plan from plan_resolver (instruction router + planner).
+- **Autonomous mode (Phase 7)**: `agent/autonomous/` — run_autonomous(goal, project_root); goal_manager, state_observer, action_selector, agent_loop; reuses dispatcher, retrieval, editing pipeline; limits: max_steps, max_tool_calls, max_runtime, max_edits.
 - **Instruction router**: `agent/routing/instruction_router.py` — route_instruction (when ENABLE_INSTRUCTION_ROUTER=1).
 - **Router registry**: `agent/routing/router_registry.py` — get_router, get_router_raw (ROUTER_TYPE integration).
 

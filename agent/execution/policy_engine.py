@@ -1,7 +1,10 @@
 """Execution policy engine: retry with tool-specific policies and mutation strategies."""
 
 import logging
+from enum import Enum
 from typing import Any, Callable
+
+from planner.planner_utils import ALLOWED_ACTIONS
 
 from agent.execution.mutation_strategies import (
     retry_same,
@@ -12,6 +15,33 @@ from agent.retrieval.query_rewriter import SearchAttempt
 from agent.retrieval.retrieval_expander import normalize_file_path
 
 logger = logging.getLogger(__name__)
+
+_ALLOWED_ACTIONS_SET = set(ALLOWED_ACTIONS)
+
+
+class InvalidStepError(Exception):
+    """Raised when a step fails pre-dispatch schema validation."""
+
+
+def validate_step_input(step: dict) -> None:
+    """
+    Validate step schema before dispatch. Raises InvalidStepError if invalid.
+    Checks: step is dict, action in allowed set, required fields per action type.
+    """
+    if not isinstance(step, dict):
+        raise InvalidStepError("step must be a dict")
+    action = (step.get("action") or "EXPLAIN").upper()
+    if action not in _ALLOWED_ACTIONS_SET:
+        raise InvalidStepError(f"action must be one of {ALLOWED_ACTIONS}, got {action!r}")
+    # SEARCH, EDIT, EXPLAIN need description (query/instruction); INFRA can have empty description
+    if action in ("SEARCH", "EDIT", "EXPLAIN"):
+        desc = step.get("description") or step.get("query") or ""
+        if not isinstance(desc, str):
+            raise InvalidStepError(f"{action} step requires description (str), got {type(desc).__name__}")
+    # Optional: reject obviously malformed steps (e.g. description too long for safety)
+    desc = step.get("description") or step.get("query") or ""
+    if isinstance(desc, str) and len(desc) > 50_000:
+        raise InvalidStepError("description/query exceeds max length (50000 chars)")
 
 
 def _is_valid_search_result(results: list | None) -> bool:
@@ -44,6 +74,74 @@ POLICIES = {
     },
     "EXPLAIN": {"max_attempts": 1},
 }
+
+
+class ResultClassification(str, Enum):
+    """Classification of step result for recovery policy dispatch."""
+
+    SUCCESS = "SUCCESS"
+    RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
+    FATAL_FAILURE = "FATAL_FAILURE"
+
+
+# Explicit dispatch: failure type -> recovery action (used by agent_loop for retry/replan decisions)
+FAILURE_RECOVERY_DISPATCH = {
+    "empty_results": "rewrite_query_retry",  # retrieval empty -> rewrite query -> retry
+    "invalid_step": "replanner",  # planner hallucination -> trigger replanner
+    "patch_rejected": "retry_edit",  # patch validator rejects -> retry edit
+    "tool_error": "fallback_tool",  # tool error -> fallback tool
+}
+
+
+def classify_result(action: str, result: dict[str, Any] | None) -> ResultClassification:
+    """
+    Classify step result for recovery policy. Every step result must be classified.
+    RETRYABLE_FAILURE: agent_loop may replan/retry. FATAL_FAILURE: stop without replan.
+    """
+    if result is None or not isinstance(result, dict):
+        return ResultClassification.FATAL_FAILURE
+    if result.get("success") is True:
+        return ResultClassification.SUCCESS
+
+    error = (result.get("error") or "").lower()
+    output = result.get("output") or {}
+
+    # Exhausted retries -> FATAL (policy engine already tried recovery)
+    if "exhausted" in error or "after retries" in error:
+        return ResultClassification.FATAL_FAILURE
+    if isinstance(output, dict) and output.get("attempt_history"):
+        # Policy engine returned attempt_history; check if we exhausted
+        policy = POLICIES.get(action.upper(), {})
+        max_attempts = policy.get("max_attempts", 1)
+        history = output.get("attempt_history", [])
+        if len(history) >= max_attempts:
+            return ResultClassification.FATAL_FAILURE
+
+    # Empty results (retrieval) -> RETRYABLE (query rewrite in policy engine)
+    if "empty" in error or "empty results" in error:
+        return ResultClassification.RETRYABLE_FAILURE
+
+    # Patch/edit failures -> RETRYABLE (symbol_retry in policy engine)
+    if "patch" in error or "edit" in error or "symbol_not_found" in error:
+        return ResultClassification.RETRYABLE_FAILURE
+
+    # Infra/tool non-zero exit -> RETRYABLE (retry_same in policy engine)
+    if "infra" in error or "returncode" in error:
+        return ResultClassification.RETRYABLE_FAILURE
+
+    # Validation failures (invalid step) -> RETRYABLE (replanner in agent_loop)
+    if "validation" in error or "invalid" in error:
+        return ResultClassification.RETRYABLE_FAILURE
+
+    # Unknown/unhandled -> FATAL to avoid infinite retry loops
+    return ResultClassification.FATAL_FAILURE
+
+
+def _with_classification(result: dict[str, Any], action: str) -> dict[str, Any]:
+    """Inject classification into result dict for recovery policy dispatch."""
+    out = dict(result)
+    out["classification"] = classify_result(action, result).value
+    return out
 
 
 def _is_failure(action: str, retry_on: list[str], result: dict[str, Any] | None) -> bool:
@@ -177,17 +275,22 @@ class ExecutionPolicyEngine:
                     print(f"[workflow] SEARCH (single) query={q!r}")
                     raw = self._search_fn(q, state)
                     if isinstance(raw, dict) and not _is_failure("SEARCH", ["empty_results"], raw):
-                        return {"success": True, "output": raw}
-                return {"success": False, "output": raw if isinstance(raw, dict) else {"attempt_history": []}, "error": "empty results"}
+                        return _with_classification({"success": True, "output": raw}, "SEARCH")
+                return _with_classification(
+                    {"success": False, "output": raw if isinstance(raw, dict) else {"attempt_history": []}, "error": "empty results"},
+                    "SEARCH",
+                )
             if action == "EDIT":
                 raw = self._edit_fn(step, state)
-                return raw if isinstance(raw, dict) else {"success": False, "output": {}, "error": "edit failed"}
+                r = raw if isinstance(raw, dict) else {"success": False, "output": {}, "error": "edit failed"}
+                return _with_classification(r, "EDIT")
             if action == "INFRA":
                 raw = self._infra_fn(step, state)
-                return raw if isinstance(raw, dict) else {"success": False, "output": {}, "error": "infra failed"}
+                r = raw if isinstance(raw, dict) else {"success": False, "output": {}, "error": "infra failed"}
+                return _with_classification(r, "INFRA")
         except Exception as e:
-            return {"success": False, "output": {}, "error": str(e)}
-        return {"success": False, "output": {}, "error": "unknown action"}
+            return _with_classification({"success": False, "output": {}, "error": str(e)}, action)
+        return _with_classification({"success": False, "output": {}, "error": "unknown action"}, action)
 
     def _execute_search(
         self,
@@ -292,16 +395,19 @@ class ExecutionPolicyEngine:
                     )
                     print("[workflow] SEARCH success")
                     logger.info("[policy] SEARCH success")
-                    return {"success": True, "output": raw}
+                    return _with_classification({"success": True, "output": raw}, "SEARCH")
                 logger.info("[policy] SEARCH attempt %s: %s", attempt_num, result_summary)
 
         print(f"[workflow] SEARCH exhausted after {len(attempt_history)} attempts")
         logger.warning("[policy] SEARCH exhausted after %s attempts", len(attempt_history))
-        return {
-            "success": False,
-            "output": {"attempt_history": attempt_history},
-            "error": "all search attempts returned empty results",
-        }
+        return _with_classification(
+            {
+                "success": False,
+                "output": {"attempt_history": attempt_history},
+                "error": "all search attempts returned empty results",
+            },
+            "SEARCH",
+        )
 
     def _execute_edit(
         self,
@@ -330,12 +436,15 @@ class ExecutionPolicyEngine:
                     {"tool": "edit", "path": out.get("path"), "success": True},
                 )
                 logger.info("[policy] EDIT success")
-                return {"success": True, "output": out, "error": raw.get("error")}
-        return {
-            "success": False,
-            "output": {"attempt_history": attempt_history},
-            "error": "edit failed after retries",
-        }
+                return _with_classification({"success": True, "output": out, "error": raw.get("error")}, "EDIT")
+        return _with_classification(
+            {
+                "success": False,
+                "output": {"attempt_history": attempt_history},
+                "error": "edit failed after retries",
+            },
+            "EDIT",
+        )
 
     def _execute_infra(
         self,
@@ -365,9 +474,12 @@ class ExecutionPolicyEngine:
                     {"tool": "infra", "returncode": out.get("returncode", -1), "success": True},
                 )
                 logger.info("[policy] INFRA success")
-                return {"success": True, "output": out, "error": raw.get("error")}
-        return {
-            "success": False,
-            "output": {"attempt_history": attempt_history},
-            "error": "infra command failed after retries",
-        }
+                return _with_classification({"success": True, "output": out, "error": raw.get("error")}, "INFRA")
+        return _with_classification(
+            {
+                "success": False,
+                "output": {"attempt_history": attempt_history},
+                "error": "infra command failed after retries",
+            },
+            "INFRA",
+        )

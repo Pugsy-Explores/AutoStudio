@@ -24,9 +24,9 @@ def get_plan(instruction: str, trace_id: str | None = None, log_event_fn=None) -
     Resolve plan: use instruction router when enabled, else planner.
 
     When ENABLE_INSTRUCTION_ROUTER=1:
-    - CODE_SEARCH → single SEARCH step
-    - CODE_EXPLAIN → single EXPLAIN step
-    - INFRA → single INFRA step
+    - CODE_SEARCH → single SEARCH step (skip planner)
+    - CODE_EXPLAIN → single EXPLAIN step (skip planner)
+    - INFRA → single INFRA step (skip planner)
     - CODE_EDIT / GENERAL → planner
 
     When disabled: always use planner.
@@ -89,6 +89,7 @@ def get_plan(instruction: str, trace_id: str | None = None, log_event_fn=None) -
                 summary["actions"] = ["INFRA"]
         return plan_result
 
+    # CODE_EDIT or GENERAL: use planner
     if trace_id:
         with trace_stage(trace_id, "planner") as summary:
             plan_result = plan(instruction)

@@ -3,7 +3,6 @@
 from agent.executor import StepExecutor
 from agent.memory.state import AgentState
 from agent.memory.step_result import StepResult
-from agent.orchestrator.agent_loop import run_agent
 
 __all__ = [
     "AgentState",
@@ -15,8 +14,12 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    # Lazy import so `python3 -m agent.agent_loop` does not load agent.agent_loop
-    # during package init (avoids RuntimeWarning about module already in sys.modules).
+    # Lazy imports to avoid circular dependency and heavy orchestration load at package init.
+    # planner -> agent.models.model_client loads agent; agent must not import agent_loop
+    # (which imports plan_resolver -> planner). Same pattern for run_loop.
+    if name == "run_agent":
+        from agent.orchestrator.agent_loop import run_agent
+        return run_agent
     if name == "run_loop":
         from agent.agent_loop import run_loop
         return run_loop

@@ -9,12 +9,12 @@
 ```
 User Query (instruction)
   → run_controller() [agent/orchestrator/agent_controller.py]
-  → get_plan(instruction) [agent/orchestrator/plan_resolver.py; when ENABLE_INSTRUCTION_ROUTER=1]
+  → get_plan(instruction) [agent/orchestrator/plan_resolver.py; ENABLE_INSTRUCTION_ROUTER=1 (default)]
        → route_instruction(instruction) [agent/routing/instruction_router.py]
        → category ∈ {CODE_SEARCH, CODE_EDIT, CODE_EXPLAIN, INFRA, GENERAL}
        → if CODE_SEARCH/CODE_EXPLAIN/INFRA: single-step plan, skip planner
        → if CODE_EDIT/GENERAL: plan(instruction) [planner/planner.py]
-  → (when ENABLE_INSTRUCTION_ROUTER=0) plan(instruction) directly
+  → (when ENABLE_INSTRUCTION_ROUTER=0) plan(instruction) directly [to disable router]
   → state.next_step() [agent/memory/state.py]
   → step = { id, action, description, reason }
   → action in { EDIT, SEARCH, EXPLAIN, INFRA }
@@ -39,7 +39,7 @@ User Query
 
 ### Findings
 
-1. **Instruction-level router in production (optional).** When `ENABLE_INSTRUCTION_ROUTER=1`, `route_instruction()` classifies before planning; CODE_SEARCH/CODE_EXPLAIN/INFRA skip the planner.
+1. **Instruction-level router in production (default).** When `ENABLE_INSTRUCTION_ROUTER=1` (default), `route_instruction()` classifies before planning; CODE_SEARCH/CODE_EXPLAIN/INFRA skip the planner. Set to 0 to disable.
 2. **Planner is the routing source for CODE_EDIT/GENERAL.** `planner/planner.py` calls `call_reasoning_model()` and returns steps with `action` in `{EDIT, SEARCH, EXPLAIN, INFRA}`.
 3. **`tool_graph_router` is deterministic.** It maps `action` → tool via `ACTION_TO_PREFERRED_TOOL`; no LLM.
 4. **`model_router` is for model choice.** It selects SMALL vs REASONING for tasks like EXPLAIN, query rewriting, validation, replanner; it does not route instructions to actions.
@@ -303,7 +303,7 @@ system_prompt: |
 - **File:** `agent/orchestrator/replanner.py`
 - **Trigger:** Step failure (`success=False`) or `validate_step()` failure.
 - **Logic:** LLM-based replanner; receives `failed_step` and `error`; produces revised plan via `call_reasoning_model` or `call_small_model` (task_models["replanner"]). Fallback: returns remaining steps if LLM fails.
-- **Limit:** `MAX_REPLAN_ATTEMPTS = 5` in `agent_controller.py`.
+- **Limit:** agent_loop: `MAX_REPLAN_ATTEMPTS = 3`; agent_controller: `MAX_REPLAN_ATTEMPTS = 5` (from config).
 
 ### Policy Engine Retries
 

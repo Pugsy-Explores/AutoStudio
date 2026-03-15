@@ -4,7 +4,30 @@ The **agent controller** (`run_controller`) orchestrates the complete developmen
 
 ---
 
-## Entry Point
+## CLI (Phase 6)
+
+The `autostudio` CLI wraps `run_controller` for common workflows:
+
+```bash
+autostudio explain StepExecutor      # Explain a symbol
+autostudio edit "add logging"        # Edit per instruction
+autostudio run "Fix the null check"  # Single-shot (legacy)
+autostudio chat                      # Interactive session with slash-commands
+autostudio chat --live               # Session with live step visualization
+```
+
+**Slash-commands in chat:** `/explain <symbol>`, `/fix <desc>`, `/refactor <desc>`, `/add-logging`, `/find <symbol>`
+
+**Trace inspection:**
+
+```bash
+autostudio trace <task_id>   # View trace (print mode)
+autostudio debug last-run   # Interactive trace viewer for most recent run
+```
+
+---
+
+## Entry Point (Programmatic)
 
 ```python
 from agent.orchestrator.agent_controller import run_controller
@@ -13,7 +36,7 @@ result = run_controller(
     instruction="Add a retry decorator to the fetch function",
     project_root="/path/to/repo",
 )
-# Returns: { task_id, instruction, completed_steps, files_modified, errors }
+# Returns: { task_id, instruction, completed_steps, files_modified, errors, retrieved_symbols }
 ```
 
 ---
@@ -25,7 +48,7 @@ instruction
   → build_repo_map() — spec format {modules, symbols, calls} → repo_map.json
   → search_similar_tasks() — vector index of past tasks (optional)
   → get_plan(instruction)
-       → [if ENABLE_INSTRUCTION_ROUTER=1] route_instruction() → category
+       → [if ENABLE_INSTRUCTION_ROUTER=1 (default)] route_instruction() → category
        → if CODE_SEARCH/CODE_EXPLAIN/INFRA: single-step plan, skip planner
        → if CODE_EDIT/GENERAL: planner.plan(instruction)
        → [if ENABLE_INSTRUCTION_ROUTER=0] planner.plan(instruction) directly
@@ -74,7 +97,9 @@ plan_diff(instruction, context)
 |-------|-------|---------|
 | `MAX_FILES_EDITED` | 5 | Max files per edit step |
 | `MAX_PATCH_SIZE` | 200 lines | Max lines per patch |
-| `MAX_TASK_RUNTIME_SECONDS` | 900 (15 min) | Max task runtime |
+| `MAX_TASK_RUNTIME_SECONDS` | 900 (15 min) | Max task runtime (from config; agent_loop uses 60s) |
+| `MAX_STEP_TIMEOUT_SECONDS` | 15 | Per-step timeout (Phase 7); prevents single slow tool from consuming full budget |
+| `MAX_CONTEXT_CHARS` | 32000 | Hard cap on context before LLM call (Phase 7); truncation logs context_guardrail_triggered |
 
 All limits are defined in `config/` and support env overrides. See [CONFIGURATION.md](CONFIGURATION.md).
 
@@ -92,13 +117,32 @@ All limits are defined in `config/` and support env overrides. See [CONFIGURATIO
 
 - **Location:** `.agent_memory/traces/`
 - **API:** `start_trace()`, `log_event()`, `finish_trace()` from `agent/observability/trace_logger.py`
+- **Live visualization (Phase 6):** `add_event_listener()`, `add_stage_listener()` — used by `--live` flag
 - **Events:**
   - `planner_decision` — plan with steps
   - `step_executed` — step_id, action, tool (chosen_tool), success
+  - `step_timeout` — step_id, action (Phase 7: per-step timeout exceeded)
+  - `context_guardrail_triggered` — original_chars, capped_chars (Phase 7: context truncated before LLM)
   - `patch_result` — patches_applied, files_modified (when EDIT succeeds)
   - `error` — step failures, max runtime, max replan, exceptions
   - `high_risk_edit` — change impact when risk is HIGH
   - `task_complete` — task_id, completed_steps, errors, patches_applied, files_modified
+
+---
+
+## UX Metrics (Phase 6)
+
+- **Location:** `reports/ux_metrics.json`
+- **API:** `agent/observability/ux_metrics.py` — `record_task_metrics()`, `compute_patch_success_rate()`
+- **Fields:** `interaction_latency`, `steps_per_task`, `tool_calls`, `patch_success` (for EDIT tasks)
+
+---
+
+## Session Memory (Phase 6)
+
+- **Module:** `agent/memory/session_memory.py`
+- **SessionState:** `conversation_history`, `recent_files`, `recent_symbols` — used by `autostudio chat`
+- **Context injection:** `to_context_dict()` provides `session_recent_files`, `session_recent_symbols` for multi-turn workflows
 
 ---
 
@@ -132,7 +176,7 @@ python -m pytest tests/test_observability.py -v
 
 ## E2E Tests
 
-`tests/test_agent_e2e.py` exercises the full pipeline with mocked LLM responses:
+`tests/test_agent_e2e.py` exercises the full pipeline with mocked LLM responses. For broader scenario evaluation (40 tasks), use `python scripts/run_principal_engineer_suite.py --scenarios`; see [dev/roadmap/phase_3_scenarios.md](../dev/roadmap/phase_3_scenarios.md). For Phase 5 capability eval (40 developer tasks), use `python scripts/run_capability_eval.py`.
 
 | Scenario | Instruction | Flow |
 |----------|-------------|------|
@@ -154,9 +198,12 @@ python -m pytest tests/test_agent_e2e.py -v --mock   # always use mock
 ## File Reference
 
 - **Controller:** `agent/orchestrator/agent_controller.py` — `run_controller`, `get_plan` (from plan_resolver), `_run_edit_flow`
+- **CLI:** `agent/cli/entrypoint.py` — autostudio subcommands; `agent/cli/session.py` — chat REPL; `agent/cli/command_parser.py` — slash-commands
 - **Instruction router:** `agent/routing/instruction_router.py` — `route_instruction`
 - **Task memory:** `agent/memory/task_memory.py`
+- **Session memory:** `agent/memory/session_memory.py` — SessionState for chat
 - **Trace logger:** `agent/observability/trace_logger.py`
+- **UX metrics:** `agent/observability/ux_metrics.py`
 - **Conflict resolver:** `editing/conflict_resolver.py`
 - **Test repair:** `editing/test_repair_loop.py`
 - **Change detector:** `repo_graph/change_detector.py`

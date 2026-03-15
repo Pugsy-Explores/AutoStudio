@@ -1,4 +1,9 @@
-"""Tests for agent/retrieval/context_builder_v2."""
+"""Tests for agent/retrieval/context_builder_v2.
+
+Step 7 — Context Builder:
+- context size, context ordering, relevance
+- LLM input: retrieved code, relevant snippets, minimal noise
+"""
 
 import unittest
 
@@ -35,3 +40,26 @@ class TestAssembleReasoningContext(unittest.TestCase):
         ]
         out = assemble_reasoning_context(snippets, max_chars=6000)
         self.assertLessEqual(len(out), 6500)
+
+    def test_context_ordering_preserved(self):
+        """Step 7: snippets appear in input order (relevance ordering from ranker)."""
+        snippets = [
+            {"file": "first.py", "symbol": "A", "snippet": "def A(): pass"},
+            {"file": "second.py", "symbol": "B", "snippet": "def B(): pass"},
+        ]
+        out = assemble_reasoning_context(snippets)
+        idx_a = out.find("FILE: first.py")
+        idx_b = out.find("FILE: second.py")
+        self.assertGreater(idx_b, idx_a, "First snippet should appear before second")
+
+    def test_context_contains_retrieved_code_and_snippets(self):
+        """Step 7: LLM input must contain retrieved code, relevant snippets, minimal noise."""
+        snippets = [
+            {"file": "agent/executor.py", "symbol": "StepExecutor", "snippet": "class StepExecutor:\n    def execute_step(self): ...", "line_range": [1, 20]},
+        ]
+        out = assemble_reasoning_context(snippets)
+        self.assertIn("FILE: agent/executor.py", out)
+        self.assertIn("SYMBOL: StepExecutor", out)
+        self.assertIn("LINES: 1-20", out)
+        self.assertIn("SNIPPET:", out)
+        self.assertIn("class StepExecutor:", out)

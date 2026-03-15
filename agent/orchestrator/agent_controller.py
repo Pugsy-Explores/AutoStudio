@@ -78,6 +78,7 @@ def run_controller(
         files_modified: list = []
         errors_encountered: list = []
         replan_count = 0
+        tool_calls = 0
 
         while not state.is_finished():
             if time.perf_counter() - start_time > MAX_TASK_RUNTIME_SECONDS:
@@ -95,6 +96,7 @@ def run_controller(
             state.context["current_step_id"] = step_id
             logger.info("[agent_controller] step executed step_id=%s action=%s", step_id, action)
 
+            tool_calls += 1
             if action == "EDIT":
                 result = _run_edit_flow(step, state)
             else:
@@ -194,12 +196,40 @@ def run_controller(
     finally:
         finish_trace(trace_id)
 
+    # Include retrieved_symbols for session memory (Phase 6)
+    retrieved_symbols: list[str] = []
+    try:
+        raw = state.context.get("retrieved_symbols") or []
+        retrieved_symbols = [str(s) for s in raw if s]
+    except Exception:
+        pass
+
+    # UX metrics (Phase 6)
+    try:
+        from agent.observability.ux_metrics import record_task_metrics
+
+        had_edit = any((s.get("action") or "").upper() == "EDIT" for s in completed_steps)
+        patch_success = None
+        if had_edit:
+            patch_success = bool(files_modified) and not errors_encountered
+        record_task_metrics(
+            task_id=task_id,
+            interaction_latency_seconds=time.perf_counter() - start_time,
+            steps_per_task=len(completed_steps),
+            tool_calls=tool_calls,
+            patch_success=patch_success,
+            project_root=str(root),
+        )
+    except Exception as e:
+        logger.debug("[agent_controller] ux_metrics skipped: %s", e)
+
     return {
         "task_id": task_id,
         "instruction": instruction,
         "completed_steps": len(completed_steps),
         "files_modified": list(dict.fromkeys(files_modified)),
         "errors": errors_encountered,
+        "retrieved_symbols": list(dict.fromkeys(retrieved_symbols)),
     }
 
 
@@ -207,13 +237,22 @@ def _result_to_step_result(step: dict, result: dict):
     """Convert dispatch result to StepResult-like object for state.record."""
     from agent.memory.step_result import StepResult
 
+    output = result.get("output", "")
+    files_modified = None
+    patch_size = None
+    if step.get("action") == "EDIT" and isinstance(output, dict):
+        files_modified = output.get("files_modified")
+        patch_size = output.get("patches_applied")
+
     return StepResult(
         step_id=step.get("id", 0),
         action=step.get("action", "EXPLAIN"),
         success=result.get("success", False),
-        output=result.get("output", ""),
+        output=output,
         latency_seconds=0,
         error=result.get("error"),
+        files_modified=files_modified,
+        patch_size=patch_size,
     )
 
 

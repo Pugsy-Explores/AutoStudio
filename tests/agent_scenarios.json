@@ -1,0 +1,362 @@
+[
+  {
+    "id": "G1-001",
+    "group": "code_understanding",
+    "difficulty": "easy",
+    "instruction": "Explain what AgentState contains and how it is used in the agent loop.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G1-002",
+    "group": "code_understanding",
+    "difficulty": "easy",
+    "instruction": "Explain how StepExecutor works.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G1-003",
+    "group": "code_understanding",
+    "difficulty": "easy",
+    "instruction": "Explain what the retrieval_pipeline does and its stage order.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G1-004",
+    "group": "code_understanding",
+    "difficulty": "easy",
+    "instruction": "Explain what context_ranker does.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G1-005",
+    "group": "code_understanding",
+    "difficulty": "easy",
+    "instruction": "Explain what the replanner does when a step fails.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G2-001",
+    "group": "navigation",
+    "difficulty": "medium",
+    "instruction": "Find where the patch validator is implemented.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G2-002",
+    "group": "navigation",
+    "difficulty": "medium",
+    "instruction": "Find all callers of execute_step.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G2-003",
+    "group": "navigation",
+    "difficulty": "medium",
+    "instruction": "Locate the symbol graph builder.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G2-004",
+    "group": "navigation",
+    "difficulty": "medium",
+    "instruction": "Find where planner steps are validated.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G2-005",
+    "group": "navigation",
+    "difficulty": "medium",
+    "instruction": "Find where retry logic exists in the codebase.",
+    "expected_actions": ["SEARCH", "EXPLAIN"],
+    "expected_min_steps": 2,
+    "expect_edit": false
+  },
+  {
+    "id": "G3-001",
+    "group": "simple_edits",
+    "difficulty": "medium",
+    "instruction": "Add logging to the execute_step function in agent/execution/executor.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G3-002",
+    "group": "simple_edits",
+    "difficulty": "medium",
+    "instruction": "Add a docstring to the load_dataset function in planner/planner_eval.py if it exists.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G3-003",
+    "group": "simple_edits",
+    "difficulty": "medium",
+    "instruction": "Rename a local variable for clarity in one function in agent/execution/step_dispatcher.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G3-004",
+    "group": "simple_edits",
+    "difficulty": "medium",
+    "instruction": "Fix any missing import in tests/conftest.py if one exists.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G3-005",
+    "group": "simple_edits",
+    "difficulty": "medium",
+    "instruction": "Add a type hint to the route_instruction function return type in config/router_config.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G4-001",
+    "group": "multi_line_fixes",
+    "difficulty": "hard",
+    "instruction": "Add input validation to the dispatch function in agent/execution/step_dispatcher.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G4-002",
+    "group": "multi_line_fixes",
+    "difficulty": "hard",
+    "instruction": "Add a try/except block around the main logic in agent/execution/executor.py execute_step.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G4-003",
+    "group": "multi_line_fixes",
+    "difficulty": "hard",
+    "instruction": "Add debug logging to the policy engine execute_with_policy method.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G4-004",
+    "group": "multi_line_fixes",
+    "difficulty": "hard",
+    "instruction": "Add retry limit configuration to the repair loop if it exists.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G4-005",
+    "group": "multi_line_fixes",
+    "difficulty": "hard",
+    "instruction": "Add error handling for empty context in the context builder.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G5-001",
+    "group": "multi_file",
+    "difficulty": "hard",
+    "instruction": "Add logging to all executor classes in agent/execution.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G5-002",
+    "group": "multi_file",
+    "difficulty": "hard",
+    "instruction": "Update the run_agent function signature across agent/__main__.py and agent/cli/run_agent.py to be consistent.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G5-003",
+    "group": "multi_file",
+    "difficulty": "hard",
+    "instruction": "Add a config constant for max retry limit in config/router_config.py and use it in any retry logic.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G5-004",
+    "group": "multi_file",
+    "difficulty": "hard",
+    "instruction": "Add retry limit to all classes that have retry logic.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G5-005",
+    "group": "multi_file",
+    "difficulty": "hard",
+    "instruction": "Add type hints to the agent/memory/state.py module.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G6-001",
+    "group": "bug_fixing",
+    "difficulty": "hard",
+    "instruction": "Fix any missing import in tests/conftest.py if one exists.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G6-002",
+    "group": "bug_fixing",
+    "difficulty": "hard",
+    "instruction": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G6-003",
+    "group": "bug_fixing",
+    "difficulty": "hard",
+    "instruction": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G6-004",
+    "group": "bug_fixing",
+    "difficulty": "hard",
+    "instruction": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G6-005",
+    "group": "bug_fixing",
+    "difficulty": "hard",
+    "instruction": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G7-001",
+    "group": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add retry limit constant to config/router_config.py and use it in agent/execution/policy_engine.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 3,
+    "expect_edit": true
+  },
+  {
+    "id": "G7-002",
+    "group": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add error handling for empty context in the context builder.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G7-003",
+    "group": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add a CLI flag --limit to scripts/replay_trace.py to limit number of events displayed.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G7-004",
+    "group": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add config validation for MAX_STEPS in config/agent_config.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G7-005",
+    "group": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add retry limit to the repair loop in editing if it exists.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G8-001",
+    "group": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Extract the plan validation logic from planner/planner_eval.py into a separate function.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G8-002",
+    "group": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Extract trace stage logging into a helper in agent/observability/trace_logger.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G8-003",
+    "group": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Rename the classify_failure function in agent/execution/policy_engine.py to classify_step_failure for clarity.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "G8-004",
+    "group": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Move the action normalization logic from planner_eval into a shared planner utility module.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 3,
+    "expect_edit": true
+  },
+  {
+    "id": "G8-005",
+    "group": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Refactor agent/orchestrator/replanner.py to use a configurable MAX_REPLAN constant from config.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_min_steps": 3,
+    "expect_edit": true
+  }
+]

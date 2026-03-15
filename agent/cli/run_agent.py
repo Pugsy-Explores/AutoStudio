@@ -1,5 +1,6 @@
 """CLI entry point: python -m agent.cli.run_agent \"instruction\" """
 
+import argparse
 import logging
 import sys
 
@@ -20,18 +21,31 @@ for _name in ("serena", "solidlsp"):
 
 
 def main() -> None:
-    print("Active models:")
-    print(f"  SMALL → {SMALL_MODEL_NAME}")
-    print(f"  REASONING → {REASONING_MODEL_NAME}")
-    print(f"  REASONING_V2 → {REASONING_V2_MODEL_NAME}")
-    if len(sys.argv) > 1:
-        instruction = " ".join(sys.argv[1:]).strip()
-    else:
+    parser = argparse.ArgumentParser(description="AutoStudio single-shot run")
+    parser.add_argument("--live", "--verbose", action="store_true", help="Show live step visualization")
+    parser.add_argument("instruction", nargs="*", help="Instruction to run")
+    args = parser.parse_args()
+    instruction = " ".join(args.instruction) if args.instruction else ""
+    if not instruction:
         instruction = input("Instruction: ").strip()
     if not instruction:
         print("No instruction provided.", file=sys.stderr)
         sys.exit(1)
-    state = run_agent(instruction)
+
+    event_fns, stage_fns = [], []
+    if args.live:
+        from agent.cli.live_viz import install_live_listeners, uninstall_live_listeners
+
+        event_fns, stage_fns = install_live_listeners()
+        print("--- Live ---")
+
+    try:
+        state = run_agent(instruction)
+    finally:
+        if args.live and event_fns:
+            from agent.cli.live_viz import uninstall_live_listeners
+
+            uninstall_live_listeners(event_fns, stage_fns)
     print("\n--- Results ---")
     for r in state.step_results:
         print(f"Step {r.step_id} [{r.action}] success={r.success} latency={r.latency_seconds:.3f}s")

@@ -1,0 +1,17 @@
+[
+  {
+    "id": "auto_001",
+    "goal": "Fix failing test",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "auto_002",
+    "goal": "Add retry logic to SEARCH step",
+    "success_criteria": "tests_pass"
+  },
+  {
+    "id": "auto_003",
+    "goal": "Implement missing feature stub",
+    "success_criteria": "no_syntax_errors"
+  }
+]

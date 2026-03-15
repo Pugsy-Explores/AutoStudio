@@ -1,5 +1,6 @@
 """Apply validated patches safely with rollback on failure."""
 
+import ast
 import logging
 import os
 from pathlib import Path
@@ -96,6 +97,19 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
             tree, source_bytes = loaded
             new_bytes = apply_patch(tree, source_bytes, patch)
             new_code = generate_code(tree, new_bytes)
+
+            # Phase 4: ast.parse pre-check for Python files before validation
+            if abs_path.suffix.lower() == ".py" and new_code:
+                try:
+                    ast.parse(new_code)
+                except SyntaxError as e:
+                    logger.warning("[patch_executor] ast.parse pre-check failed: %s", e)
+                    return {
+                        "success": False,
+                        "error": "patch_failed",
+                        "reason": f"Python syntax error: {e}",
+                        "file": abs_path_str,
+                    }
 
             result = validate_patch(abs_path_str, new_code)
             if not result.get("valid", True):

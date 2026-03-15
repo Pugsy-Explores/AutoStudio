@@ -67,3 +67,5 @@ from router_eval.routers.baseline_router import route
 - [Docs/CONFIGURATION.md](../Docs/CONFIGURATION.md) — Centralized config (ROUTER_TYPE, etc.)
 - [Docs/AGENT_LOOP_WORKFLOW.md](../Docs/AGENT_LOOP_WORKFLOW.md) — Agent execution flow
 - [README.md](../README.md) — Project overview
+- [dev/roadmap/phase_3_scenarios.md](../dev/roadmap/phase_3_scenarios.md) — Phase 3 scenario evaluation (40-task benchmark; `python scripts/run_principal_engineer_suite.py --scenarios`)
+- [dev/roadmap/phase_5_metrics.md](../dev/roadmap/phase_5_metrics.md) — Phase 5 capability eval (`python scripts/run_capability_eval.py`)

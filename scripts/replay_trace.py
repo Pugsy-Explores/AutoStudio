@@ -45,7 +45,7 @@ def _resolve_trace_path(arg: str, project_root: Path) -> Path | None:
 
 
 def _print_stage(idx: int, stage: dict, stage_only: bool = False) -> None:
-    """Print a single stage."""
+    """Print a single stage. Phase 4: include retrieval_fallback, results count."""
     step_id = stage.get("step_id")
     stage_name = stage.get("stage", "?")
     latency_ms = stage.get("latency_ms", 0)
@@ -54,10 +54,17 @@ def _print_stage(idx: int, stage: dict, stage_only: bool = False) -> None:
         print(f"\n--- Stage {idx}: {stage_name} ---")
         print(f"  step_id: {step_id}")
         print(f"  latency_ms: {latency_ms}")
+        if summary.get("retrieval_fallback"):
+            print(f"  retrieval_fallback: {summary['retrieval_fallback']}")
         print(f"  summary: {json.dumps(summary, indent=2)}")
     else:
-        summary_str = json.dumps(summary)[:80] + ("..." if len(json.dumps(summary)) > 80 else "")
-        print(f"  {idx}. {stage_name} (step_id={step_id}, latency_ms={latency_ms:.0f}) {summary_str}")
+        parts = [f"step_id={step_id}", f"latency_ms={latency_ms:.0f}"]
+        if summary.get("retrieval_fallback"):
+            parts.append(f"fallback={summary['retrieval_fallback']}")
+        if "results" in summary:
+            parts.append(f"results={summary['results']}")
+        summary_str = json.dumps(summary)[:60] + ("..." if len(json.dumps(summary)) > 60 else "")
+        print(f"  {idx}. {stage_name} ({', '.join(parts)}) {summary_str}")
 
 
 def main() -> int:
@@ -83,19 +90,54 @@ def main() -> int:
     trace_id = data.get("trace_id", "?")
     query = data.get("query", "(no query)")
     task_id = data.get("task_id", "?")
+    started_at = data.get("started_at")
+    finished_at = data.get("finished_at")
 
     print(f"Trace: {trace_id}")
     print(f"Query: {query}")
     print(f"Task: {task_id}")
 
+    # Phase 4: total elapsed time
+    if started_at is not None and finished_at is not None:
+        elapsed = finished_at - started_at
+        print(f"Total runtime: {elapsed:.2f}s")
+
     stages = data.get("stages", [])
+    events = data.get("events", [])
+
+    # Phase 4: execution_counts (replan_count, steps_completed, tool_calls)
+    for e in events:
+        if e.get("type") == "execution_counts":
+            counts = e.get("payload") or {}
+            print(f"Steps completed: {counts.get('steps_completed', '?')}")
+            print(f"Tool calls: {counts.get('tool_calls', '?')}")
+            print(f"Replan count: {counts.get('replan_count', '?')}")
+            break
+
+    if events:
+        print(f"\nEvents ({len(events)}):")
+        for e in events[:25]:
+            ev_type = e.get("type", "?")
+            payload = e.get("payload") or {}
+            if ev_type == "step_executed":
+                step_id = payload.get("step_id", "?")
+                action = payload.get("action", "?")
+                success = payload.get("success", "?")
+                classification = payload.get("classification", "")
+                error = payload.get("error", "")
+                status = "OK" if success else "FAIL"
+                line = f"  - step_executed: step={step_id} action={action} success={status}"
+                if classification:
+                    line += f" classification={classification}"
+                if error:
+                    line += f" error={error[:80]}{'...' if len(error) > 80 else ''}"
+                print(line)
+            else:
+                payload_str = json.dumps(payload)[:100] + ("..." if len(json.dumps(payload)) > 100 else "")
+                print(f"  - {ev_type}: {payload_str}")
+
     if not stages:
         print("\nNo stages found (trace may be from older format).")
-        events = data.get("events", [])
-        if events:
-            print(f"\nEvents ({len(events)}):")
-            for e in events[:10]:
-                print(f"  - {e.get('type', '?')}: {e.get('payload', {})}")
         return 0
 
     print(f"\nStages ({len(stages)}):")

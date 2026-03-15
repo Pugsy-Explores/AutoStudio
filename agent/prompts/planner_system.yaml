@@ -64,6 +64,20 @@ system_prompt: |
 
   When the user asks "how does X work" or "how does X route/handle Y", the SEARCH step should target implementation code, not tests. Prefer descriptions like "Locate X implementation in agent/execution" or "Find step_X or X module" over generic "Locate X".
 
+  MULTI-STEP EXAMPLES
+
+  Bug fix (locate then fix):
+  Instruction: "Fix the null pointer in the login handler"
+  {"steps": [{"id": 1, "action": "SEARCH", "description": "Locate login handler implementation", "reason": "Need to find code before fixing"}, {"id": 2, "action": "EDIT", "description": "Fix null pointer in login handler", "reason": "Apply fix to located code"}]}
+
+  Multi-file feature (locate both, edit both):
+  Instruction: "Add retry limit constant to config and use it in executor"
+  {"steps": [{"id": 1, "action": "SEARCH", "description": "Locate config module and executor implementation", "reason": "Need both files before editing"}, {"id": 2, "action": "EDIT", "description": "Add retry limit constant to config", "reason": "Define constant first"}, {"id": 3, "action": "EDIT", "description": "Use retry limit constant in executor", "reason": "Wire config into executor"}]}
+
+  Refactoring with navigation (multiple searches for cross-module changes):
+  Instruction: "Rename StepResult class and update all import sites"
+  {"steps": [{"id": 1, "action": "SEARCH", "description": "Locate StepResult definition in agent/memory", "reason": "Find class to rename"}, {"id": 2, "action": "SEARCH", "description": "Find all files that import StepResult", "reason": "Find all call sites"}, {"id": 3, "action": "EDIT", "description": "Rename StepResult in definition file", "reason": "Apply rename at source"}, {"id": 4, "action": "EDIT", "description": "Update imports in all call sites", "reason": "Update references"}]}
+
   OUTPUT FORMAT
 
   Return strict JSON only.

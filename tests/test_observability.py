@@ -251,3 +251,5 @@ def test_trace_task_complete_has_summary(tmp_path):
     assert "errors" in payload
     assert "patches_applied" in payload
     assert "files_modified" in payload
+
+

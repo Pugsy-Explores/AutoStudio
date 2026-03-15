@@ -1,0 +1,362 @@
+[
+  {
+    "id": "BF-001",
+    "category": "bug_fixing",
+    "difficulty": "easy",
+    "instruction": "Fix any missing import in tests/conftest.py if one exists.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "BF-002",
+    "category": "bug_fixing",
+    "difficulty": "easy",
+    "instruction": "Fix incorrect variable name in agent/execution/step_dispatcher.py if there is a typo.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "BF-003",
+    "category": "bug_fixing",
+    "difficulty": "easy",
+    "instruction": "Fix incorrect return value in config/router_config.py route_instruction if the return type does not match usage.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "BF-004",
+    "category": "bug_fixing",
+    "difficulty": "medium",
+    "instruction": "Fix the failing test in tests/test_planner_eval.py if any test is broken.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "BF-005",
+    "category": "bug_fixing",
+    "difficulty": "medium",
+    "instruction": "Fix any off-by-one error in planner/planner_eval.py step count validation.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "BF-006",
+    "category": "bug_fixing",
+    "difficulty": "medium",
+    "instruction": "Fix null or undefined reference in agent/orchestrator/agent_loop.py if execution trace is accessed incorrectly.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "BF-007",
+    "category": "bug_fixing",
+    "difficulty": "medium",
+    "instruction": "Fix incorrect default value in config/agent_config.py if one causes unexpected behavior.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "BF-008",
+    "category": "bug_fixing",
+    "difficulty": "hard",
+    "instruction": "Fix the repair loop in editing/test_repair_loop.py if it has incorrect retry logic.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "BF-009",
+    "category": "bug_fixing",
+    "difficulty": "hard",
+    "instruction": "Fix edge case where context builder receives empty ranked context and crashes.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "BF-010",
+    "category": "bug_fixing",
+    "difficulty": "hard",
+    "instruction": "Fix patch executor to handle malformed diff gracefully instead of raising uncaught exception.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-001",
+    "category": "feature_addition",
+    "difficulty": "easy",
+    "instruction": "Add a docstring to the load_dataset function in planner/planner_eval.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-002",
+    "category": "feature_addition",
+    "difficulty": "easy",
+    "instruction": "Add a type hint to the route_instruction function return type in config/router_config.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-003",
+    "category": "feature_addition",
+    "difficulty": "medium",
+    "instruction": "Add logging to the execute_step function in agent/execution/executor.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-004",
+    "category": "feature_addition",
+    "difficulty": "medium",
+    "instruction": "Add retry configuration constant to config/router_config.py and document it.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-005",
+    "category": "feature_addition",
+    "difficulty": "medium",
+    "instruction": "Add input validation to the dispatch function in agent/execution/step_dispatcher.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-006",
+    "category": "feature_addition",
+    "difficulty": "medium",
+    "instruction": "Add a try/except block around the main logic in agent/execution/executor.py execute_step.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-007",
+    "category": "feature_addition",
+    "difficulty": "medium",
+    "instruction": "Add debug logging to the policy engine execute_with_policy method.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-008",
+    "category": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add retry limit constant to config/router_config.py and use it in agent/execution/policy_engine.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-009",
+    "category": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add error handling for empty context in the context builder.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-010",
+    "category": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add a CLI flag --limit to scripts/replay_trace.py to limit number of events displayed.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-011",
+    "category": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add config validation for MAX_STEPS in config/agent_config.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "FA-012",
+    "category": "feature_addition",
+    "difficulty": "hard",
+    "instruction": "Add retry limit to the repair loop in editing if it exists.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-001",
+    "category": "refactoring",
+    "difficulty": "easy",
+    "instruction": "Rename a local variable for clarity in one function in agent/execution/step_dispatcher.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-002",
+    "category": "refactoring",
+    "difficulty": "medium",
+    "instruction": "Extract the plan validation logic from planner/planner_eval.py into a separate function.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-003",
+    "category": "refactoring",
+    "difficulty": "medium",
+    "instruction": "Extract trace stage logging into a helper in agent/observability/trace_logger.py.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-004",
+    "category": "refactoring",
+    "difficulty": "medium",
+    "instruction": "Rename the classify_failure function in agent/execution/policy_engine.py to classify_step_failure for clarity.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-005",
+    "category": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Move the action normalization logic from planner_eval into a shared planner utility module.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-006",
+    "category": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Rename class StepResult across agent/memory/step_result.py and all its import sites.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 3,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-007",
+    "category": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Extract the retrieval pipeline stage order into a config constant.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-008",
+    "category": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Refactor agent/orchestrator/replanner.py to use a configurable MAX_REPLAN constant from config.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-009",
+    "category": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Move the diff parsing logic from editing/patch_executor.py into a separate module.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 2,
+    "expect_edit": true
+  },
+  {
+    "id": "RF-010",
+    "category": "refactoring",
+    "difficulty": "hard",
+    "instruction": "Rename context_builder to context_builder_v2 everywhere and deprecate the old context_builder.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 3,
+    "expect_edit": true
+  },
+  {
+    "id": "CG-001",
+    "category": "code_generation",
+    "difficulty": "medium",
+    "instruction": "Create a new module agent/utils/metrics.py with a function to compute average latency from a list of step results.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "CG-002",
+    "category": "code_generation",
+    "difficulty": "medium",
+    "instruction": "Create a simple script scripts/run_quick_eval.py that runs planner_eval with --limit 5.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "CG-003",
+    "category": "code_generation",
+    "difficulty": "medium",
+    "instruction": "Create a new config/config_constants.py with MAX_RETRY_LIMIT and MAX_REPLAN constants.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "CG-004",
+    "category": "code_generation",
+    "difficulty": "hard",
+    "instruction": "Create a new module tests/helpers/eval_helpers.py with a function to load and validate dev_tasks.json schema.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "CG-005",
+    "category": "code_generation",
+    "difficulty": "hard",
+    "instruction": "Create a simple Python CLI in scripts/hello_cli.py that accepts --version and prints the AutoStudio version.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "CG-006",
+    "category": "code_generation",
+    "difficulty": "hard",
+    "instruction": "Create a new module config/eval_config.py with EVAL_REPORT_PATH and EVAL_DATASET_PATH constants.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "CG-007",
+    "category": "code_generation",
+    "difficulty": "hard",
+    "instruction": "Create a wrapper function in agent/tools/ that combines read_file and list_dir for common file discovery.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  },
+  {
+    "id": "CG-008",
+    "category": "code_generation",
+    "difficulty": "hard",
+    "instruction": "Create a new test file tests/test_metrics_aggregation.py with a test that verifies latency aggregation from mock StepResults.",
+    "expected_actions": ["SEARCH", "EDIT"],
+    "expected_files_modified": 1,
+    "expect_edit": true
+  }
+]

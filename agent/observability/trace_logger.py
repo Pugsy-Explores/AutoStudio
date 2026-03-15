@@ -3,12 +3,39 @@
 import json
 import logging
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
 from config.observability_config import MAX_TRACE_SIZE_BYTES, get_trace_dir
 
 logger = logging.getLogger(__name__)
+
+# Phase 6: optional live listeners for step visualization
+_event_listeners: list[Callable[[str, str, dict | None], None]] = []
+_stage_listeners: list[Callable[[str, str, float, int | None, dict | None], None]] = []
+
+
+def add_event_listener(fn: Callable[[str, str, dict | None], None]) -> None:
+    """Register callback for log_event. Args: trace_id, event_type, payload."""
+    _event_listeners.append(fn)
+
+
+def add_stage_listener(fn: Callable[[str, str, float, int | None, dict | None], None]) -> None:
+    """Register callback for log_stage. Args: trace_id, stage_name, latency_ms, step_id, summary."""
+    _stage_listeners.append(fn)
+
+
+def remove_event_listener(fn: Callable[[str, str, dict | None], None]) -> None:
+    """Unregister event listener."""
+    if fn in _event_listeners:
+        _event_listeners.remove(fn)
+
+
+def remove_stage_listener(fn: Callable[[str, str, float, int | None, dict | None], None]) -> None:
+    """Unregister stage listener."""
+    if fn in _stage_listeners:
+        _stage_listeners.remove(fn)
 
 STAGES = [
     "context_grounder",
@@ -85,6 +112,11 @@ def log_event(trace_id: str, event_type: str, payload: dict | None = None) -> No
         "payload": payload or {},
         "timestamp": time.time(),
     })
+    for fn in _event_listeners:
+        try:
+            fn(trace_id, event_type, payload)
+        except Exception as e:
+            logger.debug("[trace] listener error: %s", e)
 
 
 def log_stage(
@@ -107,6 +139,11 @@ def log_stage(
     }
     _trace_state[trace_id]["stages"].append(entry)
     logger.info("[trace] stage=%s latency_ms=%.0f", stage_name, latency_ms)
+    for fn in _stage_listeners:
+        try:
+            fn(trace_id, stage_name, latency_ms, step_id, summary)
+        except Exception as e:
+            logger.debug("[trace] stage listener error: %s", e)
 
 
 @contextmanager

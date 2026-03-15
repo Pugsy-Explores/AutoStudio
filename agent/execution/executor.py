@@ -4,6 +4,7 @@ import json
 import logging
 import time
 
+from agent.execution.policy_engine import classify_result
 from agent.execution.step_dispatcher import dispatch
 from agent.memory.state import AgentState
 from agent.memory.step_result import StepResult
@@ -16,20 +17,29 @@ class StepExecutor:
 
     def execute_step(self, step: dict, state: AgentState) -> StepResult:
         """Run a single step; return StepResult with latency and output/error."""
-        print("[workflow] executor")
         step_id = step.get("id", 0)
         action = step.get("action", "EXPLAIN")
         start = time.perf_counter()
         try:
             raw = dispatch(step, state)
             elapsed = time.perf_counter() - start
+            classification = raw.get("classification") or classify_result(action, raw).value
+            output = raw.get("output", "")
+            files_modified = None
+            patch_size = None
+            if action == "EDIT" and isinstance(output, dict):
+                files_modified = output.get("files_modified")
+                patch_size = output.get("patches_applied")
             return StepResult(
                 step_id=step_id,
                 action=action,
                 success=raw.get("success", True),
-                output=raw.get("output", ""),
+                output=output,
                 latency_seconds=elapsed,
                 error=raw.get("error"),
+                classification=classification,
+                files_modified=files_modified,
+                patch_size=patch_size,
             )
         except Exception as e:
             elapsed = time.perf_counter() - start
@@ -40,6 +50,7 @@ class StepExecutor:
                 output="",
                 latency_seconds=elapsed,
                 error=str(e),
+                classification=classify_result(action, {"success": False, "error": str(e)}).value,
             )
 
     def execute_plan(self, plan: dict, state: AgentState) -> list[StepResult]:

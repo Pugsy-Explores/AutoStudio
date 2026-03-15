@@ -111,7 +111,7 @@ def evaluate_datapoint(
     }
 
 
-def load_dataset(path: Path | str | None = None) -> list[dict]:
+def load_dataset(path: Path | str | None = None, limit: int | None = None) -> list[dict]:
     """Load planner dataset: list of {instruction, expected_steps}."""
     p = Path(path) if path is not None else DEFAULT_DATASET_PATH
     data = p.read_text(encoding="utf-8")
@@ -123,11 +123,14 @@ def load_dataset(path: Path | str | None = None) -> list[dict]:
                 "instruction": item["instruction"],
                 "expected_steps": item["expected_steps"],
             })
+            if limit is not None and len(out) >= limit:
+                break
     return out
 
 
 def run_eval(
     dataset_path: Path | str | None = None,
+    limit: int | None = None,
     verbose: bool = True,
 ) -> dict:
     """
@@ -135,7 +138,7 @@ def run_eval(
     - structural_valid_rate, action_coverage_accuracy, dependency_order_accuracy
     - average_plan_length, step_count_mae, mean_latency_sec, p95_latency_sec
     """
-    data = load_dataset(dataset_path)
+    data = load_dataset(dataset_path, limit=limit)
     total = len(data)
     structural_valid_count = 0
     action_coverage_count = 0
@@ -238,5 +241,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Only print final metrics.",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit number of datapoints (for quick validation).",
+    )
     args = parser.parse_args()
-    run_eval(dataset_path=args.dataset_path, verbose=not args.quiet)
+    run_eval(dataset_path=args.dataset_path, limit=args.limit, verbose=not args.quiet)

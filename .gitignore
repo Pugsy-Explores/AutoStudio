@@ -36,3 +36,6 @@ Thumbs.db
 # Optional: uncomment if you don't want to track eval outputs
 # router_eval/*.png
 # router_eval/plots/
+
+# Phase 3 scenario evaluation reports
+reports/

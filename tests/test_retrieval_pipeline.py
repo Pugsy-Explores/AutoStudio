@@ -1,10 +1,13 @@
 """Integration tests for retrieval pipeline: query -> graph retrieval -> context builder."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from agent.memory.state import AgentState
 from agent.retrieval.context_builder import build_context, build_context_from_symbols
+from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline
 from agent.retrieval.graph_retriever import retrieve_symbol_context
 from agent.retrieval.retrieval_expander import expand_search_results, normalize_file_path
 from agent.tools import search_code
@@ -329,6 +332,38 @@ def test_search_budget_enforced():
     ranked = [{"file": f"f{i}.py", "symbol": "", "snippet": "snippet"} for i in range(10)]
     pruned = prune_context(ranked, max_snippets=6, max_chars=8000)
     assert len(pruned) == 6
+
+
+@pytest.mark.slow
+def test_retrieval_pipeline_ranked_context_step_executor(indexed_autostudio):
+    """Full pipeline for 'Explain StepExecutor': graph retrieval -> run_retrieval_pipeline -> ranked_context != [].
+    Step 3 validation: ranked_context must be populated for EXPLAIN to succeed."""
+    project_root, source_root = indexed_autostudio
+    query = "Explain StepExecutor"
+
+    graph_result = retrieve_symbol_context(query, project_root=project_root)
+    assert graph_result is not None
+    results = graph_result.get("results", [])
+    assert len(results) > 0, "Graph retriever should find StepExecutor"
+
+    state = AgentState(
+        instruction=query,
+        current_plan={"steps": []},
+        context={"project_root": project_root, "instruction": query},
+    )
+
+    def mock_rank_context(rank_query: str, candidates: list) -> list:
+        """Pass-through: return candidates in order (avoids LLM call)."""
+        return list(candidates)
+
+    with patch("agent.retrieval.retrieval_pipeline.rank_context", side_effect=mock_rank_context):
+        run_retrieval_pipeline(results, state, query=query)
+
+    ranked = state.context.get("ranked_context") or []
+    assert len(ranked) > 0, "ranked_context must not be empty (Step 3: retrieval bug if empty)"
+    for r in ranked:
+        assert "snippet" in r or "file" in r
+        assert r.get("snippet") or r.get("file"), "Each ranked item must have snippet or file"
 
 
 def test_context_anchors_format():

@@ -88,8 +88,9 @@ StepExecutor
 - **Parser:** Tree-sitter for `.py` (`parse_file`); requires `tree-sitter` and `tree-sitter-python`
 - **Symbol extraction:** Functions, classes, methods, modules; docstrings; type_info (params, return_type); signatures
 - **Dependency extraction:** imports, calls, call_graph, inherits, references, control_flow, data_flow
-- **CLI:** `python -m repo_index.index_repo <path>`
-- **API:** `index_repo(root_dir, output_dir=None, include_dirs=None)` — `include_dirs` limits indexing to subdirs (e.g. `("agent", "editing")`) for faster partial indexing
+- **CLI:** `python -m repo_index.index_repo <path>` — `-v`/`--verbose` logs each file; `--no-gitignore` disables .gitignore filtering
+- **Gitignore:** Paths matching `.gitignore` (e.g. `venv/`, `.venv/`, `__pycache__/`) are excluded by default
+- **API:** `index_repo(root_dir, output_dir=None, include_dirs=None, ignore_gitignore=True, verbose=False)` — `include_dirs` limits indexing to subdirs (e.g. `("agent", "editing")`) for faster partial indexing
 
 ### Graph (repo_graph)
 

@@ -1,0 +1,17 @@
+# Completed
+
+<!-- Finished tasks -->
+
+- Phase 7 Reliability Hardening + Autonomous Mode: per-step timeout (MAX_STEP_TIMEOUT_SECONDS, ThreadPoolExecutor); pre-dispatch validate_step_input in policy_engine (InvalidStepError); MAX_CONTEXT_CHARS guardrail in step_dispatcher with context_guardrail_triggered trace event; agent/autonomous/ (goal_manager, state_observer, action_selector, agent_loop); run_autonomous(goal, project_root); tests/autonomous_tasks.json; models_config action_selection=SMALL
+- Phase 6 Developer Experience: pyproject.toml + agent/cli/entrypoint.py (autostudio explain, edit, trace, chat, debug, run); agent/cli/command_parser.py (slash-commands); agent/memory/session_memory.py; agent/cli/session.py (REPL); agent/cli/live_viz.py + trace_logger listeners; agent/observability/ux_metrics.py; tests/test_developer_workflow.py (15 tests pass)
+- Phase 5 Capability Expansion: tests/dev_tasks.json (40 tasks across bug_fixing, feature_addition, refactoring, code_generation); agent/prompts/planner_system.yaml multi-step few-shot examples; tests/test_multifile_edits.py (two-file, three-file, ast.parse, rollback); agent/memory/step_result.py files_modified and patch_size; scripts/run_capability_eval.py with reports/eval_report.json (8 metrics); tests/agent_scenarios.json extended to 40 (G6 bug_fixing, G7 feature_addition, G8 refactoring)
+- Phase 4 Reliability Engineering: failure policies (SUCCESS/RETRYABLE_FAILURE/FATAL_FAILURE), replanner safeguards (MAX_REPLAN=3, MAX_STEP_RETRIES=2), execution safeguards (MAX_STEPS=20, MAX_TOOL_CALLS=50, 60s runtime), retrieval file_search fallback, patch ast.parse pre-check, trace integrity in replay_trace, failure mining (--failure-mining), latency metrics, regression tests (test_bug_002, test_bug_006), stress testing (--stress). Docs updated.
+- Phase 2 Detailed Plan Completion: dev/evaluation/test_tasks.md (5 tasks); dev/evaluation/metrics.md template; test_phase2_integration.py extended with TestStep1RouterPlannerIntegration, TestStep5Observability, TestStep6ExplainGate; scripts/verify_phase2_exit.py; dev/roadmap/phase_2_integration.md Detailed Plan Status table; verify_phase2_exit.py --mock passes
+
+- Phase 2 Component Integration Testing: symbol_graph stub implemented (BUG-006 resolved); tests/test_phase2_integration.py with 8 stages (repo indexing, symbol graph, repo map, retrieval pipeline, context builder, planner, editing pipeline, full agent loop); all 10 tests pass
+
+- Instruction router fix: plan_resolver unreachable return removed; router runs when enabled; ENABLE_INSTRUCTION_ROUTER default=1; test_agent_controller router test fixed
+- Phase 1 Steps 5–8: Execution loop integration (test_agent_loop + test_explain_gate); dispatcher/tool graph (test_step_type_maps, test_action_to_preferred_tool); context builder (test_context_ordering, test_context_contains_retrieved_code); full system test verified (python -m agent "Explain how StepExecutor works")
+- Phase 1 Step 2 — Trace Verification: extended trace observability (reasoning: question/context_chars/first_200_chars/error; agent_loop: step_executed events; replay_trace: events display)
+- Phase 1 Step 3 — Retrieval Pipeline Validation: all tests pass; added test_retrieval_pipeline_ranked_context_step_executor; added scripts/validate_retrieval_pipeline.py
+- Phase 1 Step 4 — Planner Integration: fixed circular import (plan_resolver lazy-imports planner); planner_eval runs; added tests/test_planner_eval.py; added --limit to planner_eval for quick validation
