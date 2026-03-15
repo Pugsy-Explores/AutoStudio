@@ -19,6 +19,11 @@ class FailureRecord:
     response: str
     error_type: str  # bad_retrieval | invalid_json | wrong_tool | bad_patch
     timestamp: str
+    # Phase 14 token budgeting
+    prompt_tokens: int = 0
+    context_tokens: int = 0
+    pruning_triggered: bool = False
+    compression_triggered: bool = False
 
 
 def log_failure(record: FailureRecord) -> Path:
