@@ -5,7 +5,7 @@
 | Document | Description |
 |----------|--------------|
 | [PROMPT_ARCHITECTURE.md](PROMPT_ARCHITECTURE.md) | Prompt layer: PromptRegistry (Phase 13), versioning, all prompts, pipeline position, design philosophy, safety risks, testing. |
-| [prompt_engineering_rules.md](prompt_engineering_rules.md) | Phase 13 governance: 1 prompt = 1 capability, versioning, evaluation, failure logging, Rules 6–7 (eval coverage, context budget), guardrails, A/B testing. |
+| [prompt_engineering_rules.md](prompt_engineering_rules.md) | Phase 13 governance: 1 prompt = 1 capability, versioning, evaluation, failure logging, Rules 6–7 (eval coverage, context budget), guardrails at LLM boundary, A/B testing. |
 | [CONFIGURATION.md](CONFIGURATION.md) | Centralized config: all modules (`config/`), env overrides, validation rules. |
 | [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md) | End-to-end agent flow: instruction → plan → execute → validate → replan. ToolGraph → Router → PolicyEngine; step dispatch; SEARCH/EDIT/INFRA/EXPLAIN paths; repo_map lookup + anchor detection → hybrid retrieval; run_retrieval_pipeline (anchor detection → localization [Phase 10.5] → symbol_expander + expand → read → build_context); context_builder_v2; context gate; model routing; diff planner; validator empty-context rule. |
 | [AGENT_CONTROLLER.md](AGENT_CONTROLLER.md) | Full pipeline: run_controller (mode: deterministic/autonomous/multi_agent), run_deterministic, all tools via dispatch, safety limits, task memory, trace logging. |

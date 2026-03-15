@@ -53,6 +53,7 @@ Prompt `instructions` must not exceed the model's context budget minus system ov
 | Load prompt | `get_registry().get("planner")` or `get_instructions("planner", variables={...})` |
 | Load with injection guard | `get_registry().get_guarded("planner", user_input=...)` |
 | Validate response | `get_registry().validate_response("planner", response, user_input)` → `(is_valid, error_message)` |
+| **Guardrails (LLM boundary)** | `call_small_model(..., prompt_name="planner")` / `call_reasoning_model(..., prompt_name="planner")` — injection check always; output validation when `prompt_name` provided |
 | Compose with skill | `get_registry().compose("planner", skill_name="planner_skill", repo_context=...)` |
 | List versions | `agent.prompt_system.versioning.list_versions("planner")` |
 | A/B test prompts | `from agent.prompt_system.versioning import run_ab_test; run_ab_test(name, "v1", "v2", run_fn)` |
@@ -77,6 +78,7 @@ r.get_instructions("planner")               # str
 r.get_instructions("router", variables={"task_description": "..."})
 r.get_guarded("planner", user_input="...")  # PromptTemplate (runs injection guard on user_input)
 r.validate_response("planner", response, user_input="...")  # (is_valid, error_message)
+# Primary enforcement: model_client runs guardrails at LLM boundary. Pass prompt_name for JSON prompts.
 r.compose("planner", skill_name="planner_skill", repo_context="...")
 r.get_skill("planner_skill")                # dict
 r.get_model_type("planner")                 # ModelType
