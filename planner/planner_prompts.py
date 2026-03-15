@@ -1,8 +1,8 @@
 """
 Planner system prompt.
-Loaded from centralized agent/prompts/planner_system.json.
+Loaded from agent/prompt_system PromptRegistry.
 """
 
-from agent.prompts import get_prompt
+from agent.prompt_system import get_registry
 
-PLANNER_SYSTEM_PROMPT = get_prompt("planner_system", "system_prompt")
+PLANNER_SYSTEM_PROMPT = get_registry().get_instructions("planner")

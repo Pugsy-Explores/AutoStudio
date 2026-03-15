@@ -64,7 +64,7 @@ Optional arguments:
 
 | File                   | Purpose                                                |
 |------------------------|--------------------------------------------------------|
-| `planner_prompts.py`   | `PLANNER_SYSTEM_PROMPT` for the LLM.                  |
+| `planner_prompts.py`   | `PLANNER_SYSTEM_PROMPT` from `PromptRegistry.get_instructions("planner")`. |
 | `planner.py`           | `plan(instruction)` → structured plan dict.            |
 | `planner_utils.py`     | `validate_plan`, `normalize_actions`, `extract_step_sequence`. |
 | `planner_dataset.json`  | ~50 examples with `instruction` and `expected_steps`.  |

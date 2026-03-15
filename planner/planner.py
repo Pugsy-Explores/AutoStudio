@@ -55,6 +55,7 @@ def plan(instruction: str) -> dict:
             system_prompt=PLANNER_SYSTEM_PROMPT,
             max_tokens=max_tokens,
             task_name="planner",
+            prompt_name="planner",
         )
     except Exception as e:
         return {
