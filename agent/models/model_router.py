@@ -8,11 +8,9 @@ import logging
 from agent.models.model_config import TASK_MODELS
 from agent.models.model_client import call_small_model
 from agent.models.model_types import ModelType
-from agent.prompts import get_prompt
+from agent.prompt_system import get_registry
 
 logger = logging.getLogger(__name__)
-
-_ROUTER_PROMPT = get_prompt("model_router", "prompt")
 
 
 def get_model_for_task(task_name: str) -> ModelType:
@@ -35,7 +33,10 @@ def route_task(task_description: str) -> ModelType:
     Ask the small model which model should handle this task (fallback when config not used).
     Returns ModelType.SMALL or ModelType.REASONING.
     """
-    prompt = _ROUTER_PROMPT.format(task_description=task_description.strip())
+    prompt = get_registry().get_instructions(
+        "router",
+        variables={"task_description": task_description.strip()},
+    )
     try:
         raw = call_small_model(prompt, task_name="routing").strip().upper()
         if "REASONING" in raw:

@@ -66,6 +66,7 @@ def route_instruction(instruction: str) -> RouterDecision:
             prompt,
             task_name="routing",
             max_tokens=128,
+            prompt_name="instruction_router",
         )
     except Exception as e:
         logger.warning("[instruction_router] model call failed: %s, defaulting to GENERAL", e)

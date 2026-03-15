@@ -40,25 +40,6 @@ class RetryHints:
         }
 
 
-def _load_retry_planner_system_prompt() -> str:
-    """Load retry planner system prompt from YAML."""
-    from pathlib import Path
-
-    config_dir = Path(__file__).resolve().parent.parent / "prompts"
-    path = config_dir / "retry_planner_system.yaml"
-    if path.is_file():
-        try:
-            import yaml
-
-            with open(path, encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            return (data.get("system_prompt") or "").strip()
-        except Exception as e:
-            logger.debug("[retry_planner] failed to load prompt: %s", e)
-    return """You are the retry planner. Given a diagnosis, produce retry hints.
-Return JSON only: {"strategy": "...", "rewrite_query": "...", "plan_override": null, "retrieve_files": []}"""
-
-
 def _strategy_from_diagnosis(diagnosis: Diagnosis) -> str:
     """Map failure_type to preferred strategy."""
     ft = diagnosis.failure_type
@@ -98,8 +79,9 @@ Produce retry hints as JSON."""
 
     try:
         from agent.models.model_client import call_reasoning_model
+        from agent.prompt_system import get_registry
 
-        system = _load_retry_planner_system_prompt()
+        system = get_registry().get_instructions("retry_planner")
         out = call_reasoning_model(
             prompt,
             system_prompt=system,

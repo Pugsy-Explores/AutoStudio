@@ -31,6 +31,7 @@ def select_next_action(observation: ObservationBundle) -> dict | None:
                 prompt,
                 task_name="action_selection",
                 system_prompt=action_system,
+                prompt_name="action_selector",
             )
         else:
             from agent.models.model_client import call_reasoning_model
@@ -38,6 +39,7 @@ def select_next_action(observation: ObservationBundle) -> dict | None:
                 prompt,
                 system_prompt=action_system,
                 task_name="action_selection",
+                prompt_name="action_selector",
             )
     except Exception as e:
         logger.warning("[action_selector] model call failed: %s", e)

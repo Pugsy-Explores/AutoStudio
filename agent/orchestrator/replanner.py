@@ -93,13 +93,16 @@ def replan(
         model_type = get_model_for_task("replanner")
         if model_type == ModelType.SMALL:
             full_prompt = f"{REPLANNER_SYSTEM_PROMPT}\n\n{user_prompt}"
-            response = call_small_model(full_prompt, task_name="replanner", max_tokens=2048)
+            response = call_small_model(
+                full_prompt, task_name="replanner", max_tokens=2048, prompt_name="replanner"
+            )
         else:
             response = call_reasoning_model(
                 user_prompt,
                 system_prompt=REPLANNER_SYSTEM_PROMPT,
                 max_tokens=2048,
                 task_name="replanner",
+                prompt_name="replanner",
             )
     except Exception as e:
         logger.warning("[replanner] LLM call failed: %s, using fallback", e)

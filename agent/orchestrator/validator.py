@@ -9,11 +9,21 @@ from agent.memory.step_result import StepResult
 from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
-from agent.prompts import get_prompt
+from agent.prompt_system import get_registry
 
 logger = logging.getLogger(__name__)
 
-_VALIDATE_PROMPT = get_prompt("validate_step", "prompt")
+def _get_validate_prompt(step: str, success: bool, output_summary: str, instruction: str, next_step_description: str) -> str:
+    return get_registry().get_instructions(
+        "validate_step",
+        variables={
+            "step": step,
+            "success": str(success),
+            "output_summary": output_summary,
+            "instruction": instruction,
+            "next_step_description": next_step_description,
+        },
+    )
 ENABLE_LLM_VALIDATION = os.environ.get("ENABLE_LLM_VALIDATION", "0").lower() in ("1", "true", "yes")
 
 
@@ -144,8 +154,8 @@ def validate_step(
         instruction = (getattr(state, "instruction", "") or "")[:300] if state else ""
         next_step = state.next_step() if state else None
         next_desc = next_step.get("description", "")[:100] if next_step else "none"
-        prompt = _VALIDATE_PROMPT.format(
-            step=step,
+        prompt = _get_validate_prompt(
+            step=str(step),
             success=result.success,
             output_summary=output_summary,
             instruction=instruction,

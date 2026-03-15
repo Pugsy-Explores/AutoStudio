@@ -107,8 +107,9 @@ def diagnose(
 
     try:
         from agent.models.model_client import call_small_model
+        from agent.prompt_system import get_registry
 
-        system = _load_critic_system_prompt()
+        system = get_registry().get_instructions("critic")
         out = call_small_model(
             prompt,
             task_name="critique",
@@ -154,20 +155,3 @@ def diagnose(
     )
 
 
-def _load_critic_system_prompt() -> str:
-    """Load critic system prompt from YAML."""
-    from pathlib import Path
-
-    config_dir = Path(__file__).resolve().parent.parent / "prompts"
-    path = config_dir / "critic_system.yaml"
-    if path.is_file():
-        try:
-            import yaml
-
-            with open(path, encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            return (data.get("system_prompt") or "").strip()
-        except Exception as e:
-            logger.debug("[critic] failed to load prompt: %s", e)
-    return """You are the critic for an autonomous coding agent. A run has FAILED.
-Diagnose why. Return JSON only: {"failure_type": "retrieval_miss|bad_plan|bad_patch|missing_dependency|timeout|unknown", "affected_step": null or int, "suggestion": "..."}"""

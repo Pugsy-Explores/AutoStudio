@@ -1,6 +1,11 @@
 """
 Single entry point for all model calls. Uses llama.cpp HTTP API (OpenAI-compatible).
 No other module should call models directly.
+
+Guardrails sit at the LLM call boundary (Rule: Agent → PromptRegistry → Guardrail → Model).
+- Pre-call: injection check on user content (raises PromptInjectionError if detected)
+- Post-call: optional constraint validation when prompt_name provided (logs on failure)
+Set ENABLE_PROMPT_GUARDRAILS=0 to disable (e.g. eval, tests).
 """
 
 import json
@@ -10,6 +15,8 @@ import sys
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+_ENABLE_GUARDRAILS = os.getenv("ENABLE_PROMPT_GUARDRAILS", "1").lower() in ("1", "true", "yes")
 
 # Use config from same package
 from agent.models.model_config import (
@@ -337,15 +344,45 @@ def _call_chat(
         raise
 
 
+def _run_guardrails_pre(user_content: str) -> None:
+    """Run injection check on user content before LLM call. Raises PromptInjectionError if detected."""
+    if not _ENABLE_GUARDRAILS or not user_content:
+        return
+    try:
+        from agent.prompt_system.guardrails import check_prompt_injection
+
+        check_prompt_injection(user_content)
+    except ImportError:
+        pass  # guardrails not available
+
+
+def _run_guardrails_post(prompt_name: Optional[str], response: str, user_content: Optional[str]) -> None:
+    """Run constraint validation on response after LLM call. Logs on failure."""
+    if not _ENABLE_GUARDRAILS or not prompt_name:
+        return
+    try:
+        from agent.prompt_system import get_registry
+
+        valid, msg = get_registry().validate_response(prompt_name, response, user_content)
+        if not valid:
+            logger.warning("[model_client] guardrail validation failed for %s: %s", prompt_name, msg)
+    except ImportError:
+        pass
+
+
 def call_small_model(
     prompt: str,
     max_tokens: Optional[int] = None,
     task_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    prompt_name: Optional[str] = None,
 ) -> str:
     """Call the small (fast/cheap) model with a single user prompt. Returns model output text.
     When task_name is set, uses params from models_config task_params for that task.
-    When system_prompt is provided, sends as system + user messages for grounding/scope."""
+    When system_prompt is provided, sends as system + user messages for grounding/scope.
+    When prompt_name is set, runs post-call constraint validation (logs on failure).
+    Guardrails: injection check on prompt before call (always when ENABLE_PROMPT_GUARDRAILS=1)."""
+    _run_guardrails_pre(prompt)
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
     logger.info(
@@ -363,7 +400,7 @@ def call_small_model(
         ]
     else:
         messages = [{"role": "user", "content": prompt}]
-    return _call_chat(
+    response = _call_chat(
         SMALL_MODEL_ENDPOINT,
         messages,
         max_tokens=limit,
@@ -372,6 +409,8 @@ def call_small_model(
         frequency_penalty=params.get("frequency_penalty"),
         presence_penalty=params.get("presence_penalty"),
     )
+    _run_guardrails_post(prompt_name, response, prompt)
+    return response
 
 
 def call_reasoning_model(
@@ -380,6 +419,7 @@ def call_reasoning_model(
     max_tokens: Optional[int] = None,
     task_name: Optional[str] = None,
     model_type: Optional[str] = None,
+    prompt_name: Optional[str] = None,
 ) -> str:
     """
     Call the reasoning model. If system_prompt is given, send as chat with system + user;
@@ -387,7 +427,10 @@ def call_reasoning_model(
     When task_name is set, uses params from models_config task_params for that task.
     When model_type is set (e.g. REASONING_V2), uses that model's endpoint; else uses
     task_models[task_name] from config.
+    When prompt_name is set, runs post-call constraint validation (logs on failure).
+    Guardrails: injection check on prompt before call (always when ENABLE_PROMPT_GUARDRAILS=1).
     """
+    _run_guardrails_pre(prompt)
     from agent.models.model_config import TASK_MODELS
 
     params = get_model_call_params(task_name)
@@ -411,7 +454,7 @@ def call_reasoning_model(
         ]
     else:
         messages = [{"role": "user", "content": prompt}]
-    return _call_chat(
+    response = _call_chat(
         endpoint,
         messages,
         max_tokens=limit,
@@ -420,3 +463,5 @@ def call_reasoning_model(
         frequency_penalty=params.get("frequency_penalty"),
         presence_penalty=params.get("presence_penalty"),
     )
+    _run_guardrails_post(prompt_name, response, prompt)
+    return response
