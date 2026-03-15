@@ -1,12 +1,13 @@
 """
 Trajectory store: persists execution trajectories for experience reuse.
 
-Schema: {goal, attempts: [{steps, evaluation, diagnosis, strategy}], final_status, timestamp}
+Schema: {goal, attempts: [{attempt, start_time, end_time, steps, evaluation, diagnosis, strategy}], final_status, timestamp}
 Location: .agent_memory/trajectories/<task_id>.json
 """
 
 import json
 import logging
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ def record_attempt(
     diagnosis: dict | None = None,
     strategy: str | None = None,
     project_root: str | None = None,
+    start_time: float | None = None,
 ) -> None:
     """
     Append one attempt to the trajectory. Creates file if it does not exist.
@@ -39,6 +41,7 @@ def record_attempt(
         diagnosis: Optional Diagnosis.to_dict() from critic
         strategy: Optional retry strategy used
         project_root: Project root for path resolution
+        start_time: Optional Unix timestamp when attempt started (for duration metrics)
     """
     path = _trajectories_dir(project_root) / f"{task_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,7 +69,11 @@ def record_attempt(
             "classification": getattr(sr, "classification"),
         })
 
+    attempt_num = len(data.setdefault("attempts", []))
     attempt_record = {
+        "attempt": attempt_num,
+        "start_time": start_time,
+        "end_time": time.time(),
         "steps": steps_summary,
         "evaluation": evaluation.to_dict() if hasattr(evaluation, "to_dict") else evaluation,
         "diagnosis": diagnosis,
@@ -98,8 +105,6 @@ def finalize(
         return
     data = _load_raw(path)
     if data:
-        import time
-
         data["final_status"] = final_status
         data["timestamp"] = data.get("timestamp") or time.time()
         with open(path, "w", encoding="utf-8") as f:

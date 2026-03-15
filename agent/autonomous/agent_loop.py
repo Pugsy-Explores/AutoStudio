@@ -24,11 +24,9 @@ from agent.intelligence.developer_model import update_from_solution as update_de
 from agent.memory.state import AgentState
 from agent.memory.step_result import StepResult
 from agent.observability.trace_logger import finish_trace, log_event, start_trace
+from config.agent_config import MAX_RETRY_ATTEMPTS
 
 logger = logging.getLogger(__name__)
-
-# Meta loop: max attempts before giving up
-DEFAULT_MAX_RETRIES = 3
 
 
 def run_autonomous(
@@ -39,7 +37,7 @@ def run_autonomous(
     max_tool_calls: int = 50,
     max_runtime_seconds: float = 60,
     max_edits: int = 10,
-    max_retries: int = DEFAULT_MAX_RETRIES,
+    max_retries: int = MAX_RETRY_ATTEMPTS,
     success_criteria: str | None = None,
 ) -> dict:
     """
@@ -84,9 +82,19 @@ def run_autonomous(
 
     try:
         if max_retries <= 1:
+            import time
+
+            attempt_start = time.time()
             result, state = _run_single_attempt(goal, str(root), task_id, trace_id, goal_manager, state)
             evaluation = _evaluate_and_record(
-                result, state, task_id, trace_id, 0, success_criteria, str(root),
+                result,
+                state,
+                task_id,
+                trace_id,
+                0,
+                success_criteria,
+                str(root),
+                start_time=attempt_start,
             )
             _finalize_trajectory(task_id, evaluation.status, str(root))
             if evaluation.status == "SUCCESS":
@@ -94,39 +102,22 @@ def run_autonomous(
             result["evaluation"] = evaluation.to_dict()
             return result
 
-        # Meta loop: evaluate -> critic -> retry
-        evaluation = None
-        diagnosis_prev = None
-        strategy_prev = None
-        for attempt_num in range(max_retries):
-            result, state = _run_single_attempt(goal, str(root), task_id, trace_id, goal_manager, state)
-            evaluation = _evaluate_and_record(
-                result, state, task_id, trace_id, attempt_num, success_criteria, str(root),
-                diagnosis=diagnosis_prev,
-                strategy=strategy_prev,
-            )
-            log_event(trace_id, "evaluation", {"status": evaluation.status, "attempt": attempt_num, "reason": evaluation.reason})
+        # Meta loop: TrajectoryLoop handles evaluate -> critic -> retry
+        from agent.meta.trajectory_loop import TrajectoryLoop
 
-            if evaluation.status == "SUCCESS":
-                break
-
-            if attempt_num < max_retries - 1:
-                diagnosis, retry_hints = _critic_and_plan(goal, state, evaluation, trace_id)
-                diagnosis_prev = diagnosis.to_dict()
-                strategy_prev = retry_hints.strategy
-                state.context["retry_hints"] = retry_hints.to_dict()
-                state.completed_steps = []
-                state.step_results = []
-                goal_manager.reset_for_retry()
-                log_event(trace_id, "retry_prepared", {"strategy": retry_hints.strategy, "attempt": attempt_num + 1})
-
-        if evaluation:
-            _finalize_trajectory(task_id, evaluation.status, str(root))
-            if evaluation.status == "SUCCESS":
-                _store_solution(task_id, goal, state, str(root))
-            result["evaluation"] = evaluation.to_dict()
-            result["attempts"] = attempt_num + 1
-
+        loop = TrajectoryLoop()
+        result, state, evaluation = loop.run_with_retries(
+            goal,
+            str(root),
+            task_id,
+            trace_id,
+            goal_manager,
+            state,
+            max_retries,
+            success_criteria,
+        )
+        if evaluation and evaluation.status == "SUCCESS":
+            _store_solution(task_id, goal, state, str(root))
         return result
     finally:
         finish_trace(trace_id)
@@ -204,13 +195,22 @@ def _evaluate_and_record(
     project_root: str,
     diagnosis: dict | None = None,
     strategy: str | None = None,
+    start_time: float | None = None,
 ):
     """Evaluate run and record to trajectory store."""
     from agent.meta.evaluator import evaluate
     from agent.meta.trajectory_store import record_attempt
 
     evaluation = evaluate(result, state, success_criteria=success_criteria, use_model=False)
-    record_attempt(task_id, state, evaluation, diagnosis=diagnosis, strategy=strategy, project_root=project_root)
+    record_attempt(
+        task_id,
+        state,
+        evaluation,
+        diagnosis=diagnosis,
+        strategy=strategy,
+        project_root=project_root,
+        start_time=start_time,
+    )
     return evaluation
 
 

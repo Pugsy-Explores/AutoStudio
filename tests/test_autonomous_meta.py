@@ -145,6 +145,18 @@ def test_retry_planner_strategy_from_diagnosis():
     assert _strategy_from_diagnosis(Diagnosis("timeout", 1, "")) == "expand_search_scope"
 
 
+@patch("agent.models.model_client.call_reasoning_model")
+def test_retry_planner_invalid_strategy_fallback(mock_call):
+    """Invalid strategy from model falls back to generate_new_plan."""
+    mock_call.return_value = '{"strategy": "invalid_strategy_xyz", "rewrite_query": "", "plan_override": null, "retrieve_files": []}'
+    from agent.meta.critic import Diagnosis
+    from agent.meta.retry_planner import FALLBACK_STRATEGY, plan_retry
+
+    diagnosis = Diagnosis("retrieval_miss", 1, "retry")
+    hints = plan_retry("fix bug", diagnosis)
+    assert hints.strategy == FALLBACK_STRATEGY
+
+
 # --- Trajectory Store ---
 
 

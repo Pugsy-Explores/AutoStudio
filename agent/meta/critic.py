@@ -30,12 +30,16 @@ class Diagnosis:
     failure_type: str
     affected_step: int | None
     suggestion: str
+    evidence: str = ""
+    suggested_strategy: str = ""
 
     def to_dict(self) -> dict:
         return {
             "failure_type": self.failure_type,
             "affected_step": self.affected_step,
             "suggestion": self.suggestion,
+            "evidence": self.evidence,
+            "suggested_strategy": self.suggested_strategy,
         }
 
 
@@ -130,6 +134,8 @@ def diagnose(
                     failure_type=ft,
                     affected_step=obj.get("affected_step") if obj.get("affected_step") is not None else None,
                     suggestion=str(obj.get("suggestion", ""))[:500],
+                    evidence=str(obj.get("evidence", ""))[:1000],
+                    suggested_strategy=str(obj.get("suggested_strategy", ""))[:200],
                 )
     except Exception as e:
         logger.warning("[critic] diagnose failed: %s", e)
@@ -141,17 +147,23 @@ def diagnose(
             failure_type="bad_patch",
             affected_step=None,
             suggestion="Retry with different patch or search for correct symbol first.",
+            evidence=reason,
+            suggested_strategy="retry_edit_with_different_patch",
         )
     if "limits" in reason or "timeout" in reason.lower():
         return Diagnosis(
             failure_type="timeout",
             affected_step=None,
             suggestion="Simplify plan or expand search scope to find relevant code faster.",
+            evidence=reason,
+            suggested_strategy="expand_search_scope",
         )
     return Diagnosis(
         failure_type="unknown",
         affected_step=None,
         suggestion="Retry with expanded search scope and revised plan.",
+        evidence=reason,
+        suggested_strategy="rewrite_retrieval_query",
     )
 
 

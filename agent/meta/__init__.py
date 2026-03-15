@@ -1,1 +1,1 @@
-"""Meta layer: evaluator, critic, retry planner, trajectory store."""
+"""Meta layer: evaluator, critic, retry planner, trajectory store, trajectory loop."""

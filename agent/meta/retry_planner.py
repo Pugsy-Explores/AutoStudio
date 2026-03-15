@@ -20,6 +20,7 @@ RETRY_STRATEGIES = frozenset({
     "retry_edit_with_different_patch",
     "search_symbol_dependencies",
 })
+FALLBACK_STRATEGY = "generate_new_plan"
 
 
 @dataclass
@@ -94,9 +95,10 @@ Produce retry hints as JSON."""
             end = out.rfind("}")
             if end > idx:
                 obj = json.loads(out[idx : end + 1])
-                strategy = str(obj.get("strategy", default_strategy)).strip()
+                strategy = str(obj.get("strategy", "")).strip()
                 if strategy not in RETRY_STRATEGIES:
-                    strategy = default_strategy
+                    logger.warning("[retry_planner] unrecognised strategy %r, using fallback", strategy or "(empty)")
+                    strategy = FALLBACK_STRATEGY
                 return RetryHints(
                     strategy=strategy,
                     rewrite_query=str(obj.get("rewrite_query", "") or "")[:500],
