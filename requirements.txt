@@ -9,3 +9,6 @@ tree-sitter-python>=0.20.0
 # Optional: embedding-based search and task index
 # chromadb>=0.4.0
 # sentence-transformers>=2.2.0
+
+# BM25 lexical retrieval (Phase 18)
+rank_bm25>=0.2.2
