@@ -3,15 +3,49 @@ Retry planner: based on critic diagnosis, produces retry hints for the next atte
 
 Strategies: rewrite_retrieval_query, expand_search_scope, generate_new_plan,
 retry_edit_with_different_patch, search_symbol_dependencies.
+
+Phase 5: RetryPlanner.build_retry_context() produces retry_context (previous_attempts,
+critic_feedback) for the planner. No LLM calls.
 """
 
 import json
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from agent.meta.critic import Diagnosis
 
+if TYPE_CHECKING:
+    from agent.meta.trajectory_memory import TrajectoryMemory
+
 logger = logging.getLogger(__name__)
+
+
+class RetryPlanner:
+    """
+    Phase 5: builds retry context from trajectory memory and critic feedback.
+    No LLM calls; context is passed to the existing planner.
+    """
+
+    def build_retry_context(
+        self,
+        instruction: str,
+        trajectory_memory: "TrajectoryMemory",
+        critic_feedback: dict,
+    ) -> dict:
+        """
+        Produce retry_context for the planner:
+        {
+          "previous_attempts": trajectory_memory.all_attempts(),
+          "critic_feedback": critic_feedback,
+          "strategy_hint": critic_feedback["strategy_hint"]
+        }
+        """
+        return {
+            "previous_attempts": trajectory_memory.all_attempts(),
+            "critic_feedback": critic_feedback,
+            "strategy_hint": critic_feedback.get("strategy_hint") or "",
+        }
 
 RETRY_STRATEGIES = frozenset({
     "rewrite_retrieval_query",

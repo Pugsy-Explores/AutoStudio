@@ -40,18 +40,61 @@ def _extract_json(text: str) -> str | None:
     return None
 
 
-def plan(instruction: str) -> dict:
+def plan(instruction: str, retry_context: dict | None = None) -> dict:
     """
     Convert instruction into a structured plan: list of steps with action, description, reason.
     Each step action is one of EDIT, SEARCH, EXPLAIN, INFRA.
     On parse/validation failure returns {"steps": [...], "error": "..."} with a safe default.
+
+    Phase 5: retry_context may contain previous_attempts and critic_feedback; these are
+    included in the prompt so the planner can produce a better plan on retry.
     """
     print("[workflow] planner")
+    prompt = instruction
+    if retry_context:
+        previous_attempts = retry_context.get("previous_attempts") or []
+        feedback = retry_context.get("critic_feedback") or {}
+        strategy_hint = retry_context.get("strategy_hint") or ""
+
+        # [Previous Attempts]: plan structure summary (diversity guard)
+        previous_attempts_lines = ["Previous attempt plans:"]
+        for i, att in enumerate(previous_attempts, 1):
+            plan_att = att.get("plan") or {}
+            steps_att = plan_att.get("steps") or []
+            actions = [str(s.get("action", "?")) for s in steps_att if isinstance(s, dict)]
+            arrow = " → "
+            previous_attempts_lines.append(f"- Plan {i}: {arrow.join(actions) or '(no steps)'}")
+        previous_attempts_summary = "\n".join(previous_attempts_lines)
+
+        planning_guidance = """Avoid repeating the same plan structure as previous attempts.
+Generate a different strategy if the previous attempt failed.
+Focus on actions that address the failure reason."""
+
+        parts = [
+            "[Strategy Hint]",
+            strategy_hint,
+            "",
+            "[Previous Attempts]",
+            previous_attempts_summary,
+            "",
+            "[Planning Guidance]",
+            planning_guidance,
+            "",
+            "[Instruction]",
+            instruction,
+        ]
+        if feedback:
+            parts.append("")
+            parts.append("Critic feedback:")
+            parts.append(f"  failure_reason: {feedback.get('failure_reason', '')}")
+            parts.append(f"  analysis: {feedback.get('analysis', '')}")
+            parts.append(f"  recommendation: {feedback.get('recommendation', '')}")
+        prompt = "\n".join(parts)
     params = get_model_call_params("planner")
     max_tokens = params.get("max_tokens") or _PLANNER_MAX_ENV
     try:
         response = call_reasoning_model(
-            instruction,
+            prompt,
             system_prompt=PLANNER_SYSTEM_PROMPT,
             max_tokens=max_tokens,
             task_name="planner",

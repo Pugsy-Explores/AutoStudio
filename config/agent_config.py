@@ -8,6 +8,11 @@ MAX_REPLAN_ATTEMPTS = int(os.getenv("MAX_REPLAN_ATTEMPTS", "5"))
 MAX_STEP_TIMEOUT_SECONDS = int(os.getenv("MAX_STEP_TIMEOUT_SECONDS", "90"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "32000"))  # Hard cap before LLM reasoning call
 
+# Phase 3: execution safety budgets (enforced in deterministic runner)
+MAX_STEPS = int(os.getenv("MAX_STEPS", "50"))
+MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "100"))
+MAX_LOOP_ITERATIONS = int(os.getenv("MAX_LOOP_ITERATIONS", "200"))
+
 # Phase 12 workflow safety limits
 MAX_FILES_PER_PR = int(os.getenv("MAX_FILES_PER_PR", "10"))
 MAX_PATCH_LINES = int(os.getenv("MAX_PATCH_LINES", "500"))
@@ -26,3 +31,6 @@ HISTORY_SUMMARY_TURNS = int(os.getenv("HISTORY_SUMMARY_TURNS", "30"))  # older t
 # Phase 15 trajectory retry loop
 MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", "3"))
 MAX_RETRY_RUNTIME_SECONDS = int(os.getenv("MAX_RETRY_RUNTIME_SECONDS", "120"))
+
+# Phase 5: attempt-level retry loop (above deterministic runner)
+MAX_AGENT_ATTEMPTS = int(os.getenv("MAX_AGENT_ATTEMPTS", "3"))

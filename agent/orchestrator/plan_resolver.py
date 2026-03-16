@@ -19,7 +19,12 @@ from planner.planner import plan
 logger = logging.getLogger(__name__)
 
 
-def get_plan(instruction: str, trace_id: str | None = None, log_event_fn=None) -> dict:
+def get_plan(
+    instruction: str,
+    trace_id: str | None = None,
+    log_event_fn=None,
+    retry_context: dict | None = None,
+) -> dict:
     """
     Resolve plan: use instruction router when enabled, else planner.
 
@@ -30,16 +35,18 @@ def get_plan(instruction: str, trace_id: str | None = None, log_event_fn=None) -
     - CODE_EDIT / GENERAL → planner
 
     When disabled: always use planner.
+
+    Phase 5: retry_context (previous_attempts, critic_feedback) is passed to planner when provided.
     """
     if not ENABLE_INSTRUCTION_ROUTER:
         if trace_id:
             with trace_stage(trace_id, "planner") as summary:
-                plan_result = plan(instruction)
+                plan_result = plan(instruction, retry_context=retry_context)
                 summary["instruction"] = (instruction or "")[:200]
                 summary["number_of_steps"] = len(plan_result.get("steps", []))
                 summary["actions"] = [s.get("action") for s in plan_result.get("steps", [])]
             return plan_result
-        return plan(instruction)
+        return plan(instruction, retry_context=retry_context)
 
     from agent.routing.instruction_router import route_instruction
 
@@ -92,9 +99,9 @@ def get_plan(instruction: str, trace_id: str | None = None, log_event_fn=None) -
     # CODE_EDIT or GENERAL: use planner
     if trace_id:
         with trace_stage(trace_id, "planner") as summary:
-            plan_result = plan(instruction)
+            plan_result = plan(instruction, retry_context=retry_context)
             summary["instruction"] = (instruction or "")[:200]
             summary["number_of_steps"] = len(plan_result.get("steps", []))
             summary["actions"] = [s.get("action") for s in plan_result.get("steps", [])]
         return plan_result
-    return plan(instruction)
+    return plan(instruction, retry_context=retry_context)

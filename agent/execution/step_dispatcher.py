@@ -7,7 +7,7 @@ from pathlib import Path
 from agent.execution.explain_gate import ensure_context_before_explain
 from agent.prompt_system import get_registry
 from config.agent_config import MAX_CONTEXT_CHARS
-from agent.execution.policy_engine import ExecutionPolicyEngine, InvalidStepError, _is_valid_search_result, validate_step_input
+from agent.execution.policy_engine import ExecutionPolicyEngine, InvalidStepError, ResultClassification, _is_valid_search_result, classify_result, validate_step_input
 from agent.execution.tool_graph import ToolGraph
 from agent.execution.tool_graph_router import resolve_tool
 from agent.memory.state import AgentState
@@ -409,7 +409,7 @@ def dispatch(step: dict, state: AgentState) -> dict:
     try:
         validate_step_input(step)
     except InvalidStepError as e:
-        return {"success": False, "output": {}, "error": f"Invalid step: {e}", "classification": "FATAL_FAILURE"}
+        return {"success": False, "output": {}, "error": f"Invalid step: {e}", "classification": ResultClassification.FATAL_FAILURE.value}
 
     action = (step.get("action") or "EXPLAIN").upper()
     description = step.get("description") or ""
@@ -491,6 +491,7 @@ def dispatch(step: dict, state: AgentState) -> dict:
                 "success": False,
                 "output": "",
                 "error": "No context for EXPLAIN. Run SEARCH first.",
+                "classification": ResultClassification.RETRYABLE_FAILURE.value,
             }
         if results:
             run_retrieval_pipeline(
@@ -561,4 +562,6 @@ def dispatch(step: dict, state: AgentState) -> dict:
         print("  [model] output:", out_str[:120] + ("..." if len(out_str) > 120 else ""))
         return {"success": True, "output": out_str}
     except Exception as e:
-        return {"success": False, "output": "", "error": str(e)}
+        base = {"success": False, "output": "", "error": str(e)}
+        base["classification"] = classify_result("EXPLAIN", base).value
+        return base
