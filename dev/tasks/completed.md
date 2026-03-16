@@ -2,6 +2,7 @@
 
 <!-- Finished tasks -->
 
+- Phase 17 — Retrieval Reranker Infrastructure (agent/retrieval/reranker/: hardware, cache, preprocessor, symbol_query_detector, deduplicator, base_reranker, gpu/cpu_reranker, rerank_queue; BM25, RRF, score threshold, impact telemetry; scripts/run_retrieval_eval.py; Docs/RETRIEVAL_ARCHITECTURE.md)
 - Phase 13 — Prompt Framework (agent/prompt_system/: PromptRegistry, versioned prompts, guardrails, observability, retry_strategies, skills YAML; Docs/PROMPT_ARCHITECTURE.md)
 - Phase 9 Hierarchical Multi-Agent Orchestration: agent/roles/ (supervisor_agent, planner_agent, localization_agent, edit_agent, test_agent, critic_agent); AgentWorkspace; run_multi_agent(goal, project_root); safety limits (max_agent_steps=30, max_patch_attempts=3, max_runtime=120s, max_file_edits=10); tests/multi_agent_tasks.json (30 tasks); scripts/run_multi_agent_eval.py; models_config localization/supervisor_routing; INFRA uses step.description as command; tests/test_roles.py
 - Phase 8 Autonomous Mode + Self-Improving Loop: agent/meta/ (evaluator, critic, retry_planner, trajectory_store); agent/prompts/critic_system.yaml, retry_planner_system.yaml; outer retry loop (max_retries=3) in agent/autonomous/agent_loop.py; models_config evaluation/critique/retry_planning; GoalManager.reset_for_retry(); tests/autonomous_tasks.json expanded to 5 task types; scripts/run_autonomous_eval.py with reflection metrics; tests/test_autonomous_meta.py (11 tests)

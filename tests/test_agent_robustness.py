@@ -158,17 +158,18 @@ def test_patch_validator_failure_triggers_rollback(tmp_path):
 
 def test_graph_lookup_empty_fallback_to_serena(tmp_path):
     """When graph retriever returns None/empty, _search_fn falls back to vector then Serena."""
-    with patch("agent.retrieval.graph_retriever.retrieve_symbol_context", return_value=None):
-        with patch("agent.execution.step_dispatcher.ENABLE_VECTOR_SEARCH", False):
-            with patch("agent.execution.step_dispatcher.search_code") as mock_serena:
-                mock_serena.return_value = {"results": [{"file": "fallback.py", "snippet": "code"}], "query": "q"}
+    with patch("agent.execution.step_dispatcher.ENABLE_HYBRID_RETRIEVAL", False):
+        with patch("agent.retrieval.graph_retriever.retrieve_symbol_context", return_value=None):
+            with patch("agent.execution.step_dispatcher.ENABLE_VECTOR_SEARCH", False):
+                with patch("agent.execution.step_dispatcher.search_code") as mock_serena:
+                    mock_serena.return_value = {"results": [{"file": "fallback.py", "snippet": "code"}], "query": "q"}
 
-                state = AgentState(
-                    instruction="test",
-                    current_plan={},
-                    context={"project_root": str(tmp_path)},
-                )
-                result = _search_fn("some_query", state)
+                    state = AgentState(
+                        instruction="test",
+                        current_plan={},
+                        context={"project_root": str(tmp_path)},
+                    )
+                    result = _search_fn("some_query", state)
 
     assert result is not None
     assert isinstance(result, dict)

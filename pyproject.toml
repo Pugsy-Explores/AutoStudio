@@ -25,4 +25,5 @@ include = ["agent*", "config*", "editing*", "planner*", "repo_graph*", "repo_ind
 [tool.pytest.ini_options]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks test as integration test (requires real services, TEST_MODE=integration)",
 ]

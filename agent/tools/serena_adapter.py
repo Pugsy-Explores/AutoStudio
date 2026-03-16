@@ -83,6 +83,7 @@ def _serena_server_params(project_dir: str | None = None) -> "StdioServerParamet
         args = [
             "--from", "git+https://github.com/oraios/serena",
             "serena", "start-mcp-server",
+            "--open-web-dashboard", "false",
             "--context", "ide",
             "--project", project,
         ]
