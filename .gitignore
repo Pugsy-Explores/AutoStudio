@@ -39,3 +39,12 @@ Thumbs.db
 
 # Phase 3 scenario evaluation reports
 reports/
+
+# Build artifacts
+autostudio.egg-info/
+
+# Agent runtime memory
+.agent_memory/
+
+# Accidental None path (bug artifact)
+None/
