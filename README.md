@@ -234,7 +234,9 @@ python -m agent.cli.entrypoint chat
 python -c "from agent.autonomous import run_autonomous; run_autonomous('Fix failing test', project_root='.')"
 # With self-improving retries (Phase 8): max_retries=3, success_criteria='tests_pass'
 
-# Legacy — standard agent loop (plan → execute steps)
+# Default: autostudio explain/edit/chat use run_controller → run_attempt_loop (Phase 5)
+
+# Legacy — standard agent loop (run_agent: plan → execute steps, no attempt loop)
 python -m agent "Find where the StepExecutor class is defined"
 python -m agent "Explain how StepExecutor works"
 
@@ -374,14 +376,14 @@ AutoStudio/
 │   │   ├── trace_logger.py     # start_trace, log_event, finish_trace; event/stage listeners
 │   │   └── ux_metrics.py       # Session metrics: interaction_latency, steps_per_task, patch_success
 │   │
-│   ├── orchestrator/           # Agent loop, controller, validation
+│   ├── orchestrator/           # Controller, attempt loop, step loop, validation
 │   │   ├── __init__.py
-│   │   ├── agent_loop.py       # run_agent (Mode 1: standard loop; per-step timeout)
-│   │   ├── agent_controller.py # run_controller, run_attempt_loop (Phase 5; mode: deterministic/autonomous/multi_agent)
-│   │   ├── deterministic_runner.py  # run_deterministic (plan → dispatch loop + validation + goal evaluation; accepts retry_context; Mode 1 source)
-│   │   ├── plan_resolver.py    # get_plan: instruction_router or planner.plan()
-│   │   ├── replanner.py        # LLM-based replan on failure
-│   │   ├── goal_evaluator.py   # GoalEvaluator: rule-based attempt-level goal check (Phase 4)
+│   │   ├── agent_controller.py # run_controller, run_attempt_loop (Phase 5; mode: deterministic/autonomous/multi_agent); default entry
+│   │   ├── deterministic_runner.py  # run_deterministic (get_plan → step loop + validation; accepts retry_context; Mode 1 single-attempt source)
+│   │   ├── agent_loop.py       # run_agent (legacy: single loop, no attempt-level retry; per-step timeout)
+│   │   ├── plan_resolver.py    # get_plan: instruction_router or planner.plan(instruction, retry_context)
+│   │   ├── replanner.py        # LLM-based replan on step failure (within attempt)
+│   │   ├── goal_evaluator.py   # GoalEvaluator: rule-based attempt-level goal check (Phase 4/5)
 │   │   └── validator.py        # validate_step (rules + optional LLM)
 │   │
 │   ├── prompt_system/          # Phase 13: Prompt infrastructure
@@ -675,15 +677,19 @@ AutoStudio/
 
 | Component | Role |
 |-----------|------|
-| **run_agent** | Entry point: plan → state → execute loop → validate → replan until finished |
-| **plan(instruction)** | Planner: LLM + JSON parse → `{steps: [{id, action, description, reason}]}` |
-| **StepExecutor** | Execution boundary for steps: `execute_step(step, state)` calls `dispatch(step, state)` and returns `StepResult` (includes `files_modified`, `patch_size` for EDIT steps) |
-| **dispatch** | Routes by action to PolicyEngine (SEARCH/EDIT/INFRA) or EXPLAIN; pre-dispatch validate_step_input (Phase 7) |
-| **ToolGraph** | Per-node `allowed_tools` and `preferred_tool`; restricts transitions |
-| **ExecutionPolicyEngine** | Retry loop with mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn; validate_step_input pre-dispatch |
-| **validate_step** | Rule-based or LLM YES/NO; EXPLAIN with empty-context output → invalid (triggers replanner); fallback to rules on error |
-| **replan** | LLM-based: receives failed_step, error; produces revised plan; fallback to remaining steps |
-| **instruction_router** | Classifies before planner (default: enabled); uses ROUTER_TYPE or inline SMALL model |
+| **run_controller** | Entry point: mode routing; deterministic → run_attempt_loop (Phase 5). |
+| **run_attempt_loop** | Per task: up to MAX_AGENT_ATTEMPTS; each attempt run_deterministic → GoalEvaluator → TrajectoryMemory; on failure Critic + RetryPlanner → next attempt with retry_context. |
+| **run_deterministic** | Single attempt: get_plan(retry_context) → step loop → validate → replan until finished. |
+| **get_plan** | Plan resolver: instruction_router (when enabled) or planner.plan(instruction, retry_context); single-step for CODE_SEARCH/EXPLAIN/INFRA. |
+| **GoalEvaluator** | After each attempt: rule-based goal-satisfaction check (EDIT success, patch_size, files_modified, or EXPLAIN success). |
+| **plan(instruction, retry_context)** | Planner: LLM + JSON parse → `{steps: [...]}`; when retry_context present, prompt includes strategy_hint, previous_attempts, diversity guidance. |
+| **StepExecutor** | Execution boundary for steps: `execute_step(step, state)` calls `dispatch(step, state)` and returns `StepResult` (includes `files_modified`, `patch_size` for EDIT steps). |
+| **dispatch** | Routes by action to PolicyEngine (SEARCH/EDIT/INFRA) or EXPLAIN; pre-dispatch validate_step_input (Phase 7). |
+| **ToolGraph** | Per-node `allowed_tools` and `preferred_tool`; restricts transitions. |
+| **ExecutionPolicyEngine** | Retry loop with mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn; validate_step_input pre-dispatch. |
+| **validate_step** | Rule-based or LLM YES/NO; EXPLAIN with empty-context output → invalid (triggers replanner); fallback to rules on error. |
+| **replan** | LLM-based (within attempt): receives failed_step, error; produces revised plan; fallback to remaining steps. |
+| **instruction_router** | Classifies before planner (default: enabled); uses ROUTER_TYPE or inline SMALL model. |
 
 ---
 
@@ -800,13 +806,40 @@ instruction
 
 **EDIT pipeline (inside dispatcher):** When action is EDIT, `_edit_fn` runs plan_diff → resolve_conflicts → to_structured_patches → run_with_repair → update_index.
 
-**Safety limits:** max 5 files edited, 200 lines per patch. Task runtime: agent_loop 60s (Phase 4); agent_controller 15 min (configurable via `MAX_TASK_RUNTIME_SECONDS`). **Phase 7 reliability:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`), pre-dispatch tool validation (`validate_step_input`), context guardrail (`MAX_CONTEXT_CHARS`). **Mode 2 (autonomous):** `run_autonomous(goal, max_retries=3)` — goal-driven loop with observe → select → dispatch; when max_retries>1, wraps with evaluator → critic → retry_planner meta loop (Phase 8); reuses dispatcher, retrieval, editing pipeline; limits: max_steps, max_tool_calls, max_runtime, max_edits. **Phase 9 (multi-agent):** `run_multi_agent(goal, project_root)` — supervisor → planner → localization → edit → test → critic (on failure); same infrastructure; limits: max_agent_steps=30, max_patch_attempts=3, max_runtime=120s, max_file_edits=10. **Phase 10 (repo intelligence):** Before planner, supervisor builds repo_summary_graph and architecture_map; planner uses plan_long_horizon when architecture_map present; after edit, impact_analyzer predicts affected files; retrieval pipeline optionally compresses context when repo_summary present; limits: max_repo_scan_files=200, max_architecture_nodes=500, max_context_tokens=8192, max_impact_depth=3. **Phase 11 (intelligence layer):** Before each autonomous run, experience_retriever fetches similar past solutions (task_embeddings), developer_profile, and repo_knowledge; injects experience_hints into state.context for planner adaptation; on success, stores solution to solution_memory, task_embeddings, repo_learning, developer_model. **Phase 12 (developer workflow):** `agent/workflow/` — issue_parser (GitHub/GitLab issues → structured tasks), pr_generator (workspace/patches → PR title/description), ci_runner (pytest, ruff; MAX_CI_RUNTIME_SECONDS), code_review_agent (style, security, large diffs, missing tests), developer_feedback (critic → retry planner → improved patch), workflow_controller (orchestrate full flow); CLI: `autostudio issue`, `autostudio fix`, `autostudio pr`, `autostudio review`, `autostudio ci`; safety: MAX_FILES_PER_PR=10, MAX_PATCH_LINES=500.
+### Safety and limits
 
-**Failure handling:** On step failure or validation failure, the agent replans. agent_loop: up to 3 replans, 2 step retries before replan; agent_controller: up to 5 replans (configurable). SEARCH exhausts fallback chain (retrieve_graph → retrieve_vector → retrieve_grep → file_search) and retries with rewritten queries. EDIT failures trigger rollback before any files are written; patch validator ensures syntax and AST integrity.
+| Scope | Limit | Config / note |
+|-------|--------|----------------|
+| Edit | Max 5 files, 200 lines per patch | `MAX_FILES_EDITED`, `MAX_PATCH_SIZE` |
+| Task runtime | agent_loop: 60s (Phase 4); controller: 15 min | `MAX_TASK_RUNTIME_SECONDS` |
+| Replans per attempt | agent_loop: 3; controller: 5 | `config/agent_config.py` |
+| Attempts per task (Phase 5) | Default 3 | `MAX_AGENT_ATTEMPTS` |
+| Phase 7 | Per-step timeout, pre-dispatch validation, context cap | `MAX_STEP_TIMEOUT_SECONDS`, `validate_step_input`, `MAX_CONTEXT_CHARS` |
+| Phase 12 (workflow) | Max files per PR, patch lines, CI timeout | `MAX_FILES_PER_PR=10`, `MAX_PATCH_LINES=500`, `MAX_CI_RUNTIME_SECONDS` |
 
-**Test repair loop:** After patch execution, runs tests (pytest); on failure, plans repair and retries (max 3 attempts). Supports flaky test detection and compile step before tests.
+### Modes and phase summary
 
-**Trace logging:** Events stored in `.agent_memory/traces/`. Each trace includes plan, tool calls (`step_executed` with chosen tool), patch results, errors, **goal evaluation events** (`goal_evaluation`, `goal_completed`, `goal_not_satisfied`, `goal_unresolved`), **Phase 5 attempt-loop events** (`attempt_started`, `attempt_failed`, `attempt_retry`, `attempt_success`, `critic_analysis`, `strategy_hint_generated`, `trajectory_summary_generated`), and task_complete summary. See `agent/observability/trace_logger.py` and [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md).
+| Mode / phase | Entry / scope | Key behavior | Limits (examples) |
+|--------------|----------------|--------------|-------------------|
+| **Mode 1 (deterministic)** | `run_controller` → `run_attempt_loop` | Plan → step loop → GoalEvaluator → Critic/RetryPlanner on retry | MAX_AGENT_ATTEMPTS, MAX_TASK_RUNTIME_SECONDS |
+| **Mode 2 (autonomous)** | `run_autonomous(goal, max_retries=3)` | Observe → select → dispatch; Phase 8: evaluator → critic → retry_planner meta loop | max_steps, max_tool_calls, max_runtime, max_edits |
+| **Phase 9 (multi-agent)** | `run_multi_agent(goal, project_root)` | Supervisor → planner → localization → edit → test → critic (on failure); same dispatcher/retrieval/editing | max_agent_steps=30, max_patch_attempts=3, max_runtime=120s, max_file_edits=10 |
+| **Phase 10 (repo intelligence)** | Before planner in multi-agent | repo_summary_graph, architecture_map, plan_long_horizon, impact_analyzer, context compression | max_repo_scan_files=200, max_architecture_nodes=500, max_context_tokens=8192, max_impact_depth=3 |
+| **Phase 11 (intelligence)** | Before autonomous run | experience_retriever (similar solutions, developer_profile, repo_knowledge) → experience_hints; on success: solution_memory, task_embeddings, repo_learning | — |
+| **Phase 12 (workflow)** | `agent/workflow/`, CLI | issue_parser → pr_generator → ci_runner → code_review_agent → developer_feedback; `autostudio issue/fix/pr/review/ci` | MAX_FILES_PER_PR, MAX_PATCH_LINES, MAX_CI_RUNTIME_SECONDS |
+
+### Failure handling
+
+- **Within attempt:** On step or validation failure, the agent replans (controller: up to 5 replans). SEARCH exhausts fallback (retrieve_graph → retrieve_vector → retrieve_grep → file_search) and retries with rewritten queries. EDIT: rollback before write; patch validator enforces syntax and AST integrity.
+- **Attempt-level (Phase 5):** If an attempt ends without `goal_met`, Critic and RetryPlanner build `retry_context`; next attempt runs with a fresh `get_plan(retry_context)` (up to `MAX_AGENT_ATTEMPTS`, default 3). Legacy `agent_loop`: up to 3 replans, 2 step retries before replan.
+
+### Test repair loop
+
+After patch execution, tests (pytest) run; on failure the agent plans repair and retries (max 3 attempts). Supports flaky test detection and an optional compile step before tests.
+
+### Trace logging
+
+Events stored in `.agent_memory/traces/`. Each trace includes plan, tool calls (`step_executed` with chosen tool), patch results, errors, **goal evaluation events** (`goal_evaluation`, `goal_completed`, `goal_not_satisfied`, `goal_unresolved`), **Phase 5 attempt-loop events** (`attempt_started`, `attempt_failed`, `attempt_retry`, `attempt_success`, `critic_analysis`, `strategy_hint_generated`, `trajectory_summary_generated`), and task_complete summary. See `agent/observability/trace_logger.py` and [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md).
 
 ---
 
@@ -904,6 +937,7 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `MAX_FILES_PER_PR` | Phase 12: max files per PR (default 10) |
 | `MAX_PATCH_LINES` | Phase 12: max patch lines (default 500) |
 | `MAX_CI_RUNTIME_SECONDS` | Phase 12: CI timeout in seconds (default 600) |
+| `MAX_AGENT_ATTEMPTS` | Phase 5: max attempt-loop iterations per task (default 3); goal_met or exhaust → return |
 | `MAX_PROMPT_TOKENS` | Phase 14: hard cap on total prompt tokens (default 12000) |
 | `OUTPUT_TOKEN_RESERVE` | Phase 14: tokens reserved for model output (default 2000) |
 | `MAX_REPO_SNIPPETS` | Phase 14: max ranked code snippets (default 10) |
@@ -1005,7 +1039,7 @@ Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `cal
 | Multiple search steps | ≥2 SEARCH steps hit retriever (use `RETRIEVAL_CACHE_SIZE=0`) |
 | Conflict resolver | Invoked when multiple edits target same file |
 | Repair loop | `run_with_repair` invoked when `TEST_REPAIR_ENABLED=1` |
-| No infinite loop | Stops after MAX_REPLAN_ATTEMPTS (agent_loop: 3; agent_controller: 5) on repeated failure |
+| No infinite loop | Stops after MAX_REPLAN_ATTEMPTS (agent_loop: 3; agent_controller: 5) on repeated failure; run_attempt_loop stops after MAX_AGENT_ATTEMPTS (default 3) when goal not met |
 | Runtime | agent_loop: 60s; agent_controller: 15 min (configurable) |
 
 **Agent robustness** (`test_agent_robustness.py`): Failure-scenario tests ensure the agent replans, triggers fallback search, and avoids repository corruption:
@@ -1138,7 +1172,7 @@ The **workflow layer** (`agent/workflow/`) turns AutoStudio into a developer tea
 | [Docs/PROMPT_ARCHITECTURE.md](Docs/PROMPT_ARCHITECTURE.md) | Prompt layer: PromptRegistry, versioning, all prompts, pipeline position, design philosophy, safety risks, testing |
 | [Docs/prompt_engineering_rules.md](Docs/prompt_engineering_rules.md) | Phase 13: governance rules (1 prompt = 1 capability, versioning, evaluation, failure logging, Rules 6–7, guardrails, A/B testing) |
 | [Docs/CONFIGURATION.md](Docs/CONFIGURATION.md) | Centralized config: all modules, env overrides, validation |
-| [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md) | Step dispatch, SEARCH/EDIT/INFRA/EXPLAIN flows, policy engine, model routing |
+| [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md) | High-level flow (run_attempt_loop, Phase 5), step dispatch, SEARCH/EDIT/INFRA/EXPLAIN flows, policy engine, model routing |
 | [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md) | Full pipeline: run_controller, run_attempt_loop (Phase 5), instruction router, safety limits, test repair, task memory |
 | [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md) | Phase 5 attempt loop: TrajectoryMemory, hybrid Critic, RetryPlanner, strategy hints, trajectory summarization, planner diversity guard |
 | [Docs/ROUTING_ARCHITECTURE_REPORT.md](Docs/ROUTING_ARCHITECTURE_REPORT.md) | Routing architecture: instruction router, tool graph, categories, replanner |
@@ -1177,7 +1211,7 @@ python scripts/run_principal_engineer_suite.py --scenarios --use-agent-loop
 python scripts/run_principal_engineer_suite.py
 ```
 
-**Phase 5 capability eval** (40 developer tasks via `run_agent`):
+**Phase 5 capability eval** (40 developer tasks via `run_controller` / run_attempt_loop):
 
 ```bash
 # Run dev_tasks.json through agent; output: reports/eval_report.json
@@ -1304,7 +1338,18 @@ python scripts/run_principal_engineer_suite.py --stress --stress-reps 5
 - `tests/workflow_tasks.json` — 8 workflow benchmark tasks (Phase 12: fix_failing_test, implement_feature, refactor_module, add_logging).
 - `tests/failure_mining_tasks.json` — 300 tasks (Phase 16: 100 bug fixes, 50 refactors, 50 feature, 100 navigation).
 
-**Metrics:** `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `edit_success_rate`, `avg_latency`, `avg_files_modified`, `avg_steps_per_task`, `avg_patch_size`, `failure_rate`, `replan_rate`. **Phase 8 reflection metrics** (run_autonomous_eval.py): `attempts_per_goal`, `retry_success_rate`, `critic_accuracy`, `trajectory_reuse`. **Phase 9 multi-agent metrics** (run_multi_agent_eval.py): `goal_success_rate`, `agent_delegations`, `critic_accuracy`, `localization_accuracy`, `patch_success_rate`. **Phase 10 repository metrics** (run_repository_eval.py): `localization_accuracy`, `impact_prediction_accuracy`, `context_compression_ratio`, `long_horizon_success_rate`. **Phase 10.5 localization metrics** (run_localization_eval.py): `file_accuracy`, `function_accuracy`, `top_k_recall`, `avg_graph_nodes`. **Phase 11 intelligence metrics** (run_autonomous_eval.py, run_multi_agent_eval.py): `solution_reuse_rate`, `experience_improvement`, `repeat_failure_rate`, `developer_acceptance`. **Phase 12 workflow metrics** (run_workflow_eval.py): `pr_success_rate`, `ci_pass_rate`, `developer_acceptance_rate`, `avg_retries_per_task`, `pr_merge_latency`, `issue_to_pr_success`. **Phase 16 failure mining metrics** (run_failure_mining.py): `avg_steps_success`, `avg_steps_failure`, `loop_failure_rate`, `retrieval_miss_rate`, `patch_error_rate`. See `dev/evaluation/metrics.md`.
+**Metrics** (see `dev/evaluation/metrics.md` for definitions):
+
+| Scope | Script | Metrics |
+|-------|--------|---------|
+| **Core** | Principal engineer suite, capability eval | `task_success_rate`, `retrieval_recall`, `planner_accuracy`, `edit_success_rate`, `avg_latency`, `avg_files_modified`, `avg_steps_per_task`, `avg_patch_size`, `failure_rate`, `replan_rate` |
+| **Phase 8 (autonomous)** | `run_autonomous_eval.py` | `attempts_per_goal`, `retry_success_rate`, `critic_accuracy`, `trajectory_reuse` |
+| **Phase 9 (multi-agent)** | `run_multi_agent_eval.py` | `goal_success_rate`, `agent_delegations`, `critic_accuracy`, `localization_accuracy`, `patch_success_rate` |
+| **Phase 10 (repository)** | `run_repository_eval.py` | `localization_accuracy`, `impact_prediction_accuracy`, `context_compression_ratio`, `long_horizon_success_rate` |
+| **Phase 10.5 (localization)** | `run_localization_eval.py` | `file_accuracy`, `function_accuracy`, `top_k_recall`, `avg_graph_nodes` |
+| **Phase 11 (intelligence)** | `run_autonomous_eval.py`, `run_multi_agent_eval.py` | `solution_reuse_rate`, `experience_improvement`, `repeat_failure_rate`, `developer_acceptance` |
+| **Phase 12 (workflow)** | `run_workflow_eval.py` | `pr_success_rate`, `ci_pass_rate`, `developer_acceptance_rate`, `avg_retries_per_task`, `pr_merge_latency`, `issue_to_pr_success` |
+| **Phase 16 (failure mining)** | `run_failure_mining.py` | `avg_steps_success`, `avg_steps_failure`, `loop_failure_rate`, `retrieval_miss_rate`, `patch_error_rate` |
 
 **Phase 6 UX metrics** (per-task, written by `run_controller`): `reports/ux_metrics.json` — `interaction_latency`, `steps_per_task`, `tool_calls`, `patch_success`.
 
