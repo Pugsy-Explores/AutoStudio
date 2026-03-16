@@ -119,6 +119,12 @@ class GraphStorage:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_all_nodes(self) -> list[dict]:
+        """Get all nodes for indexing (e.g. BM25)."""
+        conn = self._connect()
+        rows = conn.execute("SELECT * FROM nodes").fetchall()
+        return [dict(r) for r in rows]
+
     def remove_nodes_for_file(self, file_path: str) -> list[int]:
         """
         Remove all nodes for the given file and edges referencing them.

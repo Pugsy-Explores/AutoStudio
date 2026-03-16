@@ -14,9 +14,11 @@ from agent.tools import read_symbol_body
 from config.repo_graph_config import INDEX_SQLITE, SYMBOL_GRAPH_DIR
 from config.retrieval_config import (
     DEFAULT_MAX_CHARS,
-    GRAPH_EXPANSION_DEPTH,
     MAX_CONTEXT_SNIPPETS,
     MAX_SYMBOLS,
+    RETRIEVAL_GRAPH_EXPANSION_DEPTH,
+    RETRIEVAL_GRAPH_MAX_NODES,
+    RETRIEVAL_MAX_SYMBOL_EXPANSIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,7 @@ def expand_from_anchors(
     project_root: str | None = None,
     max_symbols: int = MAX_SYMBOLS,
     max_snippets: int = MAX_CONTEXT_SNIPPETS,
+    graph_telemetry_out: dict | None = None,
 ) -> list[dict]:
     """
     Expand anchor symbols via repository symbol graph.
@@ -67,7 +70,7 @@ def expand_from_anchors(
         return []
 
     try:
-        from repo_graph.graph_query import expand_neighbors, find_symbol
+        from repo_graph.graph_query import expand_symbol_dependencies, find_symbol
         from repo_graph.graph_storage import GraphStorage
     except ImportError:
         logger.debug("[symbol_expander] repo_graph not available")
@@ -96,14 +99,20 @@ def expand_from_anchors(
         if symbol_id is None:
             return []
 
-        expanded = expand_neighbors(
-            symbol_id, depth=GRAPH_EXPANSION_DEPTH, storage=storage
+        expanded, telemetry = expand_symbol_dependencies(
+            symbol_id,
+            storage,
+            depth=RETRIEVAL_GRAPH_EXPANSION_DEPTH,
+            max_nodes=RETRIEVAL_GRAPH_MAX_NODES,
+            max_symbol_expansions=RETRIEVAL_MAX_SYMBOL_EXPANSIONS,
         )
+        if graph_telemetry_out is not None:
+            graph_telemetry_out.update(telemetry)
         expanded = expanded[:max_symbols]
         logger.info(
             "[symbol_expander] expanded %d nodes (depth=%d)",
             len(expanded),
-            GRAPH_EXPANSION_DEPTH,
+            RETRIEVAL_GRAPH_EXPANSION_DEPTH,
         )
 
         candidates: list[dict] = []
