@@ -68,7 +68,7 @@ flowchart TD
 ### 1. Plan Resolution
 
 - **Instruction router** classifies intent (CODE_EDIT, CODE_SEARCH, EXPLAIN, INFRA, GENERAL).
-- **Planner** (for CODE_EDIT/GENERAL) produces JSON plan: `{steps: [{id, action, description, reason}]}`.
+- **Planner** (for CODE_EDIT/GENERAL) produces JSON plan: `{plan_id, steps: [{id, action, description, reason}]}` (Phase 4: every plan has plan_id).
 - Actions: SEARCH, EDIT, EXPLAIN, INFRA.
 
 ### 2. Step Execution

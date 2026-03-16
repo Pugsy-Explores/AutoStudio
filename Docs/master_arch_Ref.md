@@ -112,7 +112,9 @@ if plan_exhausted or result.classification == FATAL_FAILURE:
 Owned by:
 
 ```
-agent.orchestrator.deterministic_runner
+agent.orchestrator.execution_loop   # shared step loop (Phase 3)
+agent.orchestrator.deterministic_runner  # get_plan → execution_loop(enable_goal_evaluator=True)
+agent.orchestrator.agent_loop       # deprecated run_agent: get_plan → execution_loop(enable_step_retries=True)
 ```
 
 Important invariant:
@@ -126,6 +128,8 @@ Additional Mode 1 guarantees:
 - AgentState is the **single source of truth** for `completed_steps` and `step_results`. The deterministic runner derives `completed_steps`, `patches_applied`, and `files_modified` from `AgentState` **after** validation; steps that fail validation are never marked as completed.
 - Every step produces a `StepResult` with a `classification` field: `SUCCESS`, `RETRYABLE_FAILURE`, or `FATAL_FAILURE`.
 - When a step is classified as `FATAL_FAILURE`, the deterministic loop terminates immediately without replanning.
+
+**Phase 4 — Plan identity:** Step identity is `(plan_id, step_id)`. Every plan has a unique `plan_id`; replanned plans get a new `plan_id`. `completed_steps` stores `(plan_id, step_id)` so that after replanning, `next_step()` only considers steps completed for the **current** plan—fixing the bug where a replanned plan reusing ids 1,2,3 would incorrectly skip step 1 if the previous plan had completed step 1.
 
 Attempt loop only reports **attempt outcome**.
 

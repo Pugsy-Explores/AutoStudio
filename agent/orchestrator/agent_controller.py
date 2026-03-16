@@ -234,7 +234,8 @@ def run_controller(
     try:
         from agent.observability.ux_metrics import record_task_metrics
 
-        had_edit = any((s.get("action") or "").upper() == "EDIT" for s in completed_steps)
+        # Phase 4: completed_steps are (plan_id, step_id) tuples; use step_results for action.
+        had_edit = any((getattr(sr, "action", "") or "").upper() == "EDIT" for sr in state.step_results)
         patch_success = None
         if had_edit:
             patch_success = bool(files_modified) and not errors_encountered

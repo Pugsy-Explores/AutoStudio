@@ -11,17 +11,20 @@ from unittest.mock import patch
 from agent.orchestrator.agent_loop import run_agent
 
 
+# Phase 4: plans include plan_id for plan-scoped step identity
 FAKE_PLAN = {
+    "plan_id": "fake_plan_001",
     "steps": [
         {"id": 1, "action": "SEARCH", "description": "JWT token generation", "reason": "Locate code"},
         {"id": 2, "action": "EDIT", "description": "Change expiration to 24 hours", "reason": "User request"},
-    ]
+    ],
 }
 
 FAKE_PLAN_EXPLAIN_ONLY = {
+    "plan_id": "fake_plan_explain",
     "steps": [
         {"id": 1, "action": "EXPLAIN", "description": "Explain how AgentState works", "reason": "User request"},
-    ]
+    ],
 }
 
 

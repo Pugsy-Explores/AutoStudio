@@ -13,18 +13,20 @@ def test_run_controller_returns_summary(tmp_path):
     from agent.memory.state import AgentState
 
     def fake_run_deterministic(instruction, project_root, **kwargs):
+        plan_id = "test_plan_001"
         state = AgentState(
             instruction=instruction,
-            current_plan={"steps": [{"id": 1, "action": "EXPLAIN", "description": "Done"}]},
+            current_plan={"plan_id": plan_id, "steps": [{"id": 1, "action": "EXPLAIN", "description": "Done"}]},
             context={"project_root": project_root},
         )
+        # Phase 4: completed_steps are (plan_id, step_id) tuples
         loop_output = {
-            "completed_steps": [{"id": 1, "action": "EXPLAIN", "description": "Done"}],
+            "completed_steps": [(plan_id, 1)],
             "patches_applied": [],
             "files_modified": [],
             "errors_encountered": [],
             "tool_calls": 1,
-            "plan_result": {"steps": []},
+            "plan_result": {"plan_id": plan_id, "steps": []},
             "start_time": 0,
         }
         return state, loop_output
@@ -56,12 +58,13 @@ def test_run_controller_edit_flow_mocked(tmp_path):
         with patch("agent.memory.task_index.search_similar_tasks", lambda *a, **k: []):
             with patch("agent.orchestrator.deterministic_runner.get_plan") as mock_plan:
                 mock_plan.return_value = {
+                    "plan_id": "edit_flow_plan",
                     "steps": [
                         {"id": 1, "action": "SEARCH", "description": "find foo", "reason": "r1"},
                         {"id": 2, "action": "EDIT", "description": "modify foo", "reason": "r2"},
                     ],
                 }
-                with patch("agent.orchestrator.deterministic_runner.dispatch", side_effect=mock_dispatch) as mock_dispatch_patch:
+                with patch("agent.execution.executor.dispatch", side_effect=mock_dispatch) as mock_dispatch_patch:
                     result = run_controller("Edit foo", project_root=str(tmp_path))
 
     assert "task_id" in result
@@ -78,7 +81,7 @@ def test_run_controller_with_instruction_router_skips_planner_for_search(tmp_pat
                 with patch("agent.routing.instruction_router.route_instruction") as mock_route:
                     mock_route.return_value = RouterDecision(category="CODE_SEARCH", confidence=0.9)
                     with patch("planner.planner.plan") as mock_planner:
-                        with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
+                        with patch("agent.execution.executor.dispatch") as mock_dispatch:
                             mock_dispatch.return_value = {
                                 "success": True,
                                 "output": {"results": [{"file": "a.py", "snippet": "x"}]},

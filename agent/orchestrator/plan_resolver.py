@@ -8,15 +8,31 @@ Per docs (phase.md, ROUTING_ARCHITECTURE_REPORT.md):
 
 Categories: CODE_SEARCH, CODE_EDIT, CODE_EXPLAIN, INFRA, GENERAL
 Planner actions: SEARCH, EDIT, EXPLAIN, INFRA
+
+Phase 4: Every plan has a unique plan_id so step identity is (plan_id, step_id).
 """
 
 import logging
+from uuid import uuid4
 
 from agent.observability.trace_logger import trace_stage
 from config.router_config import ENABLE_INSTRUCTION_ROUTER
 from planner.planner import plan
 
 logger = logging.getLogger(__name__)
+
+
+def new_plan_id() -> str:
+    """Return a unique plan_id with 'plan_' prefix for readable logs (e.g. plan_3f8b8a7d)."""
+    return f"plan_{uuid4().hex[:8]}"
+
+
+def _ensure_plan_id(plan: dict) -> dict:
+    """Ensure plan has plan_id (Phase 4 — plan-scoped step identity)."""
+    out = dict(plan)
+    if "plan_id" not in out or not out["plan_id"]:
+        out["plan_id"] = new_plan_id()
+    return out
 
 
 def get_plan(
@@ -45,8 +61,8 @@ def get_plan(
                 summary["instruction"] = (instruction or "")[:200]
                 summary["number_of_steps"] = len(plan_result.get("steps", []))
                 summary["actions"] = [s.get("action") for s in plan_result.get("steps", [])]
-            return plan_result
-        return plan(instruction, retry_context=retry_context)
+            return _ensure_plan_id(plan_result)
+        return _ensure_plan_id(plan(instruction, retry_context=retry_context))
 
     from agent.routing.instruction_router import route_instruction
 
@@ -60,11 +76,11 @@ def get_plan(
             logger.debug("[plan_resolver] log_event skipped: %s", e)
 
     if category == "CODE_SEARCH":
-        plan_result = {
+        plan_result = _ensure_plan_id({
             "steps": [
                 {"id": 1, "action": "SEARCH", "description": instruction, "reason": "Routed by instruction router"}
             ],
-        }
+        })
         if trace_id:
             with trace_stage(trace_id, "planner") as summary:
                 summary["instruction"] = (instruction or "")[:200]
@@ -72,11 +88,11 @@ def get_plan(
                 summary["actions"] = ["SEARCH"]
         return plan_result
     if category == "CODE_EXPLAIN":
-        plan_result = {
+        plan_result = _ensure_plan_id({
             "steps": [
                 {"id": 1, "action": "EXPLAIN", "description": instruction, "reason": "Routed by instruction router"}
             ],
-        }
+        })
         if trace_id:
             with trace_stage(trace_id, "planner") as summary:
                 summary["instruction"] = (instruction or "")[:200]
@@ -84,11 +100,11 @@ def get_plan(
                 summary["actions"] = ["EXPLAIN"]
         return plan_result
     if category == "INFRA":
-        plan_result = {
+        plan_result = _ensure_plan_id({
             "steps": [
                 {"id": 1, "action": "INFRA", "description": instruction, "reason": "Routed by instruction router"}
             ],
-        }
+        })
         if trace_id:
             with trace_stage(trace_id, "planner") as summary:
                 summary["instruction"] = (instruction or "")[:200]
@@ -103,5 +119,5 @@ def get_plan(
             summary["instruction"] = (instruction or "")[:200]
             summary["number_of_steps"] = len(plan_result.get("steps", []))
             summary["actions"] = [s.get("action") for s in plan_result.get("steps", [])]
-        return plan_result
-    return plan(instruction, retry_context=retry_context)
+        return _ensure_plan_id(plan_result)
+    return _ensure_plan_id(plan(instruction, retry_context=retry_context))

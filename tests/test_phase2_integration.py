@@ -118,7 +118,7 @@ class TestStage4RetrievalPipeline:
         ]
         state = AgentState(
             instruction="Explain StepExecutor",
-            current_plan={"steps": []},
+            current_plan={"plan_id": "phase2_plan", "steps": []},
             context={"project_root": project_root},
         )
 
@@ -235,9 +235,10 @@ class TestStage8FullAgentLoop:
     @patch("agent.orchestrator.agent_loop.get_plan")
     def test_run_agent_produces_trace_and_plan(self, mock_get_plan, mock_dispatch):
         mock_get_plan.return_value = {
+            "plan_id": "phase2_trace_plan",
             "steps": [
                 {"id": 1, "action": "EXPLAIN", "description": "Explain StepExecutor", "reason": "User request"},
-            ]
+            ],
         }
         mock_dispatch.return_value = {
             "success": True,
@@ -283,9 +284,10 @@ class TestStep5Observability:
     @patch("agent.orchestrator.agent_loop.get_plan")
     def test_trace_contains_step_executed_and_structure(self, mock_get_plan, mock_dispatch, tmp_path):
         mock_get_plan.return_value = {
+            "plan_id": "phase2_observability_plan",
             "steps": [
                 {"id": 1, "action": "EXPLAIN", "description": "Explain AgentState", "reason": "User request"},
-            ]
+            ],
         }
         mock_dispatch.return_value = {
             "success": True,
@@ -326,7 +328,7 @@ class TestStep6ExplainGate:
 
         state = AgentState(
             instruction="Explain StepExecutor",
-            current_plan={"steps": []},
+            current_plan={"plan_id": "explain_gate_plan", "steps": []},
             context={"ranked_context": []},
         )
         step = {"id": 1, "action": "EXPLAIN", "description": "Explain StepExecutor"}

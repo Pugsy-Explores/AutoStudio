@@ -44,7 +44,7 @@ flowchart TB
         H --> I1{"Planner OK?"}
         I1 -->|yes| J["Parse JSON steps"]
         I1 -->|no| K["Fallback: single EXPLAIN"]
-        J --> L["Plan: steps with id, action, description, reason"]
+        J --> L["Plan: plan_id, steps with id, action, description, reason"]
         K --> L
         G1 --> L
         G2 --> L
@@ -52,10 +52,10 @@ flowchart TB
     end
 
     subgraph STATE["State"]
-        L --> M["AgentState with instruction, plan, completed_steps, results, context"]
+        L --> M["AgentState with instruction, plan (plan_id), completed_steps (plan_id, step_id), results, context"]
     end
 
-    subgraph STEPLOOP["Attempt: step loop (run_deterministic)"]
+    subgraph STEPLOOP["Attempt: step loop (execution_loop — shared by run_deterministic & run_agent)"]
         M --> N{"Termination?"}
         N -->|max_iter/runtime/replan| O["Attempt done"]
         N -->|no| P["state.next_step"]
@@ -92,7 +92,7 @@ flowchart TB
          │   yes: route_instruction ──► category                                                 │
          │     CODE_SEARCH ──► Single SEARCH  │  CODE_EXPLAIN ──► Single EXPLAIN  │  INFRA ──► Single INFRA │
          │     CODE_EDIT/GENERAL ──► plan     │  no: plan instruction                           │
-         │   ──► AgentState (instruction, plan, completed_steps, results, context)             │
+         │   ──► AgentState (instruction, plan with plan_id, completed_steps as (plan_id, step_id), results, context) │
          │   ──► Step loop: next_step ──► execute_step ──► dispatch ──► state.record             │
          │        validate? ──► success: record │ fail: replan, update_plan (no record)             │
          │   attempt done ──► GoalEvaluator.evaluate ──► TrajectoryMemory.record_attempt         │
@@ -100,16 +100,45 @@ flowchart TB
          └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Context initialization:** When execution goes through `run_controller` (CLI entrypoints `python -m agent`, `python -m agent.cli.run_agent`), `run_deterministic` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. The deprecated `run_agent(instruction)` runs its own loop in `agent/orchestrator/agent_loop.py`; its behavior is aligned with `run_deterministic` (same config limits, same failure semantics: failed steps are not recorded, no `undo_last_step`), except it keeps step retries (MAX_STEP_RETRIES) and has no goal evaluator (plan exhaustion → break). See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
+**Context initialization:** When execution goes through `run_controller` (CLI entrypoints `python -m agent`, `python -m agent.cli.run_agent`), `run_deterministic` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. **Phase 3:** Both `run_agent` and `run_deterministic` share a single implementation: **execution_loop()** in `agent/orchestrator/execution_loop.py`. Behavior is selected via **ExecutionLoopMode**: `run_agent` uses `mode=AGENT`; `run_deterministic` uses `mode=DETERMINISTIC`. Same config limits and failure semantics (no record of failed steps, no `undo_last_step`). See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
 
 **Termination conditions (Phase 4):** task complete, max replan, max step retries (run_agent only), max steps, max tool calls, max runtime, max iterations. Both `run_agent` and `run_deterministic` use limits from `config/agent_config.py`. **Phase 7:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`) via ThreadPoolExecutor around `execute_step`; step timeout returns RETRYABLE_FAILURE and logs `step_timeout`. See [CONFIGURATION.md](CONFIGURATION.md).
 
 **Recovery policy (Phase 4):** Every step result is classified SUCCESS, RETRYABLE_FAILURE, or FATAL_FAILURE. On FATAL_FAILURE the loop stops without replanning. **Deterministic semantics (Phase 2):** failed or invalid steps are **not** recorded; no `undo_last_step`. Replan and `state.update_plan(new_plan)` only. Only successful and valid steps call `state.record(step, result)`. **run_agent** additionally retries the same step up to MAX_STEP_RETRIES before replanning. Policy engine injects classification; trace logs it.
 
-**Loop comparison (Phase 2):**
+---
+
+## Phase 4 — Plan Identity
+
+Step identity is **plan-scoped** to fix the step ID collision bug during replanning.
+
+- **Problem:** If `completed_steps = [1]` and a replanned plan reuses step ids `[1,2,3]`, `next_step()` would incorrectly skip step 1 of the new plan.
+- **Solution:** Every plan has a unique `plan_id`. Step identity is `(plan_id, step_id)`.
+- **Plans:** `get_plan()` and `replan()` always attach or assign `plan_id` (e.g. `plan_3f8b8a7d`, from `new_plan_id()`). Replanned plans get a **new** `plan_id`; the previous plan_id is never reused.
+- **AgentState:** `completed_steps` is a list of `(plan_id, step_id)` tuples. `next_step()` only treats a step as completed when its `plan_id` matches `state.current_plan_id`, so completed steps from a previous plan do not affect the current plan.
+- **Observability:** Trace events (`step_executed`, `patch_result`, `error`, `goal_evaluation`, etc.) include `plan_id` for correlation.
+
+**Architecture (plan-scoped steps):**
+
+```
+  get_plan() / replan()  →  plan = { "plan_id": "plan_<uuid8>", "steps": [...] }
+       │
+       ▼
+  state.current_plan_id  →  used by next_step() to filter completed_steps
+       │
+       ▼
+  state.record(step, result)  →  completed_steps.append((current_plan_id, step["id"]))
+       │
+       ▼
+  next_step()  →  completed_ids = { step_id for (pid, step_id) in completed_steps if pid == current_plan_id }
+                  →  first step not in completed_ids (no cross-plan collision)
+```
+
+**Loop comparison (Phase 2 / Phase 3):** Both entrypoints use **execution_loop()**; behavior differs only by flags.
 
 | Aspect | run_deterministic | run_agent |
 |--------|-------------------|-----------|
+| Shared loop | execution_loop(..., mode=ExecutionLoopMode.DETERMINISTIC) | execution_loop(..., mode=ExecutionLoopMode.AGENT) |
 | Limits | config.agent_config | config.agent_config |
 | Failed step | Not recorded; replan → update_plan | Not recorded; replan → update_plan |
 | undo_last_step | No | No |
@@ -507,8 +536,9 @@ flowchart LR
 |------------------------|------|
 | `run_controller`       | Entry; mode routing; deterministic → run_attempt_loop. |
 | `run_attempt_loop`     | Phase 5: for each attempt run_deterministic → GoalEvaluator → TrajectoryMemory; on failure Critic + RetryPlanner → next attempt with retry_context. |
-| `run_deterministic`    | Single attempt: get_plan(retry_context) → state → step loop execute → validate → record only success → replan until finished. No undo_last_step; failed steps not recorded. |
-| `run_agent`           | Deprecated; own loop in agent_loop.py. Phase 2: aligned with run_deterministic (config limits, no record/undo on failure); keeps step retries and no goal evaluator. |
+| `execution_loop`      | Phase 3: shared step loop used by run_agent and run_deterministic; iteration/tool/runtime limits, StepExecutor, validate, replan, state.record; controlled by mode (ExecutionLoopMode.DETERMINISTIC | AGENT). Returns LoopResult(state, loop_output); callers use result.state and result.loop_output. |
+| `run_deterministic`    | Single attempt: get_plan(retry_context) → state → execution_loop(..., enable_goal_evaluator=True, enable_step_retries=False). Returns (state, loop_output). No undo_last_step; failed steps not recorded. |
+| `run_agent`           | Deprecated; get_plan → state → execution_loop(..., enable_goal_evaluator=False, enable_step_retries=True). Returns state. Same limits and failure semantics as run_deterministic; step retries and no goal evaluator. |
 | `get_plan`             | Plan resolver; instruction router (when enabled) or planner; single-step for CODE_SEARCH/CODE_EXPLAIN/INFRA; accepts retry_context for Phase 5. |
 | `plan(instruction)`    | Planner; reasoning model + JSON parse; fallback single EXPLAIN step; receives retry_context (strategy_hint, previous_attempts, critic_feedback). |
 | `StepExecutor`         | Calls `dispatch(step, state)`; wraps result in `StepResult` (includes `files_modified`, `patch_size` for EDIT steps). |
@@ -553,7 +583,8 @@ flowchart LR
 - **Execution loop**: `agent/runtime/execution_loop.py` — run_edit_test_fix_loop (snapshot rollback, syntax validation, retry guard, strategy explorer when retries exhausted); `agent/runtime/syntax_validator.py` — validate_project; `agent/runtime/retry_guard.py` — should_retry_strategy.
 - **Patch pipeline**: `editing/patch_generator.py` — to_structured_patches; `editing/ast_patcher.py` — apply_patch; `editing/patch_validator.py` — validate_patch; `editing/patch_executor.py` — execute_patch (rollback on failure).
 - **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (mode routing: deterministic/autonomous/multi_agent); delegates deterministic loop to run_deterministic.
-- **Deterministic runner**: `agent/orchestrator/deterministic_runner.py` — run_deterministic (plan → dispatch loop); single source of truth for Mode 1.
+- **Execution loop**: `agent/orchestrator/execution_loop.py` — execution_loop (shared by run_agent and run_deterministic); step loop, limits, validate, replan, optional goal evaluator and step retries.
+- **Deterministic runner**: `agent/orchestrator/deterministic_runner.py` — run_deterministic (get_plan → execution_loop with goal evaluator); single source of truth for Mode 1.
 - **Autonomous mode (Phase 7/8/15)**: `agent/autonomous/` — run_autonomous(goal, project_root, max_retries=MAX_RETRY_ATTEMPTS); goal_manager, state_observer, action_selector, agent_loop; when max_retries>1, TrajectoryLoop (Phase 15) runs meta loop: attempt→evaluate→critic→retry_planner→retry; reuses dispatcher, retrieval, editing pipeline; limits: max_steps, max_tool_calls, max_runtime, max_edits; respects MAX_RETRY_RUNTIME_SECONDS.
 - **Multi-agent orchestration (Phase 9)**: `agent/roles/` — run_multi_agent(goal, project_root, success_criteria); supervisor coordinates planner → localization → edit → test → critic (on failure); AgentWorkspace; all agents use dispatch; limits: max_agent_steps=30, max_patch_attempts=3, max_runtime=120s, max_file_edits=10; trace events: agent_started, agent_completed, agent_failed, handoff.
 - **Meta layer (Phase 8/15)**: `agent/meta/` — evaluator (SUCCESS/FAILURE/PARTIAL), critic (diagnose failure; Diagnosis includes evidence, suggested_strategy), retry_planner (rewrite_query, expand_scope, new_plan, etc.; invalid strategy falls back to generate_new_plan), trajectory_store (.agent_memory/trajectories/; each attempt has attempt, start_time, end_time for duration metrics), trajectory_loop (TrajectoryLoop.run_with_retries; DIVERSITY_SEQUENCE escalates strategy when critic repeats; telemetry: attempt_number, retry_strategy, trajectory_length, failure_type).

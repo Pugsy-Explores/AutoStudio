@@ -348,7 +348,7 @@ def test_retrieval_pipeline_ranked_context_step_executor(indexed_autostudio):
 
     state = AgentState(
         instruction=query,
-        current_plan={"steps": []},
+        current_plan={"plan_id": "retrieval_plan", "steps": []},
         context={"project_root": project_root, "instruction": query},
     )
 
@@ -368,7 +368,7 @@ def test_context_anchors_format():
 
     state = AgentState(
         instruction="Explain",
-        current_plan={"steps": []},
+        current_plan={"plan_id": "context_anchors_plan", "steps": []},
         context={
             "ranked_context": [
                 {

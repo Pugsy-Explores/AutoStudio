@@ -58,7 +58,7 @@
 
 ## Data flow
 
-- **TrajectoryMemory**: in-memory list of attempt_data (plan, step_results, errors, patches_applied, files_modified, goal_met).
+- **TrajectoryMemory**: in-memory list of attempt_data (plan with plan_id, step_results, errors, patches_applied, files_modified, goal_met). Each plan has a unique plan_id (Phase 4).
 - **Critic.analyze(instruction, attempt_data)**: hybrid — deterministic rules set `failure_reason` and `recommendation`; LLM generates `analysis` and `strategy_hint`. Uses a trajectory summary (not raw StepResult objects) for the LLM via `_summarize_trajectory(plan, step_results)` (max 1000 chars).
 - **RetryPlanner.build_retry_context(instruction, trajectory_memory, critic_feedback)**: returns `{ previous_attempts, critic_feedback, strategy_hint }`.
 - **Planner**: receives retry_context via `get_plan(..., retry_context=...)` → `plan(instruction, retry_context=...)`. When retry_context is present, prompt order is: **[Strategy Hint]** → **[Previous Attempts]** (plan-structure summary) → **[Planning Guidance]** (diversity: avoid repeating same plan) → **[Instruction]** + critic feedback.
@@ -86,9 +86,10 @@ When retrying, the planner prompt includes **[Planning Guidance]**: "Avoid repea
 ## Verification: Phase 1–4 intact
 
 1. **Deterministic runner unchanged** — `run_deterministic` still performs a single plan→steps→validate→record run; only an optional `retry_context` parameter was added and passed to `get_plan`.
-2. **Attempt loop above deterministic runner** — `run_attempt_loop` is the only caller that passes `retry_context`; it wraps multiple `run_deterministic` calls.
-3. **Trajectory memory** — `TrajectoryMemory` stores each attempt’s plan, step_results, errors, patches_applied, files_modified, goal_met.
-4. **Critic** — Hybrid: deterministic rules set `failure_reason` and `recommendation`; LLM generates `analysis` and `strategy_hint`. Trajectory summary (not raw step results) is sent to the LLM.
-5. **Retry planner** — `RetryPlanner.build_retry_context` returns `{ previous_attempts, critic_feedback, strategy_hint }` for the planner.
-6. **Planner receives retry_context** — `get_plan` and `plan()` accept optional `retry_context`; when set, the planner prompt includes strategy hint, previous attempt plans, planning guidance (diversity), instruction, and critic feedback.
-7. **Termination** — Loop exits when `goal_met` or when `attempt >= MAX_AGENT_ATTEMPTS - 1` (no further retry).
+2. **Phase 4 (plan identity)** — Every plan has `plan_id`; `completed_steps` are `(plan_id, step_id)`; replanned plans get a new `plan_id`; `next_step()` only considers completions for the current plan.
+3. **Attempt loop above deterministic runner** — `run_attempt_loop` is the only caller that passes `retry_context`; it wraps multiple `run_deterministic` calls.
+4. **Trajectory memory** — `TrajectoryMemory` stores each attempt’s plan, step_results, errors, patches_applied, files_modified, goal_met.
+5. **Critic** — Hybrid: deterministic rules set `failure_reason` and `recommendation`; LLM generates `analysis` and `strategy_hint`. Trajectory summary (not raw step results) is sent to the LLM.
+6. **Retry planner** — `RetryPlanner.build_retry_context` returns `{ previous_attempts, critic_feedback, strategy_hint }` for the planner.
+7. **Planner receives retry_context** — `get_plan` and `plan()` accept optional `retry_context`; when set, the planner prompt includes strategy hint, previous attempt plans, planning guidance (diversity), instruction, and critic feedback.
+8. **Termination** — Loop exits when `goal_met` or when `attempt >= MAX_AGENT_ATTEMPTS - 1` (no further retry).

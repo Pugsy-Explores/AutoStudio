@@ -1,10 +1,14 @@
-"""Replanner: on failure, use LLM to produce revised plan. Fallback to remaining steps."""
+"""Replanner: on failure, use LLM to produce revised plan. Fallback to remaining steps.
+
+Phase 4: Every replanned plan gets a new plan_id so step identity is plan-scoped.
+"""
 
 import json
 import logging
 import re
 
 from agent.memory.state import AgentState
+from agent.orchestrator.plan_resolver import new_plan_id
 from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
@@ -44,11 +48,16 @@ def _extract_json(text: str) -> str | None:
 
 
 def _fallback_remaining(state: AgentState) -> dict:
-    """Return plan with only remaining (not yet completed) steps."""
+    """Return plan with only remaining (not yet completed) steps. New plan_id (Phase 4)."""
     steps = state.current_plan.get("steps") or []
-    completed_ids = {s.get("id") for s in state.completed_steps}
+    current_plan_id = state.current_plan.get("plan_id")
+    completed_ids = {
+        step_id
+        for (plan_id, step_id) in state.completed_steps
+        if plan_id == current_plan_id
+    }
     remaining = [s for s in steps if isinstance(s, dict) and s.get("id") not in completed_ids]
-    return {"steps": remaining}
+    return {"plan_id": new_plan_id(), "steps": remaining}
 
 
 def replan(
@@ -141,4 +150,6 @@ def replan(
         logger.warning("[replanner] Validation failed, using fallback")
         return _fallback_remaining(state)
 
+    # Phase 4: replanned plan always gets a new plan_id (do not reuse previous).
+    data["plan_id"] = new_plan_id()
     return data

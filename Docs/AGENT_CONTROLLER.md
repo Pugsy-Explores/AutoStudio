@@ -53,7 +53,7 @@ result = run_controller(
 #   task_id,
 #   instruction,
 #   state,                    # AgentState (for backward compatibility with run_agent() callers)
-#   completed_steps,          # from AgentState.completed_steps (validated steps only)
+#   completed_steps,          # len(AgentState.completed_steps); step identity is (plan_id, step_id) (Phase 4)
 #   files_modified,           # derived from AgentState.step_results
 #   patches_applied,          # integer count of all applied patches in this attempt
 #   errors,
@@ -61,7 +61,7 @@ result = run_controller(
 # }
 ```
 
-**CLI entrypoints (Phase 1):** Both `python -m agent` and `python -m agent.cli.run_agent` invoke `run_controller(instruction)` and then use `result["state"]` for result printing. Flow: CLI → `run_controller(instruction)` → `run_attempt_loop(...)` → `run_deterministic(...)`. The deprecated `run_agent(instruction)` runs its own loop in `agent/orchestrator/agent_loop.py`; its loop behavior is aligned with `run_deterministic` (same config limits, failed steps not recorded, no `undo_last_step`) except it keeps step retries and has no goal evaluator. See [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md) for the loop comparison table.
+**CLI entrypoints (Phase 1):** Both `python -m agent` and `python -m agent.cli.run_agent` invoke `run_controller(instruction)` and then use `result["state"]` for result printing. Flow: CLI → `run_controller(instruction)` → `run_attempt_loop(...)` → `run_deterministic(...)` → **execution_loop()**. **Phase 3:** The deprecated `run_agent(instruction)` also uses the shared **execution_loop()** (with step retries, no goal evaluator); same config limits and failure semantics as run_deterministic. See [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md) for the loop comparison table.
 
 ---
 
@@ -81,7 +81,7 @@ instruction
             run_deterministic(instruction, project_root, trace_id, similar_tasks, retry_context=retry_context)
                  → get_plan(instruction, retry_context=retry_context)
                       → [router or planner] planner.plan(instruction, retry_context) when CODE_EDIT/GENERAL
-                 → AgentState; while not state.is_finished(): step → execute_step → validate → record
+                 → AgentState (plan with plan_id; completed_steps as (plan_id, step_id)); while not state.is_finished(): step → execute_step → validate → record
             goal_met = GoalEvaluator.evaluate(instruction, state)
             TrajectoryMemory.record_attempt(attempt_data)
             if goal_met: return (state, loop_output)
@@ -147,12 +147,13 @@ All limits are defined in `config/` and support env overrides. See [CONFIGURATIO
 - **Live visualization (Phase 6):** `add_event_listener()`, `add_stage_listener()` — used by `--live` flag
 - **Events:**
   - `planner_decision` — plan with steps
-  - `step_executed` — step_id, action, tool (chosen_tool), success
-  - `step_timeout` — step_id, action (Phase 7: per-step timeout exceeded)
+  - `step_executed` — plan_id, step_id, action, tool (chosen_tool), success (Phase 4)
+  - `step_timeout` — plan_id, step_id, action (Phase 7: per-step timeout exceeded)
   - `context_guardrail_triggered` — original_chars, capped_chars (Phase 7: context truncated before LLM)
-  - `patch_result` — patches_applied (count), files_modified (per EDIT step)
-  - `error` — step failures, max runtime, max replan, exceptions; includes `classification` when available
-  - `task_complete` — task_id, completed_steps, errors, patches_applied (total count), files_modified
+  - `patch_result` — plan_id, step_id, patches_applied (count), files_modified (per EDIT step) (Phase 4)
+  - `error` — plan_id, step_id, step failures, max runtime, max replan, exceptions; includes `classification` when available (Phase 4)
+  - `goal_evaluation` / `goal_completed` / `goal_unresolved` — plan_id, completed_steps count (Phase 4)
+  - `task_complete` — task_id, completed_steps (count), errors, patches_applied (total count), files_modified
   - **Phase 5 attempt loop:** `attempt_started`, `attempt_failed`, `attempt_retry`, `attempt_success`, `critic_analysis`, `strategy_hint_generated`, `trajectory_summary_generated` (attempt, summary_length; see [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md))
 
 ---
@@ -226,7 +227,8 @@ python -m pytest tests/test_agent_e2e.py -v --mock   # always use mock
 ## File Reference
 
 - **Controller:** `agent/orchestrator/agent_controller.py` — `run_controller`, `run_attempt_loop` (Phase 5), `_run_controller_by_mode` (routes to autonomous/multi_agent)
-- **Deterministic runner:** `agent/orchestrator/deterministic_runner.py` — `run_deterministic` (plan → StepExecutor.execute_step loop + goal evaluation; Mode 1 source; accepts optional `retry_context`)
+- **Execution loop:** `agent/orchestrator/execution_loop.py` — `execution_loop` (shared by run_agent and run_deterministic; enable_goal_evaluator / enable_step_retries control behavior)
+- **Deterministic runner:** `agent/orchestrator/deterministic_runner.py` — `run_deterministic` (get_plan → execution_loop with goal evaluator; Mode 1 source; accepts optional `retry_context`)
 - **CLI:** `agent/cli/entrypoint.py` — autostudio subcommands; `agent/cli/session.py` — chat REPL; `agent/cli/command_parser.py` — slash-commands
 - **Instruction router:** `agent/routing/instruction_router.py` — `route_instruction`
 - **Task memory:** `agent/memory/task_memory.py`

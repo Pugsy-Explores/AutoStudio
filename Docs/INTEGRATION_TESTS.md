@@ -58,7 +58,7 @@ When tests run, they print:
 
 ## Plan Shape
 
-The real planner may produce:
+The real planner may produce plans with `plan_id` and steps (Phase 4), e.g.:
 
 - `SEARCH → EDIT`
 - `SEARCH → SEARCH → EDIT`

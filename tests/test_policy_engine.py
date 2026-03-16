@@ -59,7 +59,7 @@ class TestExecutionPolicyEngineSearch(unittest.TestCase):
             max_total_attempts=10,
         )
         step = {"id": 1, "action": "SEARCH", "description": "router eval2"}
-        state = AgentState(instruction="test", current_plan={"steps": [step]})
+        state = AgentState(instruction="test", current_plan={"plan_id": "policy_plan", "steps": [step]})
 
         result = engine.execute_with_policy(step, state)
 
@@ -108,7 +108,7 @@ class TestExecutionPolicyEngineSearch(unittest.TestCase):
         step = {"id": 1, "action": "SEARCH", "description": "Find where the Step Executor class is"}
         state = AgentState(
             instruction="Find where the Step Executor class is",
-            current_plan={"steps": [step]},
+            current_plan={"plan_id": "policy_rewriter_plan", "steps": [step]},
         )
 
         result = engine.execute_with_policy(step, state)
@@ -133,7 +133,7 @@ class TestExecutionPolicyEngineSearch(unittest.TestCase):
             max_total_attempts=3,
         )
         step = {"id": 1, "action": "SEARCH", "description": "nonexistent symbol xyz"}
-        state = AgentState(instruction="test", current_plan={"steps": [step]})
+        state = AgentState(instruction="test", current_plan={"plan_id": "policy_exhausted_plan", "steps": [step]})
 
         result = engine.execute_with_policy(step, state)
 

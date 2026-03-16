@@ -35,7 +35,7 @@ AutoStudio converts natural-language instructions into executable plans, runs co
 
 ## Architecture Overview
 
-Mode 1 (deterministic) uses **run_controller** → **run_attempt_loop** (Phase 5): up to `MAX_AGENT_ATTEMPTS` per task; each attempt runs plan → step loop → **GoalEvaluator** → on failure: **Critic** + **RetryPlanner** → next attempt with `retry_context`. See [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md) and [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md).
+Mode 1 (deterministic) uses **run_controller** → **run_attempt_loop** (Phase 5): up to `MAX_AGENT_ATTEMPTS` per task; each attempt runs plan → **execution_loop** (shared step loop) → **GoalEvaluator** → on failure: **Critic** + **RetryPlanner** → next attempt with `retry_context`. Both `run_deterministic` and the deprecated `run_agent` use **execution_loop()** (Phase 3); behavior differs by flags (goal evaluator on/off, step retries on/off). **Phase 4** scopes step identity by `plan_id` so replanned plans do not skip steps when reusing step ids. See [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md), [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md#phase-4--plan-identity), and [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md).
 
 ```mermaid
 flowchart TB
@@ -52,7 +52,7 @@ flowchart TB
     subgraph PlanResolver["Plan resolver (router + planner)"]
         InstructionRouter[Instruction Router]
         Planner[Planner]
-        Plan[JSON plan: steps with action, description]
+        Plan[JSON plan: plan_id, steps with action, description]
     end
 
     subgraph Execution["Attempt: step loop"]
