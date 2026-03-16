@@ -67,8 +67,9 @@ Generated as part of the documentation audit. Lists major subsystems with file l
 
 | Component | File Location | Purpose | Key Entry Points |
 |-----------|---------------|---------|------------------|
-| Step Dispatcher | agent/execution/step_dispatcher.py | Central tool entry point; ToolGraph → Router → PolicyEngine → tool | `dispatch(step, state)` |
-| Policy Engine | agent/execution/policy_engine.py | Per-action retry policies; query rewrite on SEARCH retry | `ExecutionPolicyEngine`, `classify_result()`, `validate_step_input()` |
+| StepExecutor | agent/execution/executor.py | Execution boundary for planner steps; wraps dispatcher and returns `StepResult` (with `classification`, `files_modified`, `patch_size` for EDIT) | `StepExecutor.execute_step(step, state)` |
+| Step Dispatcher | agent/execution/step_dispatcher.py | Central tool entry point; ToolGraph → Router → PolicyEngine → tool (called by StepExecutor). Guarantees every dispatch result includes a `classification` (`SUCCESS`, `RETRYABLE_FAILURE`, `FATAL_FAILURE`), including EXPLAIN fallbacks. | `dispatch(step, state)` |
+| Policy Engine | agent/execution/policy_engine.py | Per-action retry policies; query rewrite on SEARCH retry; classifies results for recovery (`ResultClassification`) | `ExecutionPolicyEngine`, `classify_result()`, `validate_step_input()` |
 | Tool Graph | agent/execution/tool_graph.py | Allowed tools per node; tool ordering | `get_allowed_tools()`, `get_preferred_tool()` |
 | Tool Graph Router | agent/execution/tool_graph_router.py | Resolves which tool for action | `resolve_tool()` |
 | Explain Gate | agent/execution/explain_gate.py | Ensures ranked context before EXPLAIN | `ensure_context_before_explain()` |
@@ -77,8 +78,9 @@ Generated as part of the documentation audit. Lists major subsystems with file l
 
 | Component | File Location | Purpose | Key Entry Points |
 |-----------|---------------|---------|------------------|
-| Critic | agent/meta/critic.py | Failure diagnosis from trace | `diagnose()`, `Diagnosis` |
-| Retry Planner | agent/meta/retry_planner.py | Maps diagnosis to retry strategy | `plan_retry()`, `RetryHints` |
+| TrajectoryMemory | agent/meta/trajectory_memory.py | In-memory attempt data for retry (plan, step_results, errors, patches_applied, files_modified, goal_met) | `record_attempt()`, `last_attempt()`, `all_attempts()` |
+| Critic | agent/meta/critic.py | Hybrid attempt-level analysis: deterministic rules (failure_reason, recommendation) + LLM (analysis, strategy_hint). Uses trajectory summary (≤1000 chars), not raw StepResult. | `Critic.analyze()`, `_summarize_trajectory()`, `_generate_strategy_hint_llm()`; legacy: `diagnose()`, `Diagnosis` |
+| Retry Planner | agent/meta/retry_planner.py | Builds retry_context for planner: previous_attempts, critic_feedback, strategy_hint | `RetryPlanner.build_retry_context()`; legacy: `plan_retry()`, `RetryHints` |
 | Trajectory Loop | agent/meta/trajectory_loop.py | attempt → evaluate → critique → plan_retry → retry | `TrajectoryLoop.run_with_retries()` |
 | Trajectory Store | agent/meta/trajectory_store.py | Persists trajectory records to .agent_memory/ | save/load trajectory |
 | Evaluator | agent/meta/evaluator.py | Task success/failure from step results | `evaluate()` |

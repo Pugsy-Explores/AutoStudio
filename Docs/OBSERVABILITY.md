@@ -10,7 +10,7 @@ See also:
 
 ## Trace Logging
 
-Traces are written to `.agent_memory/traces/<trace_id>.json`. Each trace includes plan, tool calls, patch results, errors, and task_complete summary.
+Traces are written to `.agent_memory/traces/<trace_id>.json`. Each trace includes plan, tool calls, patch results, errors, task_complete summary, and (when the attempt loop runs) **Phase 5 attempt-loop events**: `attempt_started`, `attempt_failed`, `attempt_retry`, `attempt_success`, `critic_analysis`, `strategy_hint_generated`, `trajectory_summary_generated`. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md) and [AGENT_CONTROLLER.md](AGENT_CONTROLLER.md).
 
 **Entry points:** `agent/observability/trace_logger.py`
 

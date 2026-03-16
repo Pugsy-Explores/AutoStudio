@@ -1,6 +1,6 @@
 # Agent Controller — Full Pipeline
 
-The **agent controller** (`run_controller`) orchestrates the complete development workflow: instruction → plan → retrieval → edit → conflict resolution → patch execution → change detection → test repair → task memory. All tool execution goes through `dispatch(step, state)`; EDIT steps use the full pipeline inside the dispatcher's `_edit_fn`. Mode routing: `deterministic` (default), `autonomous`, or `multi_agent`.
+The **agent controller** (`run_controller`) orchestrates the complete development workflow: instruction → plan → retrieval → edit → conflict resolution → patch execution → change detection → test repair → task memory. All step execution goes through `StepExecutor.execute_step(step, state)`, which calls `dispatch(step, state)` under the hood; EDIT steps use the full pipeline inside the dispatcher's `_edit_fn`. Mode routing: `deterministic` (default), `autonomous`, or `multi_agent`.
 
 ---
 
@@ -49,7 +49,15 @@ result = run_controller(
     project_root="/path/to/repo",
     mode="deterministic",  # default; use "autonomous" or "multi_agent" for other modes
 )
-# Returns: { task_id, instruction, completed_steps, files_modified, errors, retrieved_symbols }
+# Returns: {
+#   task_id,
+#   instruction,
+#   completed_steps,          # from AgentState.completed_steps (validated steps only)
+#   files_modified,           # derived from AgentState.step_results
+#   patches_applied,          # integer count of all applied patches in this attempt
+#   errors,
+#   retrieved_symbols,
+# }
 ```
 
 ---
@@ -58,23 +66,24 @@ result = run_controller(
 
 **Mode routing:** `mode="deterministic"` (default) runs the loop below; `mode="autonomous"` delegates to `run_autonomous`; `mode="multi_agent"` delegates to `run_multi_agent`.
 
+**Phase 5 — Attempt loop:** In deterministic mode, the controller calls `run_attempt_loop()` (not a single `run_deterministic`). The attempt loop runs up to `MAX_AGENT_ATTEMPTS` (default 3). Each attempt: run deterministic runner → evaluate goal → record attempt in TrajectoryMemory → if goal_met return; else Critic.analyze (deterministic + LLM strategy hint) → RetryPlanner.build_retry_context → next attempt with retry_context (strategy_hint, previous_attempts, critic_feedback). The planner receives retry_context so it sees strategy hint, previous attempt plans, and diversity guidance. See [Docs/PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+
 ```
 instruction
   → [if mode != deterministic] _run_controller_by_mode → run_autonomous or run_multi_agent
   → build_repo_map() — spec format {modules, symbols, calls} → repo_map.json
   → search_similar_tasks() — vector index of past tasks (optional)
-  → run_deterministic(instruction, project_root, trace_id, similar_tasks)
-       → get_plan(instruction)
-            → [if ENABLE_INSTRUCTION_ROUTER=1 (default)] route_instruction() → category
-            → if CODE_SEARCH/CODE_EXPLAIN/INFRA: single-step plan, skip planner
-            → if CODE_EDIT/GENERAL: planner.plan(instruction)
-            → [if ENABLE_INSTRUCTION_ROUTER=0] planner.plan(instruction) directly
-       → AgentState with plan, context
-       → while not state.is_finished():
-            step = state.next_step()
-            result = dispatch(step, state)   # ALL steps via dispatch (including EDIT)
-            validate_step; on failure → replan(state, failed_step=step, error=...)
-            state.record(step, step_result)
+  → run_attempt_loop(instruction, project_root, trace_id, similar_tasks)   # Phase 5
+       for attempt in range(MAX_AGENT_ATTEMPTS):
+            run_deterministic(instruction, project_root, trace_id, similar_tasks, retry_context=retry_context)
+                 → get_plan(instruction, retry_context=retry_context)
+                      → [router or planner] planner.plan(instruction, retry_context) when CODE_EDIT/GENERAL
+                 → AgentState; while not state.is_finished(): step → execute_step → validate → record
+            goal_met = GoalEvaluator.evaluate(instruction, state)
+            TrajectoryMemory.record_attempt(attempt_data)
+            if goal_met: return (state, loop_output)
+            critic_feedback = Critic.analyze(instruction, attempt_data)   # hybrid: deterministic + LLM strategy_hint
+            retry_context = RetryPlanner.build_retry_context(instruction, trajectory_memory, critic_feedback)
   → save_task() — persist to .agent_memory/tasks/
   → finish_trace()
   → return task summary
@@ -138,10 +147,10 @@ All limits are defined in `config/` and support env overrides. See [CONFIGURATIO
   - `step_executed` — step_id, action, tool (chosen_tool), success
   - `step_timeout` — step_id, action (Phase 7: per-step timeout exceeded)
   - `context_guardrail_triggered` — original_chars, capped_chars (Phase 7: context truncated before LLM)
-  - `patch_result` — patches_applied, files_modified (when EDIT succeeds)
-  - `error` — step failures, max runtime, max replan, exceptions
-  - `high_risk_edit` — change impact when risk is HIGH
-  - `task_complete` — task_id, completed_steps, errors, patches_applied, files_modified
+  - `patch_result` — patches_applied (count), files_modified (per EDIT step)
+  - `error` — step failures, max runtime, max replan, exceptions; includes `classification` when available
+  - `task_complete` — task_id, completed_steps, errors, patches_applied (total count), files_modified
+  - **Phase 5 attempt loop:** `attempt_started`, `attempt_failed`, `attempt_retry`, `attempt_success`, `critic_analysis`, `strategy_hint_generated`, `trajectory_summary_generated` (attempt, summary_length; see [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md))
 
 ---
 
@@ -172,6 +181,7 @@ See [CONFIGURATION.md](CONFIGURATION.md) for the full list. Key variables:
 | `TEST_REPAIR_ENABLED` | 1 (default) or 0 — run tests after patch; 0 = patch only |
 | `COMPILE_BEFORE_TEST` | 1 (default) or 0 — run py_compile before tests |
 | `SERENA_PROJECT_DIR` | Project root (fallback when `project_root` not passed) |
+| `MAX_AGENT_ATTEMPTS` | Phase 5: max attempt-loop iterations (default 3) |
 
 ---
 
@@ -212,8 +222,8 @@ python -m pytest tests/test_agent_e2e.py -v --mock   # always use mock
 
 ## File Reference
 
-- **Controller:** `agent/orchestrator/agent_controller.py` — `run_controller`, `_run_controller_by_mode` (routes to autonomous/multi_agent)
-- **Deterministic runner:** `agent/orchestrator/deterministic_runner.py` — `run_deterministic` (plan → dispatch loop)
+- **Controller:** `agent/orchestrator/agent_controller.py` — `run_controller`, `run_attempt_loop` (Phase 5), `_run_controller_by_mode` (routes to autonomous/multi_agent)
+- **Deterministic runner:** `agent/orchestrator/deterministic_runner.py` — `run_deterministic` (plan → StepExecutor.execute_step loop + goal evaluation; Mode 1 source; accepts optional `retry_context`)
 - **CLI:** `agent/cli/entrypoint.py` — autostudio subcommands; `agent/cli/session.py` — chat REPL; `agent/cli/command_parser.py` — slash-commands
 - **Instruction router:** `agent/routing/instruction_router.py` — `route_instruction`
 - **Task memory:** `agent/memory/task_memory.py`

@@ -153,7 +153,7 @@ Stabilized retrieval flow: SEARCH_CANDIDATES (candidate discovery, <1s)
 └─────────────────────────────┘
 ```
 
-**High-level flow:** Instruction → Plan resolver (instruction router by default, else planner) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state. SEARCH uses `_search_fn` (RepoMapLookup → hybrid_retrieve: BM25 + graph + vector + grep → RRF) then `run_retrieval_pipeline` (anchor → expand → reference lookup → call-chain → dedup → reranker → prune). EXPLAIN uses ExplainGate to inject SEARCH when `ranked_context` is empty.
+**High-level flow:** Instruction → Plan resolver (instruction router by default, else planner) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → **Goal evaluation** → Optional replan on `goal_not_satisfied` → Return state. SEARCH uses `_search_fn` (RepoMapLookup → hybrid_retrieve: BM25 + graph + vector + grep → RRF) then `run_retrieval_pipeline` (anchor → expand → reference lookup → call-chain → dedup → reranker → prune). EXPLAIN uses ExplainGate to inject SEARCH when `ranked_context` is empty.
 
 ---
 
@@ -310,11 +310,12 @@ AutoStudio/
 │   │   ├── developer_model.py  # developer_profile.json: preferences from accepted solutions
 │   │   └── repo_learning.py   # repo_knowledge.json: bug_areas, refactor_patterns, constraints
 │   │
-│   ├── meta/                   # Reflection layer (Phase 8)
+│   ├── meta/                   # Reflection layer (Phase 5 attempt loop + Phase 8)
 │   │   ├── __init__.py
+│   │   ├── trajectory_memory.py # TrajectoryMemory: in-memory attempt data for retry loop
 │   │   ├── evaluator.py        # SUCCESS/FAILURE/PARTIAL from step results
-│   │   ├── critic.py           # Diagnose failure (retrieval_miss, bad_plan, bad_patch, etc.)
-│   │   ├── retry_planner.py    # Retry hints: rewrite_query, expand_scope, new_plan
+│   │   ├── critic.py           # Hybrid: deterministic failure_reason + LLM analysis/strategy_hint; trajectory summary
+│   │   ├── retry_planner.py    # RetryPlanner.build_retry_context (previous_attempts, critic_feedback, strategy_hint)
 │   │   └── trajectory_store.py # Persist attempts under .agent_memory/trajectories/
 │   │
 │   ├── runtime/                # Edit→test→fix execution loop (runtime safety)
@@ -346,10 +347,11 @@ AutoStudio/
 │   ├── orchestrator/           # Agent loop, controller, validation
 │   │   ├── __init__.py
 │   │   ├── agent_loop.py       # run_agent (Mode 1: standard loop; per-step timeout)
-│   │   ├── agent_controller.py # run_controller (mode: deterministic/autonomous/multi_agent)
-│   │   ├── deterministic_runner.py  # run_deterministic (plan → dispatch loop; Mode 1 source)
+│   │   ├── agent_controller.py # run_controller, run_attempt_loop (Phase 5; mode: deterministic/autonomous/multi_agent)
+│   │   ├── deterministic_runner.py  # run_deterministic (plan → dispatch loop + validation + goal evaluation; accepts retry_context; Mode 1 source)
 │   │   ├── plan_resolver.py    # get_plan: instruction_router or planner.plan()
 │   │   ├── replanner.py        # LLM-based replan on failure
+│   │   ├── goal_evaluator.py   # GoalEvaluator: rule-based attempt-level goal check (Phase 4)
 │   │   └── validator.py        # validate_step (rules + optional LLM)
 │   │
 │   ├── prompt_system/          # Phase 13: Prompt infrastructure
@@ -645,7 +647,7 @@ AutoStudio/
 |-----------|------|
 | **run_agent** | Entry point: plan → state → execute loop → validate → replan until finished |
 | **plan(instruction)** | Planner: LLM + JSON parse → `{steps: [{id, action, description, reason}]}` |
-| **StepExecutor** | Calls `dispatch(step, state)`; wraps result in `StepResult` (includes `files_modified`, `patch_size` for EDIT steps) |
+| **StepExecutor** | Execution boundary for steps: `execute_step(step, state)` calls `dispatch(step, state)` and returns `StepResult` (includes `files_modified`, `patch_size` for EDIT steps) |
 | **dispatch** | Routes by action to PolicyEngine (SEARCH/EDIT/INFRA) or EXPLAIN; pre-dispatch validate_step_input (Phase 7) |
 | **ToolGraph** | Per-node `allowed_tools` and `preferred_tool`; restricts transitions |
 | **ExecutionPolicyEngine** | Retry loop with mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn; validate_step_input pre-dispatch |
@@ -743,19 +745,25 @@ EDIT (via dispatch)
 
 ## Agent Controller (Full Pipeline)
 
-`run_controller(instruction, project_root, mode="deterministic")` orchestrates the complete development workflow. All tool execution goes through `dispatch(step, state)`. Mode routing: `deterministic` (default), `autonomous`, or `multi_agent`.
+`run_controller(instruction, project_root, mode="deterministic")` orchestrates the complete development workflow. All step execution goes through `StepExecutor.execute_step(step, state)`, which calls `dispatch(step, state)` under the hood. Mode routing: `deterministic` (default), `autonomous`, or `multi_agent`.
+
+**Phase 5 attempt loop (deterministic mode):** The controller runs `run_attempt_loop()` up to `MAX_AGENT_ATTEMPTS` (default 3). Each attempt runs `run_deterministic(..., retry_context=...)`. After an attempt, goal is evaluated; if not met, the hybrid Critic (deterministic rules + LLM strategy hint) analyzes the attempt, and RetryPlanner builds retry_context (previous_attempts, critic_feedback, strategy_hint). The planner receives retry_context so retries get strategy hints, previous attempt plans, and diversity guidance. See [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md).
 
 ```
 instruction
   → [if mode != deterministic] route to run_autonomous or run_multi_agent
   → build_repo_map() — high-level architectural map
   → search_similar_tasks() — vector index of past tasks (optional)
-  → run_deterministic(instruction, project_root)
-       → get_plan() — instruction router (default) or planner.plan()
-       → while task_not_complete:
-            step = next_step()
-            result = dispatch(step, state)   # ALL steps via dispatch (SEARCH, EDIT, INFRA, EXPLAIN)
-            validate step; if failure: replan
+  → run_attempt_loop(instruction, project_root, trace_id, similar_tasks)
+       for attempt in range(MAX_AGENT_ATTEMPTS):
+            run_deterministic(instruction, project_root, retry_context=retry_context)
+                 → get_plan(instruction, retry_context) — router or planner.plan(instruction, retry_context)
+                 → while not state.is_finished(): step → execute_step → validate → record; goal_eval inside runner
+            goal_met = GoalEvaluator.evaluate(instruction, state)
+            TrajectoryMemory.record_attempt(attempt_data)
+            if goal_met: return
+            critic_feedback = Critic.analyze(instruction, attempt_data)   # hybrid: failure_reason + strategy_hint
+            retry_context = RetryPlanner.build_retry_context(instruction, trajectory_memory, critic_feedback)
   → save_task() — persist to .agent_memory/tasks/
   → return task summary
 ```
@@ -768,7 +776,7 @@ instruction
 
 **Test repair loop:** After patch execution, runs tests (pytest); on failure, plans repair and retries (max 3 attempts). Supports flaky test detection and compile step before tests.
 
-**Trace logging:** Events stored in `.agent_memory/traces/`. Each trace includes plan, tool calls (step_executed with chosen tool), patch results, errors, and task_complete summary. See `agent/observability/trace_logger.py`.
+**Trace logging:** Events stored in `.agent_memory/traces/`. Each trace includes plan, tool calls (`step_executed` with chosen tool), patch results, errors, **goal evaluation events** (`goal_evaluation`, `goal_completed`, `goal_not_satisfied`, `goal_unresolved`), **Phase 5 attempt-loop events** (`attempt_started`, `attempt_failed`, `attempt_retry`, `attempt_success`, `critic_analysis`, `strategy_hint_generated`, `trajectory_summary_generated`), and task_complete summary. See `agent/observability/trace_logger.py` and [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md).
 
 ---
 
@@ -1101,7 +1109,8 @@ The **workflow layer** (`agent/workflow/`) turns AutoStudio into a developer tea
 | [Docs/prompt_engineering_rules.md](Docs/prompt_engineering_rules.md) | Phase 13: governance rules (1 prompt = 1 capability, versioning, evaluation, failure logging, Rules 6–7, guardrails, A/B testing) |
 | [Docs/CONFIGURATION.md](Docs/CONFIGURATION.md) | Centralized config: all modules, env overrides, validation |
 | [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md) | Step dispatch, SEARCH/EDIT/INFRA/EXPLAIN flows, policy engine, model routing |
-| [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md) | Full pipeline: run_controller, instruction router, safety limits, test repair, task memory |
+| [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md) | Full pipeline: run_controller, run_attempt_loop (Phase 5), instruction router, safety limits, test repair, task memory |
+| [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md) | Phase 5 attempt loop: TrajectoryMemory, hybrid Critic, RetryPlanner, strategy hints, trajectory summarization, planner diversity guard |
 | [Docs/ROUTING_ARCHITECTURE_REPORT.md](Docs/ROUTING_ARCHITECTURE_REPORT.md) | Routing architecture: instruction router, tool graph, categories, replanner |
 | [Docs/REPOSITORY_SYMBOL_GRAPH.md](Docs/REPOSITORY_SYMBOL_GRAPH.md) | Symbol graph, repo map, change detector, vector search |
 | [Docs/CODING_AGENT_ARCHITECTURE_GUIDE.md](Docs/CODING_AGENT_ARCHITECTURE_GUIDE.md) | Architecture patterns, anti-patterns, production practices |
