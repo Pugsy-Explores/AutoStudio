@@ -1,4 +1,8 @@
-"""Vector index for past tasks: semantic search over task history."""
+"""Vector index for past tasks: semantic search over task history.
+
+When EMBEDDING_USE_DAEMON=1 and retrieval daemon is reachable, uses daemon /embed
+(via agent.retrieval.daemon_embed) so the agent never loads SentenceTransformer in-process.
+"""
 
 import logging
 import os
@@ -13,6 +17,28 @@ EMB_MODEL = "all-MiniLM-L6-v2"
 
 _client = None
 _model = None
+
+
+def _encode_for_index(text: str) -> list[float] | None:
+    """Encode one text: daemon if available, else in-process model. Returns list of floats or None."""
+    try:
+        from agent.retrieval.daemon_embed import daemon_embed_available, encode_via_daemon
+
+        if daemon_embed_available():
+            emb_list = encode_via_daemon([text])
+            if emb_list and len(emb_list) > 0:
+                return emb_list[0]
+            return None
+    except Exception as e:
+        logger.debug("[task_index] daemon encode failed: %s", e)
+    model = _get_model()
+    if not model:
+        return None
+    try:
+        return model.encode(text).tolist()
+    except Exception as e:
+        logger.debug("[task_index] model encode failed: %s", e)
+        return None
 
 
 def _check_available() -> bool:
@@ -68,17 +94,19 @@ def index_task(
     if not _check_available():
         return False
     client = _get_client(project_root)
-    model = _get_model()
-    if not client or not model:
+    if not client:
         return False
 
     files_str = ", ".join(files_modified or [])[:500]
     errors_str = ", ".join(str(e) for e in (errors or []))[:500]
     doc = f"instruction: {instruction[:1000]}\nfiles: {files_str}\nerrors: {errors_str}"
 
+    emb = _encode_for_index(doc)
+    if emb is None:
+        return False
+
     try:
         coll = client.get_or_create_collection(COLLECTION_NAME)
-        emb = model.encode(doc).tolist()
         coll.add(
             ids=[task_id],
             documents=[doc],
@@ -103,8 +131,11 @@ def search_similar_tasks(
     if not _check_available():
         return []
     client = _get_client(project_root)
-    model = _get_model()
-    if not client or not model:
+    if not client:
+        return []
+
+    q_emb = _encode_for_index(query.strip())
+    if q_emb is None:
         return []
 
     try:
@@ -113,7 +144,6 @@ def search_similar_tasks(
         return []
 
     try:
-        q_emb = model.encode(query.strip()).tolist()
         results = coll.query(query_embeddings=[q_emb], n_results=min(top_k, 10))
     except Exception as e:
         logger.debug("[task_index] search failed: %s", e)

@@ -160,6 +160,21 @@ def run_controller(
     trace_id = start_trace(task_id, str(root), query=instruction)
 
     try:
+        # Ensure retrieval daemon is reachable (start if not running and auto-start enabled)
+        try:
+            from config.retrieval_config import EMBEDDING_USE_DAEMON, RERANKER_USE_DAEMON
+            from agent.retrieval.daemon_ensure import ensure_retrieval_daemon
+
+            if RERANKER_USE_DAEMON or EMBEDDING_USE_DAEMON:
+                daemon_reachable = ensure_retrieval_daemon(str(root))
+                log_event(
+                    trace_id,
+                    "retrieval_daemon_ensure",
+                    {"daemon_reachable": daemon_reachable},
+                )
+        except Exception as e:
+            logger.debug("[agent_controller] retrieval daemon ensure skipped: %s", e)
+
         # Build repo map for high-level context
         try:
             from repo_graph.repo_map_builder import build_repo_map

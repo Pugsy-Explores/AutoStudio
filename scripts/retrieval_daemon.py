@@ -4,6 +4,8 @@
 Loads both models at startup, warms them up, and serves HTTP endpoints.
 Run before agent sessions to avoid cold-start latency. The agent uses
 this daemon when RERANKER_USE_DAEMON=1 and EMBEDDING_USE_DAEMON=1.
+When RETRIEVAL_DAEMON_AUTO_START=1 (default), the agent may start this
+script automatically if the daemon is not already running.
 
 Requires: pip install fastapi uvicorn
 

@@ -259,7 +259,7 @@ python -m repo_index.index_repo /path/to/repo
 
 ### Retrieval daemon (optional)
 
-Run the unified retrieval daemon (reranker + embedding) before agent sessions to avoid cold-start latency. When `RERANKER_USE_DAEMON=1` and `EMBEDDING_USE_DAEMON=1` (defaults), the agent uses the daemon instead of loading models in-process.
+Run the unified retrieval daemon (reranker + embedding) before agent sessions to avoid cold-start latency. When `RERANKER_USE_DAEMON=1` and `EMBEDDING_USE_DAEMON=1` (defaults), the agent uses the daemon instead of loading models in-process. When `RETRIEVAL_DAEMON_AUTO_START=1` (default), the agent will start the daemon automatically if it is not already running.
 
 ```bash
 python scripts/retrieval_daemon.py              # foreground

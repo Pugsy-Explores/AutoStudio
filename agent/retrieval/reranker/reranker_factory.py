@@ -4,17 +4,18 @@ Public API:
   init_reranker()    — call once at process start
   create_reranker()  — returns singleton BaseReranker or None if disabled
 
-When RERANKER_USE_DAEMON=1 and retrieval daemon is reachable, returns
-HttpRerankerClient (no in-process model load). Otherwise builds in-process reranker.
+When RERANKER_USE_DAEMON=1 and retrieval daemon is reachable (daemon_client),
+returns HttpRerankerClient so reranking uses the daemon. Otherwise builds in-process.
 """
 
 from __future__ import annotations
 
 import logging
 
+from agent.retrieval.daemon_client import daemon_reranker_available
 from agent.retrieval.reranker.base_reranker import BaseReranker
 from agent.retrieval.reranker.hardware import detect_hardware
-from agent.retrieval.reranker.http_reranker import HttpRerankerClient, _check_daemon_health
+from agent.retrieval.reranker.http_reranker import HttpRerankerClient
 from config.retrieval_config import RERANKER_USE_DAEMON, RERANKER_USE_INT8, RETRIEVAL_DAEMON_PORT
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ def create_reranker() -> BaseReranker | None:
         return None
 
     if _reranker_instance is None:
-        if RERANKER_USE_DAEMON and _check_daemon_health(RETRIEVAL_DAEMON_PORT):
+        if RERANKER_USE_DAEMON and daemon_reranker_available():
             _reranker_instance = HttpRerankerClient(port=RETRIEVAL_DAEMON_PORT)
             logger.info("[reranker] using retrieval daemon (HTTP)")
         else:

@@ -378,12 +378,28 @@ def run_retrieval_pipeline(
 ) -> dict:
     """
     Anchor detection → expand → read_symbol_body/read_file → find_referencing_symbols → build_context.
-    Updates state.context (retrieved_*, context_snippets as list of {file, symbol, snippet}, ranked_context).
+    When the retrieval daemon is available, embedding and reranking are routed through it
+    (daemon-backed inference path). Updates state.context (retrieved_*, context_snippets, ranked_context).
     Returns aggregated result for the SEARCH step.
     """
     results = (search_results or [])[:MAX_SEARCH_RESULTS]
     if not results:
         return {"results": [], "query": query or "", "anchors": 0}
+
+    # Explicitly detect daemon availability; when active, route embedding + rerank through daemon only
+    try:
+        from agent.retrieval.daemon_client import retrieval_daemon_available
+
+        if retrieval_daemon_available():
+            state.context["retrieval_via_daemon"] = True
+            logger.info(
+                "[retrieval_pipeline] daemon active — routing retrieval through daemon (embed + rerank)"
+            )
+        else:
+            state.context["retrieval_via_daemon"] = False
+    except Exception as e:
+        logger.debug("[retrieval_pipeline] daemon check skipped: %s", e)
+        state.context["retrieval_via_daemon"] = False
 
     anchors = detect_anchors(results, query)
     if not anchors:

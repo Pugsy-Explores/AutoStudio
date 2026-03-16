@@ -182,6 +182,8 @@ Used by `agent/runtime/execution_loop.py`. Snapshot-based rollback (no git), syn
 | RETRIEVAL_DAEMON_PORT | 9004 | RETRIEVAL_DAEMON_PORT | Same as RERANKER_DAEMON_PORT; unified daemon port |
 | RERANKER_USE_DAEMON | True | RERANKER_USE_DAEMON | Prefer retrieval daemon for reranker when reachable (default ON) |
 | EMBEDDING_USE_DAEMON | True | EMBEDDING_USE_DAEMON | Prefer retrieval daemon /embed for vector search when reachable (default ON) |
+| RETRIEVAL_DAEMON_AUTO_START | True | RETRIEVAL_DAEMON_AUTO_START | Start retrieval daemon if not running when agent starts (default ON). 0 = never start; user runs daemon manually |
+| RETRIEVAL_DAEMON_START_TIMEOUT_SECONDS | 90 | RETRIEVAL_DAEMON_START_TIMEOUT_SECONDS | Max seconds to wait for daemon to become healthy after auto-start |
 | RERANKER_DEVICE | auto | RERANKER_DEVICE | Phase 17: auto \| cpu \| gpu |
 | RERANKER_GPU_MODEL | (from models_config.json reranker.gpu_model) | RERANKER_GPU_MODEL | Phase 17: GPU model ID |
 | RERANKER_CPU_MODEL | (from models_config.json reranker.cpu_model) | RERANKER_CPU_MODEL | Phase 17: CPU ONNX model path |
