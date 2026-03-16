@@ -11,10 +11,18 @@ import logging
 import os
 import time
 import uuid
+import warnings
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
-from config.agent_config import MAX_STEP_TIMEOUT_SECONDS, MAX_TASK_RUNTIME_SECONDS
+from config.agent_config import (
+    MAX_LOOP_ITERATIONS,
+    MAX_REPLAN_ATTEMPTS,
+    MAX_STEP_TIMEOUT_SECONDS,
+    MAX_STEPS,
+    MAX_TASK_RUNTIME_SECONDS,
+    MAX_TOOL_CALLS,
+)
 from agent.execution.executor import StepExecutor
 from agent.execution.policy_engine import ResultClassification
 from agent.memory.state import AgentState
@@ -26,23 +34,22 @@ from agent.orchestrator.validator import validate_step
 
 logger = logging.getLogger(__name__)
 
-# Termination conditions (per Phase 4 roadmap)
-MAX_REPLAN_ATTEMPTS = 3  # Prevent infinite replan when same step keeps failing
-MAX_STEP_RETRIES = 2  # Retry same step before triggering replan
-MAX_STEPS = 20  # Hard step count per task
-MAX_TOOL_CALLS = 50  # Max tool invocations per task
-MAX_LOOP_ITERATIONS = 100  # Stall detection: prevent runaway agents
+# Step retries before replan (run_agent only; deterministic_runner does not retry same step).
+MAX_STEP_RETRIES = 2
 
 
+# Deprecated entrypoint: use run_controller() instead.
 def run_agent(instruction: str) -> AgentState:
     """
-    Run full pipeline: get_plan (router + planner) -> create state -> execute loop.
-
-    Flow per AGENT_LOOP_WORKFLOW.md:
-    - get_plan: instruction router (when enabled) or planner
-    - Execute step -> validate -> on failure: undo, replan, continue
-    - Termination: no more steps, max replan exceeded, max runtime, max iterations
+    Backward-compatible entrypoint: runs an execution loop aligned with run_deterministic()
+    (config limits, no recording of failed steps, no undo_last_step). Keeps step retries
+    and no goal evaluator. Prefer run_controller(instruction) for new code.
     """
+    warnings.warn(
+        "run_agent() is deprecated. Use run_controller() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     project_root = os.environ.get("SERENA_PROJECT_DIR") or str(Path.cwd())
     task_id = str(uuid.uuid4())
     trace_id = start_trace(task_id, project_root, query=instruction)
@@ -74,7 +81,6 @@ def run_agent(instruction: str) -> AgentState:
         iteration = 0
         tool_call_count = 0
 
-        # Log limits to trace for observability
         state.context["execution_limits"] = {
             "max_steps": MAX_STEPS,
             "max_tool_calls": MAX_TOOL_CALLS,
@@ -112,7 +118,6 @@ def run_agent(instruction: str) -> AgentState:
             state.context["current_step_id"] = step.get("id")
             tool_call_count += 1
 
-            # Per-step timeout: prevent a single slow tool call from consuming full task budget
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(executor.execute_step, step, state)
                 try:
@@ -152,28 +157,37 @@ def run_agent(instruction: str) -> AgentState:
                 out_summary,
             )
 
-            valid, validation_feedback = validate_step(step, result, state=state)
             classification = result.classification or ResultClassification.SUCCESS.value
             if classification == ResultClassification.FATAL_FAILURE.value:
                 logger.warning("[agent_loop] FATAL_FAILURE classification, stopping without replan")
                 break
-            if result.success and valid:
-                state.record(step, result)
-                replan_count = 0
-                step_retry_count = 0
-            else:
-                # Retry same step before replanning (Phase 4: max_step_retries)
+
+            if not result.success:
                 if step_retry_count < MAX_STEP_RETRIES:
                     step_retry_count += 1
                     logger.info("[agent_loop] step failed, retrying (%s/%s)", step_retry_count, MAX_STEP_RETRIES)
-                    continue  # Re-execute same step (do not record, do not replan)
+                    continue
                 step_retry_count = 0
-                state.record(step, result)
                 replan_count += 1
                 if replan_count >= MAX_REPLAN_ATTEMPTS:
                     logger.warning("[agent_loop] max replan attempts exceeded, stopping")
                     break
-                state.undo_last_step()
+                error_msg = result.error or str(result.output)[:300] if result.output else "Step failed"
+                new_plan = replan(state, failed_step=step, error=error_msg)
+                state.update_plan(new_plan)
+                continue
+
+            valid, validation_feedback = validate_step(step, result, state=state)
+            if not valid:
+                if step_retry_count < MAX_STEP_RETRIES:
+                    step_retry_count += 1
+                    logger.info("[agent_loop] validation failed, retrying (%s/%s)", step_retry_count, MAX_STEP_RETRIES)
+                    continue
+                step_retry_count = 0
+                replan_count += 1
+                if replan_count >= MAX_REPLAN_ATTEMPTS:
+                    logger.warning("[agent_loop] max replan attempts exceeded, stopping")
+                    break
                 error_msg = (
                     result.error
                     or validation_feedback
@@ -181,6 +195,11 @@ def run_agent(instruction: str) -> AgentState:
                 )
                 new_plan = replan(state, failed_step=step, error=error_msg)
                 state.update_plan(new_plan)
+                continue
+
+            state.record(step, result)
+            replan_count = 0
+            step_retry_count = 0
 
         state.context["execution_counts"] = {
             "steps_completed": len(state.completed_steps),

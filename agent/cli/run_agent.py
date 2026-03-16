@@ -8,7 +8,7 @@ from config.config_validator import validate_config
 from config.logging_config import configure_logging
 from config.startup import ensure_services_ready
 from agent.models.model_config import REASONING_MODEL_NAME, REASONING_V2_MODEL_NAME, SMALL_MODEL_NAME
-from agent.orchestrator.agent_loop import run_agent
+from agent.orchestrator.agent_controller import run_controller
 
 validate_config()
 # Ensure process logs (agent steps) appear when run from CLI; errors highlighted in red
@@ -40,7 +40,8 @@ def main() -> None:
         print("--- Live ---")
 
     try:
-        state = run_agent(instruction)
+        result = run_controller(instruction)
+        state = result["state"]
     finally:
         if args.live and event_fns:
             from agent.cli.live_viz import uninstall_live_listeners

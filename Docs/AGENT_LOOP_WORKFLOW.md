@@ -63,7 +63,7 @@ flowchart TB
         Q --> R["dispatch step and state"]
         R --> S["state.record step and result"]
         S --> T{"result.success and validate_step?"}
-        T -->|no| U["undo_last_step, replan with failed_step and error"]
+        T -->|no| U["replan with failed_step and error (do not record step)"]
         U --> V["state.update_plan"]
         V --> N
         T -->|yes| N
@@ -94,17 +94,27 @@ flowchart TB
          │     CODE_EDIT/GENERAL ──► plan     │  no: plan instruction                           │
          │   ──► AgentState (instruction, plan, completed_steps, results, context)             │
          │   ──► Step loop: next_step ──► execute_step ──► dispatch ──► state.record             │
-         │        validate? ──► success: continue │ fail: undo, replan, update_plan             │
+         │        validate? ──► success: record │ fail: replan, update_plan (no record)             │
          │   attempt done ──► GoalEvaluator.evaluate ──► TrajectoryMemory.record_attempt         │
          │   goal_met? return │ else: Critic.analyze ──► RetryPlanner.build_retry_context ──► get_plan (next attempt)
          └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Context initialization:** `run_agent` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
+**Context initialization:** When execution goes through `run_controller` (CLI entrypoints `python -m agent`, `python -m agent.cli.run_agent`), `run_deterministic` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. The deprecated `run_agent(instruction)` runs its own loop in `agent/orchestrator/agent_loop.py`; its behavior is aligned with `run_deterministic` (same config limits, same failure semantics: failed steps are not recorded, no `undo_last_step`), except it keeps step retries (MAX_STEP_RETRIES) and has no goal evaluator (plan exhaustion → break). See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
 
-**Termination conditions (Phase 4):** task complete, max replan (3), max step retries (2), max steps (20), max tool calls (50), max runtime (60s), max iterations (100). **Phase 7:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`, default 15s) via ThreadPoolExecutor around `execute_step`; step timeout returns FATAL_FAILURE and logs `step_timeout`. `agent_loop` uses module-level constants in `agent/orchestrator/agent_loop.py`; `agent_controller` uses `config/agent_config.py` (15 min, 5 replans). See [CONFIGURATION.md](CONFIGURATION.md).
+**Termination conditions (Phase 4):** task complete, max replan, max step retries (run_agent only), max steps, max tool calls, max runtime, max iterations. Both `run_agent` and `run_deterministic` use limits from `config/agent_config.py`. **Phase 7:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`) via ThreadPoolExecutor around `execute_step`; step timeout returns RETRYABLE_FAILURE and logs `step_timeout`. See [CONFIGURATION.md](CONFIGURATION.md).
 
-**Recovery policy (Phase 4):** Every step result is classified SUCCESS, RETRYABLE_FAILURE, or FATAL_FAILURE. On FATAL_FAILURE the loop stops without replanning. On RETRYABLE_FAILURE: retry same step (up to MAX_STEP_RETRIES) then replan. Policy engine injects classification; trace logs it.
+**Recovery policy (Phase 4):** Every step result is classified SUCCESS, RETRYABLE_FAILURE, or FATAL_FAILURE. On FATAL_FAILURE the loop stops without replanning. **Deterministic semantics (Phase 2):** failed or invalid steps are **not** recorded; no `undo_last_step`. Replan and `state.update_plan(new_plan)` only. Only successful and valid steps call `state.record(step, result)`. **run_agent** additionally retries the same step up to MAX_STEP_RETRIES before replanning. Policy engine injects classification; trace logs it.
+
+**Loop comparison (Phase 2):**
+
+| Aspect | run_deterministic | run_agent |
+|--------|-------------------|-----------|
+| Limits | config.agent_config | config.agent_config |
+| Failed step | Not recorded; replan → update_plan | Not recorded; replan → update_plan |
+| undo_last_step | No | No |
+| Step retries | No | Yes (MAX_STEP_RETRIES) |
+| Plan exhausted | GoalEvaluator; replan or break | break (no goal evaluator) |
 
 ---
 
@@ -497,7 +507,8 @@ flowchart LR
 |------------------------|------|
 | `run_controller`       | Entry; mode routing; deterministic → run_attempt_loop. |
 | `run_attempt_loop`     | Phase 5: for each attempt run_deterministic → GoalEvaluator → TrajectoryMemory; on failure Critic + RetryPlanner → next attempt with retry_context. |
-| `run_deterministic`    | Single attempt: get_plan(retry_context) → state → step loop execute → validate → replan until finished. |
+| `run_deterministic`    | Single attempt: get_plan(retry_context) → state → step loop execute → validate → record only success → replan until finished. No undo_last_step; failed steps not recorded. |
+| `run_agent`           | Deprecated; own loop in agent_loop.py. Phase 2: aligned with run_deterministic (config limits, no record/undo on failure); keeps step retries and no goal evaluator. |
 | `get_plan`             | Plan resolver; instruction router (when enabled) or planner; single-step for CODE_SEARCH/CODE_EXPLAIN/INFRA; accepts retry_context for Phase 5. |
 | `plan(instruction)`    | Planner; reasoning model + JSON parse; fallback single EXPLAIN step; receives retry_context (strategy_hint, previous_attempts, critic_feedback). |
 | `StepExecutor`         | Calls `dispatch(step, state)`; wraps result in `StepResult` (includes `files_modified`, `patch_size` for EDIT steps). |

@@ -210,7 +210,7 @@ def run_controller(
                 "task_id": task_id,
                 "completed_steps": len(completed_steps),
                 "errors": errors_encountered,
-                "patches_applied": len(patches_applied),
+                "patches_applied": len(patches_applied) if isinstance(patches_applied, list) else patches_applied,
                 "files_modified": list(dict.fromkeys(files_modified)),
             },
         )
@@ -252,6 +252,7 @@ def run_controller(
     return {
         "task_id": task_id,
         "instruction": instruction,
+        "state": state,
         "completed_steps": len(completed_steps),
         "files_modified": list(dict.fromkeys(files_modified)),
         "errors": errors_encountered,

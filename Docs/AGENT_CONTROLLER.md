@@ -52,6 +52,7 @@ result = run_controller(
 # Returns: {
 #   task_id,
 #   instruction,
+#   state,                    # AgentState (for backward compatibility with run_agent() callers)
 #   completed_steps,          # from AgentState.completed_steps (validated steps only)
 #   files_modified,           # derived from AgentState.step_results
 #   patches_applied,          # integer count of all applied patches in this attempt
@@ -59,6 +60,8 @@ result = run_controller(
 #   retrieved_symbols,
 # }
 ```
+
+**CLI entrypoints (Phase 1):** Both `python -m agent` and `python -m agent.cli.run_agent` invoke `run_controller(instruction)` and then use `result["state"]` for result printing. Flow: CLI → `run_controller(instruction)` → `run_attempt_loop(...)` → `run_deterministic(...)`. The deprecated `run_agent(instruction)` runs its own loop in `agent/orchestrator/agent_loop.py`; its loop behavior is aligned with `run_deterministic` (same config limits, failed steps not recorded, no `undo_last_step`) except it keeps step retries and has no goal evaluator. See [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md) for the loop comparison table.
 
 ---
 

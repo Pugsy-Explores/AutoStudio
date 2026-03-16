@@ -236,11 +236,15 @@ python -c "from agent.autonomous import run_autonomous; run_autonomous('Fix fail
 
 # Default: autostudio explain/edit/chat use run_controller → run_attempt_loop (Phase 5)
 
-# Legacy — standard agent loop (run_agent: plan → execute steps, no attempt loop)
+# Runtime entrypoints (explicit):
+#   Primary runtime entrypoint:     run_controller()  — use this for all new code and programmatic runs; CLI (python -m agent, python -m agent.cli.run_agent) invokes this.
+#   Legacy compatibility wrapper:   run_agent()       — deprecated; runs its own loop aligned with run_deterministic (config limits, no record of failed steps, no undo_last_step; keeps step retries, no goal evaluator); emits DeprecationWarning when called.
+
+# CLI entrypoints (both invoke run_controller → run_attempt_loop → run_deterministic)
 python -m agent "Find where the StepExecutor class is defined"
 python -m agent "Explain how StepExecutor works"
 
-# Legacy — single-shot with optional live visualization
+# Single-shot with optional live visualization (also via run_controller)
 python -m agent.cli.run_agent "Explain how the dispatcher routes SEARCH steps" [--live]
 ```
 
