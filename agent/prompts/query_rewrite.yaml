@@ -1,3 +1,5 @@
+# Deprecated – replaced by query_expansion.
+
 prompt: |
   You are writing/rewriting a user query for a code search system.
 

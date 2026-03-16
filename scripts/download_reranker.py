@@ -33,7 +33,7 @@ from config.retrieval_config import (  # noqa: E402
 )
 
 DEFAULT_GPU_REPO = RERANKER_GPU_MODEL
-DEFAULT_CPU_REPO = "Qwen/Qwen3-Reranker-0.6B-ONNX"
+DEFAULT_CPU_REPO = "zhiqing/Qwen3-Reranker-0.6B-ONNX"
 MODELS_DIR = _ROOT / "models" / "reranker"
 
 
@@ -80,7 +80,7 @@ def _download_cpu(model_id: str) -> None:
             hf_hub_download(repo_id=model_id, filename=fname, local_dir=str(dest))
 
     logger.info("CPU model downloaded to %s", dest)
-    logger.info("Set RERANKER_CPU_MODEL=%s", dest / Path(RERANKER_CPU_MODEL).name)
+    logger.info("Default RERANKER_CPU_MODEL=models/reranker/model.onnx (matches repo)")
 
 
 def main() -> None:

@@ -1,7 +1,6 @@
 """Integration tests for retrieval pipeline: query -> graph retrieval -> context builder."""
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -337,7 +336,8 @@ def test_search_budget_enforced():
 @pytest.mark.slow
 def test_retrieval_pipeline_ranked_context_step_executor(indexed_autostudio):
     """Full pipeline for 'Explain StepExecutor': graph retrieval -> run_retrieval_pipeline -> ranked_context != [].
-    Step 3 validation: ranked_context must be populated for EXPLAIN to succeed."""
+    Step 3 validation: ranked_context must be populated for EXPLAIN to succeed.
+    Pipeline uses reranker (or retriever-score fallback); no rank_context patch (removed in TASK 5)."""
     project_root, source_root = indexed_autostudio
     query = "Explain StepExecutor"
 
@@ -352,12 +352,7 @@ def test_retrieval_pipeline_ranked_context_step_executor(indexed_autostudio):
         context={"project_root": project_root, "instruction": query},
     )
 
-    def mock_rank_context(rank_query: str, candidates: list) -> list:
-        """Pass-through: return candidates in order (avoids LLM call)."""
-        return list(candidates)
-
-    with patch("agent.retrieval.retrieval_pipeline.rank_context", side_effect=mock_rank_context):
-        run_retrieval_pipeline(results, state, query=query)
+    run_retrieval_pipeline(results, state, query=query)
 
     ranked = state.context.get("ranked_context") or []
     assert len(ranked) > 0, "ranked_context must not be empty (Step 3: retrieval bug if empty)"

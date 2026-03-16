@@ -1,6 +1,9 @@
 """
 Router prompts used by the evaluation system.
 
+DEPRECATED: These prompts are kept for compatibility with existing eval routers.
+Use router_v2_prompt.py (ROUTER_V2_SYSTEM) as the canonical routing system.
+
 These prompts are optimized for small routing models (2B–3B).
 They emphasize clear category boundaries and deterministic output.
 """

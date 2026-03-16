@@ -19,6 +19,7 @@
 | [../agent/retrieval/README.md](../agent/retrieval/README.md) | Retrieval subsystem: purpose, architecture, key classes, data flow. |
 | [../agent/retrieval/reranker/README.md](../agent/retrieval/reranker/README.md) | Cross-encoder reranker: purpose, architecture, key classes. |
 | [../agent/meta/README.md](../agent/meta/README.md) | Meta layer: trajectory loop, critic, retry planner. |
+| [../agent/runtime/README.md](../agent/runtime/README.md) | Edit→test→fix execution loop: snapshot rollback, syntax validation, retry guard; config and metrics. |
 | [../agent/failure_mining/README.md](../agent/failure_mining/README.md) | Failure mining subsystem: purpose, architecture, key classes. |
 | [../dev/roadmap/phase_1_pipeline.md](../dev/roadmap/phase_1_pipeline.md) | Phase 1 pipeline convergence: steps 1–8, verification tests, full system test (`python -m agent "Explain how StepExecutor works"`). |
 | [../dev/roadmap/phase_3_scenarios.md](../dev/roadmap/phase_3_scenarios.md) | Phase 3 scenario evaluation: 40-task benchmark, `run_principal_engineer_suite --scenarios`, `reports/eval_report.json`. |
@@ -45,7 +46,7 @@
 The agent handles failure scenarios without crashing or corrupting the repository:
 
 - **Nonexistent symbol search:** Policy retries with rewritten query; hybrid retrieval (parallel graph + vector + grep) or fallback chain exhausted before returning failure.
-- **Invalid edit / patch validator failure:** Rollback restores all modified files; no partial writes.
+- **Invalid edit / patch validator failure:** Snapshot-based rollback (agent/runtime/execution_loop) restores all modified files; no git dependency; works in CI, zip, non-git repos. No partial writes.
 - **Graph lookup empty:** Falls through to vector search, then Serena.
 - **Replan on failure:** LLM-based replanner receives failed_step and error; agent_loop: up to 3 replans, 2 step retries before replan; agent_controller: up to 5 replans; failed steps do not advance; remaining steps retried.
 - **Retrieval fallback:** When graph/vector/grep return empty, file_search fallback guarantees ≥1 snippet (Phase 4).
@@ -70,6 +71,7 @@ See `tests/test_agent_robustness.py` for coverage.
 - **E2E tests:** `python -m pytest tests/test_agent_e2e.py -v` (default: try LLM, fallback to mock; `--mock` to force mock)
 - **Integration tests:** `TEST_MODE=integration pytest tests/integration/ -v` (real services only; no mocks; requires reasoning model + reranker; see [INTEGRATION_TESTS.md](INTEGRATION_TESTS.md))
 - **Agent loop tests:** `python -m pytest tests/test_agent_loop.py -v` (execution loop, planner→executor→results; mocks dispatch for fast runs)
+- **Execution loop tests:** `python -m pytest tests/test_execution_loop.py -v` (snapshot rollback, syntax validation, retry guard, repeated-failure stop, rollback verification)
 - **Explain gate tests:** `python -m pytest tests/test_explain_gate.py -v` (context gate: ensure_context_before_explain)
 - **Repo map tests:** `python -m pytest tests/test_repo_map.py -v` (repo_map build, lookup, anchor detection, incremental update)
 - **Robustness tests:** `python -m pytest tests/test_agent_robustness.py -v` (failure scenarios, replan, fallback, no corruption)

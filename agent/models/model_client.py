@@ -6,15 +6,68 @@ Guardrails sit at the LLM call boundary (Rule: Agent → PromptRegistry → Guar
 - Pre-call: injection check on user content (raises PromptInjectionError if detected)
 - Post-call: optional constraint validation when prompt_name provided (logs on failure)
 Set ENABLE_PROMPT_GUARDRAILS=0 to disable (e.g. eval, tests).
+
+Retries: exponential backoff on ConnectionError, TimeoutError, and transient API errors.
+Configure via MODEL_RETRY_MAX_ATTEMPTS (default 5) and MODEL_RETRY_BASE_DELAY_SECONDS (default 1.0).
 """
 
 import json
 import logging
 import os
 import sys
-from typing import Optional
+import time
+from typing import Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# Retry config: exponential backoff
+_MODEL_RETRY_MAX = int(os.getenv("MODEL_RETRY_MAX_ATTEMPTS", "5"))
+_MODEL_RETRY_BASE_DELAY = float(os.getenv("MODEL_RETRY_BASE_DELAY_SECONDS", "1.0"))
+
+
+def _is_retriable_error(exc: BaseException) -> bool:
+    """True if the error is transient and worth retrying."""
+    err_msg = str(exc).lower()
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    if "connection" in err_msg or "timeout" in err_msg or "refused" in err_msg:
+        return True
+    if "500" in err_msg or "502" in err_msg or "503" in err_msg or "504" in err_msg:
+        return True
+    if "server_error" in err_msg or "rate limit" in err_msg:
+        return True
+    return False
+
+
+def _retry_with_exponential_backoff(
+    fn: Callable[[], T],
+    max_attempts: int = _MODEL_RETRY_MAX,
+    base_delay: float = _MODEL_RETRY_BASE_DELAY,
+) -> T:
+    """Execute fn(); on retriable error, wait with exponential backoff and retry."""
+    last_exc: BaseException | None = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except BaseException as e:
+            last_exc = e
+            if not _is_retriable_error(e) or attempt >= max_attempts - 1:
+                raise
+            delay = base_delay * (2**attempt)
+            logger.warning(
+                "[model_client] attempt %d/%d failed (%s); retrying in %.2f seconds",
+                attempt + 1,
+                max_attempts,
+                type(e).__name__,
+                delay,
+            )
+            print(f"Retrying request in {delay:.2f} seconds (attempt {attempt + 2}/{max_attempts})")
+            time.sleep(delay)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("retry loop exited unexpectedly")
 
 _ENABLE_GUARDRAILS = os.getenv("ENABLE_PROMPT_GUARDRAILS", "1").lower() in ("1", "true", "yes")
 
@@ -26,8 +79,7 @@ from agent.models.model_config import (
     MODEL_MAX_TOKENS,
     MODEL_REQUEST_TIMEOUT,
     MODEL_TEMPERATURE,
-    REASONING_MODEL_ENDPOINT,
-    SMALL_MODEL_ENDPOINT,
+    TASK_MODELS,
 )
 
 _DEFAULT_MAX_TOKENS = MODEL_MAX_TOKENS
@@ -221,67 +273,73 @@ def _call_chat(
         messages,
     )
     _pretty_print_request(messages)
-    try:
-        from openai import OpenAI
-    except ImportError:
-        import urllib.request
 
-        payload_stream = {**payload, "stream": True}
-        req = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload_stream).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {MODEL_API_KEY}",
-            },
-            method="POST",
+    def _do_call() -> str:
+        try:
+            from openai import OpenAI
+        except ImportError:
+            import urllib.request
+
+            payload_stream = {**payload, "stream": True}
+            req = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload_stream).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {MODEL_API_KEY}",
+                },
+                method="POST",
+            )
+            content_parts: list[str] = []
+            print("    [workflow] model response (streaming):")
+            print("    " + "─" * _PRETTY_WIDTH)
+            done = False
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                buf = ""
+                for line in resp:
+                    if done:
+                        break
+                    buf += line.decode("utf-8", errors="replace")
+                    while "\n" in buf or "\r\n" in buf:
+                        sep = "\r\n" if "\r\n" in buf else "\n"
+                        raw_line, buf = buf.split(sep, 1)
+                        if raw_line.startswith("data: "):
+                            data = raw_line[6:].strip()
+                            if data == "[DONE]":
+                                done = True
+                                break
+                            try:
+                                chunk = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            choices = chunk.get("choices", [])
+                            if not choices:
+                                continue
+                            d = choices[0].get("delta") or {}
+                            reasoning = d.get("reasoning_content")
+                            delta = d.get("content")
+                            if reasoning:
+                                _stream_chunk_to_terminal(reasoning)
+                            if delta:
+                                content_parts.append(delta)
+                                _stream_chunk_to_terminal(delta)
+            print()
+            print("    " + "─" * _PRETTY_WIDTH)
+            content = "".join(content_parts).strip()
+            if not content:
+                _debug_empty_response(None)
+            return content
+
+        base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/")
+        if not base_url.endswith("/v1"):
+            base_url = endpoint.rsplit("/", 1)[0]
+        # Use configured timeout; disable OpenAI client retries (we handle retries ourselves)
+        client = OpenAI(
+            base_url=base_url,
+            api_key=MODEL_API_KEY,
+            timeout=float(max(1, timeout)),
+            max_retries=0,
         )
-        content_parts: list[str] = []
-        print("    [workflow] model response (streaming):")
-        print("    " + "─" * _PRETTY_WIDTH)
-        done = False
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            buf = ""
-            for line in resp:
-                if done:
-                    break
-                buf += line.decode("utf-8", errors="replace")
-                while "\n" in buf or "\r\n" in buf:
-                    sep = "\r\n" if "\r\n" in buf else "\n"
-                    raw_line, buf = buf.split(sep, 1)
-                    if raw_line.startswith("data: "):
-                        data = raw_line[6:].strip()
-                        if data == "[DONE]":
-                            done = True
-                            break
-                        try:
-                            chunk = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-                        choices = chunk.get("choices", [])
-                        if not choices:
-                            continue
-                        d = choices[0].get("delta") or {}
-                        reasoning = d.get("reasoning_content")
-                        delta = d.get("content")
-                        if reasoning:
-                            _stream_chunk_to_terminal(reasoning)
-                        if delta:
-                            content_parts.append(delta)
-                            _stream_chunk_to_terminal(delta)
-        print()
-        print("    " + "─" * _PRETTY_WIDTH)
-        content = "".join(content_parts).strip()
-        if not content:
-            _debug_empty_response(None)
-        return content
-
-    base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/")
-    if not base_url.endswith("/v1"):
-        base_url = endpoint.rsplit("/", 1)[0]
-    # Use configured timeout so connection/read don't fall back to client default (e.g. 60s)
-    client = OpenAI(base_url=base_url, api_key=MODEL_API_KEY, timeout=float(max(1, timeout)))
-    try:
         create_kwargs: dict = {
             "model": "default",
             "messages": messages,
@@ -295,7 +353,7 @@ def _call_chat(
         if presence_penalty is not None:
             create_kwargs["presence_penalty"] = presence_penalty
         stream = client.chat.completions.create(**create_kwargs)
-        content_parts: list[str] = []
+        content_parts = []
         reasoning_parts: list[str] = []
         finish_reason = None
         print("    [workflow] model response (streaming):")
@@ -306,7 +364,6 @@ def _call_chat(
             delta = chunk.choices[0].delta
             if delta is None:
                 continue
-            # Stream reasoning_content (o1-style models) to terminal
             reasoning = (
                 getattr(delta, "reasoning_content", None)
                 if not isinstance(delta, dict)
@@ -315,7 +372,6 @@ def _call_chat(
             if reasoning:
                 reasoning_parts.append(reasoning)
                 _stream_chunk_to_terminal(reasoning)
-            # Stream main content to terminal
             text = (
                 getattr(delta, "content", None)
                 if not isinstance(delta, dict)
@@ -325,7 +381,7 @@ def _call_chat(
                 content_parts.append(text)
                 _stream_chunk_to_terminal(text)
             finish_reason = getattr(chunk.choices[0], "finish_reason", None)
-        print()  # newline after stream
+        print()
         print("    " + "─" * _PRETTY_WIDTH)
         content = "".join(content_parts).strip()
         if finish_reason == "length" and content:
@@ -334,14 +390,8 @@ def _call_chat(
         if not content and not reasoning_parts:
             _debug_empty_response(None)
         return content
-    except Exception as e:
-        err_msg = str(e)
-        if "500" in err_msg or "Compute error" in err_msg or "server_error" in err_msg:
-            raise RuntimeError(
-                f"Model API error: {e}. "
-                f"Check that the model server is running at {endpoint} and MODEL_API_KEY is set if required."
-            ) from e
-        raise
+
+    return _retry_with_exponential_backoff(_do_call)
 
 
 def _run_guardrails_pre(user_content: str) -> None:
@@ -377,17 +427,26 @@ def call_small_model(
     system_prompt: Optional[str] = None,
     prompt_name: Optional[str] = None,
 ) -> str:
-    """Call the small (fast/cheap) model with a single user prompt. Returns model output text.
-    When task_name is set, uses params from models_config task_params for that task.
+    """Call the model for the given task. Returns model output text.
+    When task_name is set, uses params and endpoint from models_config (task_params, task_models).
+    When task_name is None, uses SMALL model endpoint.
     When system_prompt is provided, sends as system + user messages for grounding/scope.
     When prompt_name is set, runs post-call constraint validation (logs on failure).
     Guardrails: injection check on prompt before call (always when ENABLE_PROMPT_GUARDRAILS=1)."""
     _run_guardrails_pre(prompt)
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
+    # Resolve endpoint from task_models: task_name -> model_key (SMALL, REASONING, etc.)
+    if not task_name or task_name not in TASK_MODELS:
+        raise ValueError(
+            f"call_small_model requires task_name in task_models; got task_name={task_name!r}. "
+            f"Available: {list(TASK_MODELS.keys())}"
+        )
+    model_key = TASK_MODELS[task_name]
+    endpoint = get_endpoint_for_model(model_key)
     logger.info(
         "call_small_model: endpoint=%s task=%r prompt=%r max_tokens=%s system_prompt=%s",
-        SMALL_MODEL_ENDPOINT,
+        endpoint,
         task_name,
         prompt,
         limit,
@@ -401,7 +460,7 @@ def call_small_model(
     else:
         messages = [{"role": "user", "content": prompt}]
     response = _call_chat(
-        SMALL_MODEL_ENDPOINT,
+        endpoint,
         messages,
         max_tokens=limit,
         temperature=params.get("temperature"),

@@ -23,6 +23,7 @@
     "experience_retrieval": "REASONING",
     "action_selection": "REASONING",
     "evaluation": "REASONING",
+    "failure_judge": "REASONING",
     "critique": "REASONING",
     "retry_planning": "REASONING",
     "query rewriting": "REASONING",
@@ -40,97 +41,107 @@
     "code_review": "REASONING",
     "code_review_summary": "REASONING"
   },
+  "reranker": {
+    "gpu_model": "Qwen/Qwen3-Reranker-0.6B",
+    "cpu_model": "models/reranker/model.onnx",
+    "cpu_tokenizer": "models/reranker"
+  },
   "task_params": {
     "query rewriting": {
       "temperature": 0.0,
-      "max_tokens": 2048,
+      "max_tokens": 32456,
       "frequency_penalty": 0.5,
       "presence_penalty": 0.2,
       "request_timeout_seconds": 600
     },
     "validation": {
       "temperature": 0.0,
-      "max_tokens": null,
+      "max_tokens": 32456,
       "request_timeout_seconds": 600
     },
     "EXPLAIN": {
       "temperature": 0.0,
-      "max_tokens": null,
+      "max_tokens": 32456,
       "request_timeout_seconds": 600
     },
     "routing": {
       "temperature": 0.0,
-      "max_tokens": null,
+      "max_tokens": 32456,
       "request_timeout_seconds": 600
     },
     "planner": {
       "temperature": 0.0,
-      "max_tokens": 4096,
+      "max_tokens": 32456,
       "request_timeout_seconds": 600
     },
     "context_ranking": {
       "temperature": 0.0,
-      "max_tokens": 4096,
+      "max_tokens": 32456,
       "request_timeout_seconds": 600
     },
     "replanner": {
       "temperature": 0.0,
-      "max_tokens": 2048,
+      "max_tokens": 32456,
       "request_timeout_seconds": 600
     },
     "action_selection": {
       "temperature": 0.0,
-      "max_tokens": 512,
+      "max_tokens": 32456,
       "request_timeout_seconds": 60
     },
     "evaluation": {
       "temperature": 0.0,
-      "max_tokens": 512,
+      "max_tokens": 32456,
       "request_timeout_seconds": 60
+    },
+    "failure_judge": {
+      "temperature": 0.0,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 120
     },
     "critique": {
       "temperature": 0.0,
-      "max_tokens": 1024,
+      "max_tokens": 32456,
       "request_timeout_seconds": 120
     },
     "retry_planning": {
       "temperature": 0.0,
-      "max_tokens": 2048,
+      "max_tokens": 32456,
       "request_timeout_seconds": 120
     },
     "localization": {
       "temperature": 0.0,
-      "max_tokens": 512,
+      "max_tokens": 32456,
       "request_timeout_seconds": 60
     },
     "supervisor_routing": {
       "temperature": 0.0,
-      "max_tokens": 256,
+      "max_tokens": 32456,
       "request_timeout_seconds": 30
     },
     "experience_retrieval": {
       "temperature": 0.0,
-      "max_tokens": 512,
+      "max_tokens": 32456,
       "request_timeout_seconds": 60
     },
     "issue_parsing": {
       "temperature": 0.0,
-      "max_tokens": 512,
+      "max_tokens": 32456,
       "request_timeout_seconds": 60
     },
     "pr_generation": {
       "temperature": 0.0,
-      "max_tokens": 2048,
+      "max_tokens": 32456,
       "request_timeout_seconds": 120
     },
     "code_review": {
       "temperature": 0.0,
-      "max_tokens": 512,
+      "max_tokens": 32456,
       "request_timeout_seconds": 60
     },
     "code_review_summary": {
       "temperature": 0.0,
-      "max_tokens": 1024,
+      "max_tokens": 32456,
       "request_timeout_seconds": 120
     }
   }

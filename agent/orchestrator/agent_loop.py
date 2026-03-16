@@ -14,7 +14,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
-from config.agent_config import MAX_STEP_TIMEOUT_SECONDS
+from config.agent_config import MAX_STEP_TIMEOUT_SECONDS, MAX_TASK_RUNTIME_SECONDS
 from agent.execution.executor import StepExecutor
 from agent.execution.policy_engine import ResultClassification
 from agent.memory.state import AgentState
@@ -31,7 +31,6 @@ MAX_REPLAN_ATTEMPTS = 3  # Prevent infinite replan when same step keeps failing
 MAX_STEP_RETRIES = 2  # Retry same step before triggering replan
 MAX_STEPS = 20  # Hard step count per task
 MAX_TOOL_CALLS = 50  # Max tool invocations per task
-MAX_TASK_RUNTIME_SECONDS = 60  # 60 seconds wall clock
 MAX_LOOP_ITERATIONS = 100  # Stall detection: prevent runaway agents
 
 
@@ -127,7 +126,7 @@ def run_agent(instruction: str) -> AgentState:
                         output="",
                         latency_seconds=MAX_STEP_TIMEOUT_SECONDS,
                         error=f"Step timed out after {MAX_STEP_TIMEOUT_SECONDS}s",
-                        classification=ResultClassification.FATAL_FAILURE.value,
+                        classification=ResultClassification.RETRYABLE_FAILURE.value,
                     )
                     log_event(trace_id, "step_timeout", {"step_id": step_id, "action": action})
 

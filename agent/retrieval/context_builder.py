@@ -3,10 +3,14 @@
 import logging
 from pathlib import Path
 
+from config.context_limits import MAX_CONTEXT_FILES, MAX_CONTEXT_SNIPPETS, MAX_CONTEXT_TOKENS
 from config.repo_graph_config import INDEX_SQLITE, SYMBOL_GRAPH_DIR
 from config.retrieval_config import DEFAULT_MAX_CONTEXT_CHARS
 
 logger = logging.getLogger(__name__)
+
+# Approximate chars per token
+_CHARS_PER_TOKEN = 4
 
 
 def build_call_chain_context(symbol: str, project_root: str) -> dict:
@@ -131,9 +135,13 @@ def build_context_from_symbols(
     snippets = []  # each item: {"file": str, "symbol": str, "snippet": str}
     seen_files = set()
     total_chars = 0
-    for s in (file_snippets or []):
+    max_chars_from_tokens = MAX_CONTEXT_TOKENS * _CHARS_PER_TOKEN
+    effective_max_chars = min(max_context_chars, max_chars_from_tokens)
+    for s in (file_snippets or [])[:MAX_CONTEXT_SNIPPETS * 2]:  # allow some overflow for pruning
         if not isinstance(s, dict):
             continue
+        if len(files) >= MAX_CONTEXT_FILES or len(snippets) >= MAX_CONTEXT_SNIPPETS:
+            break
         path = s.get("file") or s.get("path") or ""
         if path in seen_files:
             continue
@@ -141,13 +149,15 @@ def build_context_from_symbols(
         files.append(path)
         snip = (s.get("snippet") or s.get("content") or "")[:2000]
         symbol = s.get("symbol") or ""
-        if snip and total_chars + len(snip) <= max_context_chars:
+        if snip and total_chars + len(snip) <= effective_max_chars:
             snippets.append({"file": path, "symbol": symbol, "snippet": snip})
             total_chars += len(snip)
         else:
             snippets.append({"file": path, "symbol": symbol, "snippet": ""})
+    snippets = snippets[:MAX_CONTEXT_SNIPPETS]
+    files = files[:MAX_CONTEXT_FILES]
 
-    logger.info("[context_builder] %d symbols, %d references, %d files, %d snippets", len(symbols), len(references), len(files), len(snippets))
+    logger.info("[context_builder] %d symbols, %d references, %d files, %d snippets (limits: %d files, %d snippets)", len(symbols), len(references), len(files), len(snippets), MAX_CONTEXT_FILES, MAX_CONTEXT_SNIPPETS)
     out = {
         "symbols": symbols,
         "references": references,

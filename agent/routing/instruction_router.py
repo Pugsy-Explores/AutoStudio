@@ -24,13 +24,28 @@ class RouterDecision:
 
 
 def _extract_json(text: str) -> str | None:
-    """Strip markdown code fences and return the first JSON object string, or None."""
+    """Extract JSON from model output. Handles reasoning prefix, markdown fences, and trailing text.
+    REASONING models often output 'Thinking Process:' or similar before the JSON.
+    """
     if not text or not text.strip():
         return None
     text = text.strip()
+
+    # 1. Prefer explicit category/confidence pattern (routing schema)
+    pattern = re.search(
+        r'\{\s*"category"\s*:\s*"[^"]+"\s*,\s*"confidence"\s*:\s*[\d.]+\s*\}',
+        text,
+        re.IGNORECASE,
+    )
+    if pattern:
+        return pattern.group(0)
+
+    # 2. Strip markdown code fences
     match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
     if match:
         text = match.group(1).strip()
+
+    # 3. Find first complete JSON object (handles reasoning prefix)
     start = text.find("{")
     if start == -1:
         return None

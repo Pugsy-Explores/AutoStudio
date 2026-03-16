@@ -40,7 +40,7 @@ class ToolGraph:
 
     GRAPH = {
         "START": {
-            "allowed_tools": ["retrieve_graph", "retrieve_vector", "retrieve_grep", "list_dir"],
+            "allowed_tools": ["retrieve_graph", "retrieve_vector", "retrieve_grep", "list_dir", "search_candidates", "build_context"],
             "preferred_tool": "retrieve_graph",
         },
         "retrieve_graph": {

@@ -2,6 +2,7 @@
 
 from config import (
     agent_config,
+    agent_runtime,
     editing_config,
     logging_config,
     observability_config,
@@ -13,6 +14,7 @@ from config import (
 
 __all__ = [
     "agent_config",
+    "agent_runtime",
     "editing_config",
     "logging_config",
     "observability_config",

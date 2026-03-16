@@ -75,6 +75,9 @@ All prompts live in `agent/prompt_versions/{name}/v1.yaml`. Key registry names:
 | action_selector | Autonomous action selection (SEARCH, EDIT, EXPLAIN, INFRA) |
 | context_ranker_single | Single-snippet relevance (variables: query, snippet) |
 | context_ranker_batch | Batch snippet relevance (variables: query, snippets) |
+| query_expansion | Query expansion for retrieval (JSON: {queries:[]} — Phase 15) |
+| context_interpreter | Summarize retrieved context (JSON: {key_symbols, dependencies, summary} — Phase 15) |
+| patch_generator | Generate unified diff patches for EDIT steps (Phase 15) |
 
 ## Legacy Files (Fallback)
 
@@ -87,6 +90,9 @@ All prompts live in `agent/prompt_versions/{name}/v1.yaml`. Key registry names:
 | query_rewrite.yaml | query_rewrite |
 | query_rewrite_with_context.yaml | query_rewrite_with_context |
 | query_rewrite_system.yaml | query_rewrite_system |
+| query_expansion.yaml | query_expansion |
+| context_interpreter.yaml | context_interpreter |
+| patch_generator.yaml | patch_generator |
 | validate_step.yaml | validate_step |
 | model_router.yaml | router |
 | router_logit_system.yaml | router_logit |

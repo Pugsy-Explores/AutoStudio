@@ -67,6 +67,20 @@ Stored in `state.context["retrieval_metrics"]`. Emitted by `run_retrieval_pipeli
 
 ---
 
+## Execution loop metrics
+
+Recorded by `agent/runtime/execution_loop.py` and `agent/observability/metrics.py`. Counters are in-memory and optionally appended to `data/metrics/metrics.jsonl` (see `record_metric`).
+
+| Metric | Recording point |
+|--------|-----------------|
+| execution_loop_attempts | Start of each attempt in the edit→test→fix loop |
+| execution_loop_failures | When the loop exits with failure (max attempts, same-error stop, etc.) |
+| syntax_validation_failures | When project syntax validation fails after patch apply (before tests) |
+| rollback_count | After snapshot-based rollback restores files |
+| strategy_explorer_usage | When strategy_explorer is invoked (only after retries exhausted) |
+
+---
+
 ## UX Metrics
 
 Per-task metrics written by `run_controller` to `reports/ux_metrics.json`:

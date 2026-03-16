@@ -1,3 +1,5 @@
+# Deprecated – replaced by query_expansion.
+
 # Query rewrite with context: planner step → {tool, query, reason}
 # Best practices: schema-first, few-shot examples, explicit output format.
 # See agent/prompts/README.md § Structured output.

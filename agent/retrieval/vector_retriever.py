@@ -1,7 +1,13 @@
-"""Embedding-based code search. Uses ChromaDB + sentence-transformers for semantic queries."""
+"""Embedding-based code search. Uses ChromaDB + sentence-transformers for semantic queries.
 
+When EMBEDDING_USE_DAEMON=1 and retrieval daemon is reachable, uses daemon /embed
+instead of loading SentenceTransformer in-process (avoids cold-start).
+"""
+
+import json
 import logging
 import os
+import urllib.request
 from pathlib import Path
 
 from agent.retrieval.retrieval_expander import normalize_file_path
@@ -17,6 +23,50 @@ DEFAULT_TOP_K = 5
 _VECTOR_AVAILABLE: bool | None = None
 _model = None
 _client = None
+_daemon_embed_available: bool | None = None
+
+
+def _check_daemon_embed() -> bool:
+    """Return True if retrieval daemon is reachable and has embedding loaded."""
+    global _daemon_embed_available
+    if _daemon_embed_available is not None:
+        return _daemon_embed_available
+    try:
+        from config.retrieval_config import RETRIEVAL_DAEMON_PORT
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{RETRIEVAL_DAEMON_PORT}/health",
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode())
+        _daemon_embed_available = data.get("embedding_loaded", False)
+    except Exception:
+        _daemon_embed_available = False
+    return _daemon_embed_available
+
+
+def _encode_via_daemon(texts: list[str]) -> list[list[float]] | None:
+    """Encode texts via retrieval daemon /embed. Returns list of embedding vectors or None on failure."""
+    try:
+        from config.retrieval_config import RETRIEVAL_DAEMON_PORT
+
+        body = json.dumps({"texts": texts}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{RETRIEVAL_DAEMON_PORT}/embed",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+        emb = data.get("embeddings", [])
+        if data.get("error") or not emb:
+            return None
+        return emb
+    except Exception as e:
+        logger.debug("[vector_retriever] daemon embed failed: %s", e)
+        return None
 
 
 def _check_vector_available() -> bool:
@@ -83,8 +133,19 @@ def search_by_embedding(
 
     root = Path(project_root or os.environ.get("SERENA_PROJECT_DIR", os.getcwd())).resolve()
     client = _get_client(str(root))
-    model = _get_model()
-    if not client or not model:
+    if not client:
+        return None
+
+    use_daemon = False
+    try:
+        from config.retrieval_config import EMBEDDING_USE_DAEMON
+
+        use_daemon = EMBEDDING_USE_DAEMON and _check_daemon_embed()
+    except Exception:
+        pass
+
+    model = _get_model() if not use_daemon else None
+    if not use_daemon and not model:
         return None
 
     try:
@@ -94,7 +155,14 @@ def search_by_embedding(
         return None
 
     try:
-        q_emb = model.encode(query.strip()).tolist()
+        if use_daemon:
+            emb_list = _encode_via_daemon([query.strip()])
+            q_emb = emb_list[0] if emb_list else None
+        else:
+            q_emb = model.encode(query.strip()).tolist()
+
+        if q_emb is None:
+            return None
         results_raw = coll.query(query_embeddings=[q_emb], n_results=min(top_k, 20))
     except Exception as e:
         logger.debug("[vector_retriever] query failed: %s", e)

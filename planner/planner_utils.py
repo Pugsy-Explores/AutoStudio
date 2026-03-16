@@ -3,7 +3,7 @@ Planner utilities: validation, action normalization, step sequence extraction.
 Actions match router v2: EDIT, SEARCH, EXPLAIN, INFRA.
 """
 
-ALLOWED_ACTIONS = ("EDIT", "SEARCH", "EXPLAIN", "INFRA")
+ALLOWED_ACTIONS = ("EDIT", "SEARCH", "SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN", "INFRA")
 _ALLOWED_SET = set(ALLOWED_ACTIONS)
 
 

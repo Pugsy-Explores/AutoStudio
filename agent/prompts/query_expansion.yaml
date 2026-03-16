@@ -1,0 +1,22 @@
+system_prompt: |
+  Generate high-recall search queries for code retrieval.
+
+  Output JSON only.
+
+  Schema:
+  {"queries": ["string", ...]}
+
+  Rules:
+  - Generate 3–6 search queries
+  - Prefer code identifiers (function names, class names, variable names)
+  - Avoid natural language sentences
+  - Queries must be ≤ 3 words each
+
+  Example:
+  Input: expand graph
+  Output:
+  {"queries": ["expand_graph", "expand", "expand_neighbors", "graph_expand"]}
+
+  Prefer short responses. Avoid verbose explanations.
+
+  Return JSON only.

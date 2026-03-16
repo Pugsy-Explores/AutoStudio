@@ -2,6 +2,26 @@
 
 This document describes the full AutoStudio retrieval pipeline, with emphasis on the hybrid retrieval layer (BM25, vector, graph, grep), Reciprocal Rank Fusion, and the cross-encoder reranking layer.
 
+## Stabilized Pipeline (SEARCH_CANDIDATES → BUILD_CONTEXT → EXECUTOR)
+
+```
+SEARCH_CANDIDATES (candidate discovery only, < 1s)
+    ├── BM25, vector, repo_map, grep
+    ├── query expansion (unless symbol query)
+    └── RRF merge → top 20 candidates
+        │
+        ▼
+BUILD_CONTEXT (heavy operations, < 5s)
+    ├── graph expansion
+    ├── symbol body read
+    ├── reranker
+    ├── context pruning
+    └── context builder
+        │
+        ▼
+EXECUTOR (EDIT, EXPLAIN, etc.)
+```
+
 See also:
 - [CODING_AGENT_ARCHITECTURE_GUIDE.md](CODING_AGENT_ARCHITECTURE_GUIDE.md) — end-to-end agent architecture
 - [REPOSITORY_SYMBOL_GRAPH.md](REPOSITORY_SYMBOL_GRAPH.md) — symbol graph and graph expansion
@@ -119,6 +139,8 @@ Each candidate produced by hybrid retrieval carries a `retriever_score` field (n
 
 The reranker lives in `agent/retrieval/reranker/` and is inserted into the pipeline after candidate assembly, before `context_pruner`.
 
+**Startup:** When `RERANKER_STARTUP=1` (default), the reranker is auto-initialized at service startup before any other work. Set `RERANKER_STARTUP=0` to skip; the reranker will lazy-load on first retrieval.
+
 ### 4.1 When the reranker runs
 
 All of the following must be true:
@@ -130,7 +152,7 @@ All of the following must be true:
 | Query is not a symbol query | `symbol_query_detector.is_symbol_query()` returns `False` |
 | Candidate count >= threshold | `len(candidates) >= RERANK_MIN_CANDIDATES` (default 6) |
 
-When any condition fails the pipeline falls through to the existing LLM ranker (`context_ranker.rank_context`) unchanged. The `rerank_skipped_reason` telemetry field records the reason.
+When any condition fails the pipeline falls through to retriever-score ordering (no LLM fallback). The `rerank_skipped_reason` telemetry field records the reason.
 
 ### 4.2 Pipeline steps
 
@@ -220,10 +242,30 @@ Any exception during model load, warmup, or `create_reranker()`:
 
 1. Logs a warning via the standard logger.
 2. Sets `_RERANKER_DISABLED = True` in the factory (permanent for the process lifetime).
-3. `create_reranker()` returns `None`; pipeline falls through to `context_ranker.rank_context` (LLM-based).
+3. `create_reranker()` returns `None`; pipeline falls through to retriever-score ordering.
 4. Records `rerank_skipped_reason = "inference_error:<ExceptionType>"` in telemetry.
 
 The retrieval pipeline **never crashes** due to reranker failures.
+
+### 4.9 Retrieval Daemon (reranker + embedding)
+
+`scripts/retrieval_daemon.py` runs both the reranker and the embedding model (all-MiniLM-L6-v2) as a standalone HTTP service. When `RERANKER_USE_DAEMON=1` and `EMBEDDING_USE_DAEMON=1` (defaults), the agent uses the daemon instead of loading models in-process, avoiding cold-start latency.
+
+| Endpoint | Body | Response |
+|----------|------|----------|
+| `POST /rerank` | `{"query": "...", "docs": ["snippet1", ...]}` | `{"results": [(snippet, score), ...]}` |
+| `POST /embed` | `{"texts": ["text1", "text2", ...]}` | `{"embeddings": [[...], [...]]}` |
+| `GET /health` | — | `{"reranker_loaded": bool, "embedding_loaded": bool}` |
+
+Start the daemon before agent sessions:
+
+```bash
+python scripts/retrieval_daemon.py              # foreground
+python scripts/retrieval_daemon.py --daemon     # background
+python scripts/retrieval_daemon.py --stop       # stop daemon
+```
+
+Config: `RETRIEVAL_DAEMON_PORT` (default 9004), `RERANKER_USE_DAEMON`, `EMBEDDING_USE_DAEMON`.
 
 ---
 
@@ -245,9 +287,12 @@ All values are overridable via environment variables.
 | Variable | Default | Purpose |
 |---|---|---|
 | `RERANKER_ENABLED` | `true` | Master on/off switch |
+| `RERANKER_USE_DAEMON` | `true` | Prefer retrieval daemon for reranker when reachable |
+| `EMBEDDING_USE_DAEMON` | `true` | Prefer retrieval daemon /embed for vector search when reachable |
+| `RETRIEVAL_DAEMON_PORT` | `9004` | Retrieval daemon HTTP port (reranker + embedding) |
 | `RERANKER_DEVICE` | `auto` | `auto` \| `cpu` \| `gpu` |
 | `RERANKER_GPU_MODEL` | `Qwen/Qwen3-Reranker-0.6B` | GPU model HuggingFace ID |
-| `RERANKER_CPU_MODEL` | `models/reranker/qwen3_reranker_int8.onnx` | CPU ONNX model path |
+| `RERANKER_CPU_MODEL` | from `models_config.json` reranker.cpu_model | CPU ONNX model path; env overrides |
 | `RERANKER_TOP_K` | `10` | Reranker output size |
 | `RERANKER_BATCH_SIZE` | `16` | Inference batch size |
 | `RERANK_MIN_CANDIDATES` | `6` | Minimum candidates to trigger reranker |
@@ -272,7 +317,7 @@ All values are overridable via environment variables.
 | `RETRIEVAL_MAX_SYMBOL_EXPANSIONS` | `8` | Per-symbol expansion cap (safety limit) |
 | `MAX_CONTEXT_SNIPPETS` | `6` | Final snippet count after pruning |
 | `DEFAULT_MAX_CHARS` | `8000` | Final char budget after pruning |
-| `ENABLE_CONTEXT_RANKING` | `true` | LLM ranker fallback toggle |
+| `ENABLE_CONTEXT_RANKING` | `true` | (Unused by retrieval pipeline; kept for compatibility) |
 
 ---
 
@@ -282,6 +327,7 @@ The reranker emits metrics into `state.context["retrieval_metrics"]` after every
 
 | Field | Type | Description |
 |---|---|---|
+| `ranking_method` | str | `"reranker"` = cross-encoder (Qwen3-Reranker); `"retriever_score"` = retriever-score ordering when reranker skipped |
 | `rerank_latency_ms` | int | End-to-end reranker wall time |
 | `rerank_model` | str | Model ID or path used |
 | `rerank_device` | str | `"gpu"`, `"cpu"`, or `"none"` |
@@ -315,3 +361,21 @@ python scripts/run_retrieval_eval.py --limit 5
 ```
 
 Reports recall@10, recall@20, latency, and candidate counts. Requires `rank_bm25` for BM25 tests (`pip install rank_bm25`).
+
+---
+
+## 9. Troubleshooting: Reranker Missing / LLM Fallback
+
+If you see `Load model ... failed` and the pipeline falls back to the LLM ranker (100× slower):
+
+1. **Download the reranker model first:**
+   ```bash
+   python scripts/download_reranker.py --device cpu
+   ```
+   This fetches `model.onnx` and tokenizer files to `models/reranker/`.
+
+2. **Ensure the path matches:** The default `RERANKER_CPU_MODEL` is `models/reranker/model.onnx` (matches the download output). If you use a custom path, set `RERANKER_CPU_MODEL` to the correct location.
+
+3. **Working directory:** The reranker resolves `models/reranker/` relative to the project root (inferred from the agent package location when `SERENA_PROJECT_DIR` is unset). If you run from a different cwd, it should still find the model. Override with `SERENA_PROJECT_DIR` if needed.
+
+4. **Override via env:** `export RERANKER_CPU_MODEL=/absolute/path/to/model.onnx` if needed.

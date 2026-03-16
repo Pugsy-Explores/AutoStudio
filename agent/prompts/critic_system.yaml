@@ -18,6 +18,8 @@ system_prompt: |
   - unknown: cannot determine; suggest general retry
 
   Return strict JSON only:
-  {"failure_type": "<one of the types above>", "affected_step": <step_id or null>, "suggestion": "<brief actionable suggestion>"}
+  {"failure_type": "<one of the types above>", "affected_step": <step_id or null>, "evidence": "<quote from trace supporting diagnosis>", "confidence": <float 0.0-1.0>, "suggested_strategy": "<brief actionable suggestion>"}
+
+  Prefer short responses. Avoid verbose explanations.
 
   Do not include explanations outside the JSON.

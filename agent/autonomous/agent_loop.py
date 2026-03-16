@@ -7,15 +7,17 @@ Enforces: max_steps, max_tool_calls, max_runtime, max_edits.
 When max_retries > 1, wraps with evaluator -> critic -> retry_planner meta loop.
 """
 
+import json
 import logging
 import os
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 from agent.autonomous.action_selector import select_next_action
 from agent.autonomous.goal_manager import GoalManager
 from agent.autonomous.state_observer import observe
-from agent.execution.step_dispatcher import dispatch
 from agent.intelligence.experience_retriever import retrieve
 from agent.intelligence.repo_learning import update_from_solution as update_repo_from_solution
 from agent.intelligence.solution_memory import save_solution
@@ -25,8 +27,74 @@ from agent.memory.state import AgentState
 from agent.memory.step_result import StepResult
 from agent.observability.trace_logger import finish_trace, log_event, start_trace
 from config.agent_config import MAX_RETRY_ATTEMPTS
+from config.tool_budgets import TOOL_BUDGETS
 
 logger = logging.getLogger(__name__)
+
+
+AGENT_TRACE_PATH = Path("logs/agent_trace.jsonl")
+
+
+def _write_step_trace(step_id: int, tool_name: str, query: str, latency: float, result_count: int) -> None:
+    """Task 20: Write step trace to logs/agent_trace.jsonl."""
+    try:
+        AGENT_TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "step_id": step_id,
+            "tool_name": tool_name,
+            "query": (query or "")[:500],
+            "latency": round(latency, 3),
+            "result_count": result_count,
+        }
+        with open(AGENT_TRACE_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception as e:
+        logger.debug("[agent_trace] write failed: %s", e)
+
+
+def _run_dispatch_with_timeout(step: dict, state: AgentState) -> dict:
+    """Run dispatch with tool budget timeout. Returns result or timeout error."""
+    from agent.execution.step_dispatcher import dispatch
+
+    action = (step.get("action") or "EXPLAIN").upper()
+    timeout = TOOL_BUDGETS.get(action, 10.0)
+    t0 = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(dispatch, step, state)
+        try:
+            raw = fut.result(timeout=timeout)
+            latency = time.perf_counter() - t0
+            result_count = 0
+            if isinstance(raw.get("output"), dict):
+                out = raw["output"]
+                if "candidates" in out:
+                    result_count = len(out.get("candidates") or [])
+                elif "context_blocks" in out:
+                    result_count = len(out.get("context_blocks") or [])
+                elif "results" in out:
+                    result_count = len(out.get("results") or [])
+            _write_step_trace(
+                step_id=state.context.get("current_step_id") or 0,
+                tool_name=action,
+                query=step.get("query") or step.get("description") or "",
+                latency=latency,
+                result_count=result_count,
+            )
+            return raw
+        except FuturesTimeoutError:
+            latency = time.perf_counter() - t0
+            _write_step_trace(
+                step_id=state.context.get("current_step_id") or 0,
+                tool_name=action,
+                query=step.get("query") or step.get("description") or "",
+                latency=latency,
+                result_count=0,
+            )
+            return {
+                "success": False,
+                "output": {},
+                "error": f"Tool timeout ({timeout}s) exceeded for {action}",
+            }
 
 
 def run_autonomous(
@@ -82,8 +150,6 @@ def run_autonomous(
 
     try:
         if max_retries <= 1:
-            import time
-
             attempt_start = time.time()
             result, state = _run_single_attempt(goal, str(root), task_id, trace_id, goal_manager, state)
             evaluation = _evaluate_and_record(
@@ -156,7 +222,7 @@ def _run_single_attempt(
         state.context["current_step_id"] = step_id
 
         goal_manager.record_tool_call()
-        result_raw = dispatch(step, state)
+        result_raw = _run_dispatch_with_timeout(step, state)
 
         success = result_raw.get("success", False)
         goal_manager.record_step(step.get("action", ""), success)

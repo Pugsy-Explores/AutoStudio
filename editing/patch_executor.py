@@ -13,15 +13,38 @@ logger = logging.getLogger(__name__)
 MAX_FILES_PER_EDIT = 5
 MAX_PATCH_LINES = 200
 
+FORBIDDEN_PATH_PATTERNS = (
+    ".env",
+    ".env.",
+    "secrets/",
+    ".key",
+    ".pem",
+    "credentials",
+    "config/secrets",
+)
+
 
 def _resolve_path(file_path: str, project_root: str | None) -> Path:
-    """Resolve file path to absolute Path."""
+    """Resolve file path to absolute Path and ensure it is inside project root."""
     root = project_root or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
     root_path = Path(root).resolve()
     p = Path(file_path)
     if not p.is_absolute():
         p = root_path / file_path
-    return p.resolve()
+    resolved = p.resolve()
+    try:
+        resolved.relative_to(root_path)
+    except ValueError as e:
+        raise ValueError(f"Path {resolved} is outside project root") from e
+    return resolved
+
+
+def _is_forbidden_path(file_path: str) -> bool:
+    """Return True if the path looks like a secrets/env path that must not be edited."""
+    lower = file_path.lower()
+    if any(pattern in lower for pattern in FORBIDDEN_PATH_PATTERNS):
+        return True
+    return False
 
 
 def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
@@ -54,6 +77,14 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                 "reason": f"max patch size exceeded ({code.count(chr(10)) + 1} lines > {MAX_PATCH_LINES})",
                 "file": c.get("file", ""),
             }
+        action = patch.get("action")
+        if action == "delete" and not patch.get("target_node"):
+            return {
+                "success": False,
+                "error": "forbidden_delete",
+                "reason": "Cannot delete entire file",
+                "file": c.get("file", ""),
+            }
 
     originals: dict[str, str] = {}
     patched_content: dict[str, str] = {}
@@ -64,7 +95,23 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
         if not file_path or not patch:
             continue
 
-        abs_path = _resolve_path(file_path, project_root)
+        if _is_forbidden_path(file_path):
+            return {
+                "success": False,
+                "error": "forbidden_path",
+                "reason": f"Refusing to modify forbidden path: {file_path}",
+                "file": file_path,
+            }
+
+        try:
+            abs_path = _resolve_path(file_path, project_root)
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": "path_outside_repo",
+                "reason": str(e),
+                "file": file_path,
+            }
         abs_path_str = str(abs_path)
         logger.info("[patch_executor] applying patch file=%s", abs_path)
 
@@ -132,6 +179,11 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
             logger.info("[patch_executor] rollback triggered")
             for path, content in originals.items():
                 Path(path).write_text(content, encoding="utf-8")
+            try:
+                from agent.observability.metrics import record_metric
+                record_metric("patch_failure", 1.0, project_root=project_root, append_jsonl=False)
+            except Exception:
+                pass
             return {
                 "success": False,
                 "error": "patch_failed",
@@ -143,6 +195,11 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
             logger.info("[patch_executor] rollback triggered")
             for path, content in originals.items():
                 Path(path).write_text(content, encoding="utf-8")
+            try:
+                from agent.observability.metrics import record_metric
+                record_metric("patch_failure", 1.0, project_root=project_root, append_jsonl=False)
+            except Exception:
+                pass
             return {
                 "success": False,
                 "error": "patch_failed",
@@ -156,6 +213,11 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
 
     files_modified = list(patched_content.keys())
     logger.info("[patch_executor] files_modified=%d", len(files_modified))
+    try:
+        from agent.observability.metrics import record_metric
+        record_metric("patch_success", 1.0, project_root=project_root, append_jsonl=False)
+    except Exception:
+        pass
     return {
         "success": True,
         "files_modified": files_modified,

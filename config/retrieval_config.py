@@ -1,6 +1,27 @@
 """Retrieval pipeline configuration."""
 
+import json
 import os
+from pathlib import Path
+
+
+def _reranker_from_models_config(key: str) -> str:
+    """Reranker model paths from models_config.json; env vars override."""
+    defaults = {
+        "gpu_model": "Qwen/Qwen3-Reranker-0.6B",
+        "cpu_model": "models/reranker/model.onnx",
+        "cpu_tokenizer": "models/reranker",
+    }
+    config_path = Path(__file__).resolve().parent.parent / "agent" / "models" / "models_config.json"
+    if config_path.is_file():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                data = json.load(f)
+            r = data.get("reranker") or {}
+            return str(r.get(key, defaults[key])).strip() or defaults[key]
+        except (json.JSONDecodeError, OSError):
+            pass
+    return defaults[key]
 
 
 def _bool_env(name: str, default: str) -> bool:
@@ -43,11 +64,18 @@ ENABLE_LOCALIZATION_ENGINE = _bool_env("ENABLE_LOCALIZATION_ENGINE", "1")
 
 # --- Reranker core ---
 RERANKER_ENABLED = _bool_env("RERANKER_ENABLED", "1")
+RERANKER_STARTUP = _bool_env("RERANKER_STARTUP", "1")  # Auto-init reranker at service startup (default ON)
 RERANKER_DEVICE = os.getenv("RERANKER_DEVICE", "auto")  # auto | cpu | gpu
+RERANKER_USE_INT8 = _bool_env("RERANKER_USE_INT8", "1")  # Use ONNX INT8 for both CPU and GPU (default ON)
+RERANKER_DAEMON_PORT = int(os.getenv("RERANKER_DAEMON_PORT", "9004"))  # Reranker daemon HTTP port
+RETRIEVAL_DAEMON_PORT = int(os.getenv("RETRIEVAL_DAEMON_PORT", "9004"))  # Unified retrieval daemon (reranker + embedding)
+RERANKER_USE_DAEMON = _bool_env("RERANKER_USE_DAEMON", "1")  # Prefer daemon when reachable (default ON)
+EMBEDDING_USE_DAEMON = _bool_env("EMBEDDING_USE_DAEMON", "1")  # Prefer daemon /embed when reachable (default ON)
 RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "10"))
 RERANKER_BATCH_SIZE = int(os.getenv("RERANKER_BATCH_SIZE", "16"))
-RERANKER_GPU_MODEL = os.getenv("RERANKER_GPU_MODEL", "Qwen/Qwen3-Reranker-0.6B")
-RERANKER_CPU_MODEL = os.getenv("RERANKER_CPU_MODEL", "models/reranker/qwen3_reranker_int8.onnx")
+RERANKER_GPU_MODEL = os.getenv("RERANKER_GPU_MODEL") or _reranker_from_models_config("gpu_model")
+RERANKER_CPU_MODEL = os.getenv("RERANKER_CPU_MODEL") or _reranker_from_models_config("cpu_model")
+RERANKER_CPU_TOKENIZER = os.getenv("RERANKER_CPU_TOKENIZER") or _reranker_from_models_config("cpu_tokenizer")
 
 # --- Alternate models (registry) ---
 RERANKER_ALTERNATE_MODELS = [
@@ -88,3 +116,15 @@ RRF_K = int(os.getenv("RRF_K", "60"))
 
 # --- Reranker batching ---
 RERANK_BATCH_WINDOW_MS = int(os.getenv("RERANK_BATCH_WINDOW_MS", "5"))
+
+# --- Service dir filtering (default OFF — can hide code in monorepos) ---
+RETRIEVAL_SERVICE_DIRS = os.getenv(
+    "RETRIEVAL_SERVICE_DIRS",
+    "agent,config,editing,planner,src,lib,app,services",
+).strip().split(",")
+RETRIEVAL_USE_SERVICE_DIRS = _bool_env("RETRIEVAL_USE_SERVICE_DIRS", "0")  # default OFF
+RETRIEVAL_AUTO_DETECT_SERVICE_DIRS = _bool_env(
+    "RETRIEVAL_AUTO_DETECT_SERVICE_DIRS",
+    "0",
+)  # detect src/, lib/, app/, services/
+RETRIEVAL_TEST_DOWNWEIGHT = float(os.getenv("RETRIEVAL_TEST_DOWNWEIGHT", "0.2"))

@@ -5,16 +5,14 @@ import logging
 import sys
 
 from config.config_validator import validate_config
-from config.logging_config import LOG_FORMAT, LOG_LEVEL
+from config.logging_config import configure_logging
+from config.startup import ensure_services_ready
 from agent.models.model_config import REASONING_MODEL_NAME, REASONING_V2_MODEL_NAME, SMALL_MODEL_NAME
 from agent.orchestrator.agent_loop import run_agent
 
 validate_config()
-# Ensure process logs (agent steps) appear when run from CLI
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format=LOG_FORMAT,
-)
+# Ensure process logs (agent steps) appear when run from CLI; errors highlighted in red
+configure_logging()
 # Suppress only DEBUG from serena/solidlsp so process logs stay visible
 for _name in ("serena", "solidlsp"):
     logging.getLogger(_name).setLevel(logging.INFO)
@@ -31,6 +29,8 @@ def main() -> None:
     if not instruction:
         print("No instruction provided.", file=sys.stderr)
         sys.exit(1)
+
+    ensure_services_ready()
 
     event_fns, stage_fns = [], []
     if args.live:

@@ -72,7 +72,40 @@ Use `build_context_budgeted()` for full pipeline; `build_context()` remains for 
 
 ---
 
-## 2. Prompt Inventory
+## 2. Updated Pipeline (Phase 15)
+
+The Phase 15 prompt architecture introduces modular retrieval and editing stages. The planner does **not** invoke `query_expansion` or `context_interpreter` — those are execution details.
+
+```
+planner
+  → SEARCH_CANDIDATES (retrieval internally runs query_expansion)
+  → BUILD_CONTEXT
+  → context_interpreter (execution stage)
+  → patch_generator (EDIT steps)
+  → critic / retry_planner (on failure)
+```
+
+| Module | Pipeline Position | Model | Purpose |
+|--------|-------------------|-------|---------|
+| planner | Intent Router → Planner | REASONING | Convert instruction to steps (SEARCH_CANDIDATES, BUILD_CONTEXT, EDIT, EXPLAIN, INFRA) |
+| query_expansion | Inside SEARCH_CANDIDATES (retrieval) | SMALL | Generate 3–6 high-recall search queries; retrieval concern, not planner |
+| context_interpreter | After BUILD_CONTEXT, before EDIT/EXPLAIN | REASONING | Summarize retrieved context into key_symbols, dependencies, summary |
+| patch_generator | During EDIT steps | REASONING | Generate unified diff or NO_PATCH from instruction + context |
+| critic | On failure | SMALL | Diagnose failure_type, evidence, confidence, suggested_strategy |
+| retry_planner | After critic | REASONING | Produce strategy, reason, rewrite_queries, plan_override |
+| validator | After step execution | SMALL | YES/NO step success (unchanged) |
+
+### Phase 15 Module Details
+
+**query_expansion** — Output: `{"queries": ["string", ...]}`. Rules: 3–6 queries, ≤3 words, prefer code identifiers. Runs inside retrieval when SEARCH_CANDIDATES executes.
+
+**context_interpreter** — Output: `{"key_symbols": [string], "dependencies": [string], "summary": string}`. Ignores files under `tests/`. Reduces hallucinations before EDIT/EXPLAIN.
+
+**patch_generator** — Input: instruction, context_summary, retrieved_files, key_symbols. Output: unified diff or `"NO_PATCH"`. Guardrails: only modify files in retrieved_files; single-file unless instruction explicitly requires multi-file.
+
+---
+
+## 3. Prompt Inventory
 
 | Registry Name | Versioned Location | Consumer | Model |
 |---------------|-------------------|----------|-------|
@@ -84,6 +117,9 @@ Use `build_context_budgeted()` for full pipeline; `build_context()` remains for 
 | query_rewrite | [agent/prompt_versions/query_rewrite/v1.yaml](../agent/prompt_versions/query_rewrite/v1.yaml) | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
 | query_rewrite_with_context | [agent/prompt_versions/query_rewrite_with_context/v1.yaml](../agent/prompt_versions/query_rewrite_with_context/v1.yaml) | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | REASONING/SMALL |
 | query_rewrite_system | [agent/prompt_versions/query_rewrite_system/v1.yaml](../agent/prompt_versions/query_rewrite_system/v1.yaml) | [agent/retrieval/query_rewriter.py](../agent/retrieval/query_rewriter.py) | SMALL |
+| query_expansion | [agent/prompt_versions/query_expansion/v1.yaml](../agent/prompt_versions/query_expansion/v1.yaml) | retrieval (inside SEARCH_CANDIDATES) | SMALL |
+| context_interpreter | [agent/prompt_versions/context_interpreter/v1.yaml](../agent/prompt_versions/context_interpreter/v1.yaml) | execution (after BUILD_CONTEXT) | REASONING |
+| patch_generator | [agent/prompt_versions/patch_generator/v1.yaml](../agent/prompt_versions/patch_generator/v1.yaml) | execution (EDIT steps) | REASONING |
 | validate_step | [agent/prompt_versions/validate_step/v1.yaml](../agent/prompt_versions/validate_step/v1.yaml) | [agent/orchestrator/validator.py](../agent/orchestrator/validator.py) | REASONING |
 | router | [agent/prompt_versions/router/v1.yaml](../agent/prompt_versions/router/v1.yaml) | [agent/models/model_router.py](../agent/models/model_router.py) | SMALL (fallback) |
 | router_logit | [agent/prompt_versions/router_logit/v1.yaml](../agent/prompt_versions/router_logit/v1.yaml) | [router_eval/routers/logit_router.py](../router_eval/routers/logit_router.py) | SMALL |
@@ -450,6 +486,7 @@ The planner chooses **action types** (EDIT, SEARCH, EXPLAIN, INFRA). Tool select
 
 | Component | Script / Test | Metrics |
 |-----------|--------------|---------|
+| **Prompt regression (Phase 15)** | `pytest tests/test_prompt_regression.py -v` | Load + schema validation for planner, replanner, critic, retry_planner, query_expansion, context_interpreter, patch_generator |
 | **Prompt CI (Phase 13)** | `python scripts/run_prompt_ci.py` | task_success, json_validity, tool_correctness; regression vs baseline |
 | Planner | `python -m planner.planner_eval` | structural_valid_rate, action_coverage_accuracy, dependency_order_accuracy, mean_latency_sec |
 | Router | `python -m router_eval.router_eval_v2` | accuracy, confusion matrix, calibration, avg_confidence |

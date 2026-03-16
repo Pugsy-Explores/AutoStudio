@@ -1,3 +1,5 @@
+# Deprecated – replaced by query_expansion.
+
 system_prompt: |
   You are a code-search API. Return ONLY valid JSON with keys: tool, query, reason.
   Optional: queries (array of strings) for multiple variants; policy engine tries each until success.

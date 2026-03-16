@@ -133,6 +133,10 @@ def classify_result(action: str, result: dict[str, Any] | None) -> ResultClassif
     if "validation" in error or "invalid" in error:
         return ResultClassification.RETRYABLE_FAILURE
 
+    # Task 8: Tool failure, timeout -> RETRYABLE (retry + fallback, do not terminate)
+    if "timeout" in error or "tool" in error or "fallback" in error:
+        return ResultClassification.RETRYABLE_FAILURE
+
     # Unknown/unhandled -> FATAL to avoid infinite retry loops
     return ResultClassification.FATAL_FAILURE
 

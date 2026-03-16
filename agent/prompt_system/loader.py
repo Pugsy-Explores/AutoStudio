@@ -155,6 +155,10 @@ _LEGACY_MAP: dict[str, str] = {
     # Phase 13: no legacy fallback (versioned only)
     # explain_system, instruction_router, action_selector, context_ranker_single,
     # context_ranker_batch, replanner_user
+    # Phase 15: new prompt modules
+    "query_expansion": "query_expansion",
+    "context_interpreter": "context_interpreter",
+    "patch_generator": "patch_generator",
 }
 
 

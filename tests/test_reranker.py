@@ -11,6 +11,7 @@ import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 
@@ -258,6 +259,77 @@ class TestAdaptiveGating:
 
 
 # ---------------------------------------------------------------------------
+# Logits-to-scores (Qwen3 3D vs 2D output)
+# ---------------------------------------------------------------------------
+
+class TestLogitsToScores:
+    """Tests for _logits_to_scores handling of 2D and 3D Qwen3-Reranker outputs."""
+
+    def _make_reranker_with_logits_logic(self, token_yes_id=10, token_no_id=20):
+        """Create CPUReranker instance with mocked init, only _logits_to_scores used."""
+        from agent.retrieval.reranker.cpu_reranker import CPUReranker
+
+        r = CPUReranker.__new__(CPUReranker)
+        r._token_yes_id = token_yes_id
+        r._token_no_id = token_no_id
+        return r
+
+    def test_2d_logits_returns_flat_floats(self):
+        """2D logits (batch, num_labels) → list of floats."""
+        r = self._make_reranker_with_logits_logic()
+        logits = np.array([[0.1, 0.9], [0.3, 0.7], [-0.5, 0.2]], dtype=np.float32)
+        scores = r._logits_to_scores(logits)
+        assert len(scores) == 3
+        assert all(isinstance(s, float) for s in scores)
+        assert scores == pytest.approx([0.9, 0.7, 0.2])
+
+    def test_3d_logits_returns_yes_probability(self):
+        """3D logits (batch, seq, vocab) with yes/no tokens → softmax over yes/no."""
+        r = self._make_reranker_with_logits_logic(token_yes_id=1, token_no_id=0)
+        # vocab_size=4, batch=2, seq=3; last token at index -1
+        # Sample 0: no_logit=0, yes_logit=2 → P(yes) high
+        # Sample 1: no_logit=1, yes_logit=0 → P(yes) low
+        logits = np.zeros((2, 3, 4), dtype=np.float32)
+        logits[0, -1, 0] = 0.0  # no
+        logits[0, -1, 1] = 2.0  # yes
+        logits[1, -1, 0] = 1.0  # no
+        logits[1, -1, 1] = 0.0  # yes
+        scores = r._logits_to_scores(logits)
+        assert len(scores) == 2
+        assert all(isinstance(s, float) for s in scores)
+        assert 0 <= scores[0] <= 1 and 0 <= scores[1] <= 1
+        assert scores[0] > 0.5  # yes logit higher
+        assert scores[1] < 0.5  # no logit higher
+
+    def test_3d_logits_fallback_when_no_token_ids(self):
+        """3D logits without yes/no IDs uses last-vocab fallback."""
+        r = self._make_reranker_with_logits_logic()
+        r._token_yes_id = None
+        r._token_no_id = None
+        logits = np.array([[[0.1, 0.2, 0.3]], [[0.4, 0.5, 0.6]]], dtype=np.float32)
+        scores = r._logits_to_scores(logits)
+        assert len(scores) == 2
+        assert scores == pytest.approx([0.3, 0.6])
+
+    def test_rerank_with_3d_logits_returns_numeric_scores(self):
+        """BaseReranker.rerank with _score_pairs returning 3D-derived scores yields list[tuple[str, float]]."""
+        from agent.retrieval.reranker.base_reranker import BaseReranker
+
+        class _RerankerWith3D(BaseReranker):
+            def _score_pairs(self, pairs):
+                # Simulate _logits_to_scores output for 3D Qwen3 logits (all above threshold)
+                return [0.9, 0.7, 0.5, 0.4, 0.3, 0.8, 0.6, 0.5][: len(pairs)]
+
+        r = _RerankerWith3D()
+        docs = [f"doc {i}" for i in range(8)]
+        result = r.rerank("query", docs)
+        assert len(result) == 8
+        assert all(isinstance(pair, tuple) and len(pair) == 2 for pair in result)
+        assert all(isinstance(s, (int, float)) for _, s in result)
+        assert all(0 <= s <= 1 for _, s in result)
+
+
+# ---------------------------------------------------------------------------
 # Reranker correctness (GPU and CPU paths via mock)
 # ---------------------------------------------------------------------------
 
@@ -374,9 +446,11 @@ class TestTelemetry:
         assert metrics["candidates_out"] == 10
         assert metrics["rerank_tokens"] == 512
         assert metrics["rerank_skipped_reason"] is None
+        assert metrics["ranking_method"] == "reranker"
 
     def test_skipped_reason_symbol_query(self):
         from agent.retrieval.retrieval_pipeline import _log_rerank_telemetry
         state = self._make_state()
         _log_rerank_telemetry(state, 0, "none", 10, 10, 10, 0, skipped_reason="symbol_query:camel_case_identifier")
         assert "symbol_query" in state.context["retrieval_metrics"]["rerank_skipped_reason"]
+        assert state.context["retrieval_metrics"]["ranking_method"] == "retriever_score"

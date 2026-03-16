@@ -2,11 +2,24 @@
 
 All configuration values are centralized under the top-level `config/` directory. Each module supports environment variable overrides.
 
+## Startup Bootstrap (config/startup.py)
+
+When the main service starts (CLI `agent.cli.run_agent`), `ensure_services_ready()` runs before any agent work:
+
+1. **Reranker**: If not running → log info and initialize (warm-start) before anything else. On failure, pipeline uses retriever-score ordering (no LLM fallback).
+2. **LLM models**: Verify all endpoints from `task_models` are reachable. If any are unreachable → state error clearly and exit.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| SKIP_STARTUP_CHECKS | 0 | Set to 1 to bypass reranker init and LLM reachability check (e.g. tests with mocked services) |
+| RERANKER_STARTUP | 1 | Auto-init reranker at service startup (default ON). Set to 0 to skip; reranker will lazy-load on first use. |
+
 ## Config Modules
 
 | Module | Description |
 |--------|-------------|
 | `config/agent_config.py` | Agent loop and controller limits |
+| `config/agent_runtime.py` | Edit/test/fix execution loop: attempts, patch limits, same-error guard, sandbox (see [Runtime safety](#agent_runtimepy-execution-loop)) |
 | `config/editing_config.py` | Patch and file editing limits |
 | `config/logging_config.py` | Log level and format |
 | `config/observability_config.py` | Trace and observability settings |
@@ -55,6 +68,22 @@ Phase 4 reliability limits; not configurable via env:
 | MAX_TASK_RUNTIME_SECONDS | 60 | Wall-clock timeout per task |
 | MAX_LOOP_ITERATIONS | 100 | Stall detection |
 | MAX_STEP_TIMEOUT_SECONDS | 15 (from config) | Per-step timeout; Phase 7 |
+
+### agent_runtime.py (execution loop)
+
+Used by `agent/runtime/execution_loop.py`. Snapshot-based rollback (no git), syntax validation before tests, retry guard, strategy explorer only when retries exhausted.
+
+| Variable | Default | Env Override | Description |
+|----------|---------|--------------|-------------|
+| MAX_EDIT_ATTEMPTS | 3 | MAX_EDIT_ATTEMPTS | Max attempts in edit→test→fix loop |
+| MAX_PATCH_LINES | 300 | MAX_PATCH_LINES | Max total patch lines per attempt (reject before apply) |
+| MAX_PATCH_FILES | 5 | MAX_PATCH_FILES | Max files per patch (reject before apply) |
+| MAX_SAME_ERROR_RETRIES | 2 | MAX_SAME_ERROR_RETRIES | Stop after this many consecutive identical failure types |
+| MAX_STRATEGIES | 3 | MAX_STRATEGIES | Max alternative strategies from strategy_explorer when retries exhausted |
+| TEST_TIMEOUT | 120 | TEST_TIMEOUT | Test run timeout (seconds) |
+| TRAJECTORY_STORE_ENABLED | True | TRAJECTORY_STORE_ENABLED | Persist trajectory (attempt, failure_type, patch, etc.) to TRAJECTORY_STORE_DIR |
+| TRAJECTORY_STORE_DIR | data/trajectories | TRAJECTORY_STORE_DIR | Directory for trajectory JSONL |
+| ENABLE_SANDBOX | False | ENABLE_SANDBOX | When 1/true: copy project to temp dir for patch + tests; no host filesystem modification |
 
 ### editing_config.py
 
@@ -130,7 +159,7 @@ Phase 4 reliability limits; not configurable via env:
 | GRAPH_EXPANSION_DEPTH | 2 | GRAPH_EXPANSION_DEPTH | Graph expansion depth |
 | ENABLE_HYBRID_RETRIEVAL | True | ENABLE_HYBRID_RETRIEVAL | 1/0 or true/false |
 | ENABLE_VECTOR_SEARCH | True | ENABLE_VECTOR_SEARCH | 1/0 or true/false |
-| ENABLE_CONTEXT_RANKING | True | ENABLE_CONTEXT_RANKING | 1/0 or true/false |
+| ENABLE_CONTEXT_RANKING | True | ENABLE_CONTEXT_RANKING | 1/0 or true/false (unused by retrieval pipeline; kept for compatibility) |
 | RETRIEVAL_CACHE_SIZE | 100 | RETRIEVAL_CACHE_SIZE | Retrieval cache size |
 | MAX_CANDIDATES_FOR_RANKING | 20 | MAX_CANDIDATES_FOR_RANKING | Max candidates for LLM ranking |
 | MAX_SNIPPET_CHARS_IN_BATCH | 400 | MAX_SNIPPET_CHARS_IN_BATCH | Per-snippet truncation in batch |
@@ -147,9 +176,16 @@ Phase 4 reliability limits; not configurable via env:
 | RRF_TOP_N | 100 | RRF_TOP_N | Phase 17: RRF merged result cap |
 | RRF_K | 60 | RRF_K | Phase 17: RRF constant |
 | RERANKER_ENABLED | True | RERANKER_ENABLED | Phase 17: cross-encoder reranker on/off |
+| RERANKER_STARTUP | True | RERANKER_STARTUP | Phase 17: auto-init reranker at service startup (default ON). 0 = lazy-load on first use |
+| RERANKER_USE_INT8 | True | RERANKER_USE_INT8 | Phase 17: use ONNX INT8 for both CPU and GPU (default ON). 0 = GPU uses sentence-transformers FP16 |
+| RERANKER_DAEMON_PORT | 9004 | RERANKER_DAEMON_PORT | Retrieval daemon HTTP port (scripts/retrieval_daemon.py; reranker + embedding) |
+| RETRIEVAL_DAEMON_PORT | 9004 | RETRIEVAL_DAEMON_PORT | Same as RERANKER_DAEMON_PORT; unified daemon port |
+| RERANKER_USE_DAEMON | True | RERANKER_USE_DAEMON | Prefer retrieval daemon for reranker when reachable (default ON) |
+| EMBEDDING_USE_DAEMON | True | EMBEDDING_USE_DAEMON | Prefer retrieval daemon /embed for vector search when reachable (default ON) |
 | RERANKER_DEVICE | auto | RERANKER_DEVICE | Phase 17: auto \| cpu \| gpu |
-| RERANKER_GPU_MODEL | Qwen/Qwen3-Reranker-0.6B | RERANKER_GPU_MODEL | Phase 17: GPU model ID |
-| RERANKER_CPU_MODEL | models/reranker/qwen3_reranker_int8.onnx | RERANKER_CPU_MODEL | Phase 17: CPU ONNX model path |
+| RERANKER_GPU_MODEL | (from models_config.json reranker.gpu_model) | RERANKER_GPU_MODEL | Phase 17: GPU model ID |
+| RERANKER_CPU_MODEL | (from models_config.json reranker.cpu_model) | RERANKER_CPU_MODEL | Phase 17: CPU ONNX model path |
+| RERANKER_CPU_TOKENIZER | (from models_config.json reranker.cpu_tokenizer) | RERANKER_CPU_TOKENIZER | Phase 17: HuggingFace tokenizer ID for CPU ONNX |
 | RERANKER_TOP_K | 10 | RERANKER_TOP_K | Phase 17: reranker output size |
 | RERANKER_BATCH_SIZE | 16 | RERANKER_BATCH_SIZE | Phase 17: batch size for inference |
 | RERANK_MIN_CANDIDATES | 6 | RERANK_MIN_CANDIDATES | Phase 17: min candidates to trigger reranker |

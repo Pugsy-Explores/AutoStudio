@@ -144,6 +144,9 @@ flowchart TB
 │ ──► Call-Chain Context ──► Deduplicator ──► Reranker       │
 │ ──► ContextBuilder ──► Ranker ──► Pruner                   │
 └──────────────────────────────────────────────────────────┘
+
+Stabilized retrieval flow: SEARCH_CANDIDATES (candidate discovery, <1s)
+  → BUILD_CONTEXT (graph expansion, rerank, prune, <5s) → EXECUTOR.
 ┌─────────────────────────────┐
 │ EXPLAIN path                │
 │ ExplainGate ──► ContextBuilderV2 ──► EXPLAIN model call    │
@@ -218,6 +221,18 @@ python -m repo_index.index_repo /path/to/repo
 # Use --verbose to log each file indexed.
 ```
 
+### Retrieval daemon (optional)
+
+Run the unified retrieval daemon (reranker + embedding) before agent sessions to avoid cold-start latency. When `RERANKER_USE_DAEMON=1` and `EMBEDDING_USE_DAEMON=1` (defaults), the agent uses the daemon instead of loading models in-process.
+
+```bash
+python scripts/retrieval_daemon.py              # foreground
+python scripts/retrieval_daemon.py --daemon     # background
+python scripts/retrieval_daemon.py --stop       # stop daemon
+```
+
+Endpoints: `POST /rerank`, `POST /embed`, `GET /health`. See [Docs/RETRIEVAL_ARCHITECTURE.md](Docs/RETRIEVAL_ARCHITECTURE.md) §4.9.
+
 ### Model endpoints
 
 Configure `agent/models/models_config.json` or set:
@@ -241,6 +256,7 @@ AutoStudio/
 ├── config/                      # Centralized configuration (Docs/CONFIGURATION.md)
 │   ├── __init__.py
 │   ├── agent_config.py         # Agent loop limits: runtime, replan, step timeout, context chars
+│   ├── agent_runtime.py        # Edit/test/fix loop: MAX_EDIT_ATTEMPTS, patch limits, ENABLE_SANDBOX
 │   ├── editing_config.py       # Patch and file limits
 │   ├── retrieval_config.py     # Retrieval budgets, hybrid flags, cache size
 │   ├── router_config.py        # Instruction router (ROUTER_TYPE, ENABLE_INSTRUCTION_ROUTER)
@@ -300,6 +316,11 @@ AutoStudio/
 │   │   ├── critic.py           # Diagnose failure (retrieval_miss, bad_plan, bad_patch, etc.)
 │   │   ├── retry_planner.py    # Retry hints: rewrite_query, expand_scope, new_plan
 │   │   └── trajectory_store.py # Persist attempts under .agent_memory/trajectories/
+│   │
+│   ├── runtime/                # Edit→test→fix execution loop (runtime safety)
+│   │   ├── execution_loop.py   # run_edit_test_fix_loop: snapshot rollback, syntax validation, retry guard
+│   │   ├── syntax_validator.py # validate_project (py_compile / go build / cargo check by manifest)
+│   │   └── retry_guard.py      # should_retry_strategy(failure_type, attempt)
 │   │
 │   ├── memory/                 # State, results, task memory, task index
 │   │   ├── __init__.py
@@ -684,17 +705,20 @@ SEARCH
 
 ### EDIT pipeline (inside dispatcher `_edit_fn`)
 
-All EDIT execution goes through `dispatch(step, state)`. The dispatcher's `_edit_fn` runs:
+All EDIT execution goes through `dispatch(step, state)`. The dispatcher's `_edit_fn` runs the **edit→test→fix loop** (`agent/runtime/execution_loop.run_edit_test_fix_loop`):
 
 ```
 EDIT (via dispatch)
   → diff_planner.plan_diff(instruction, context)
   → conflict_resolver.resolve_conflicts() — same symbol, same file, semantic overlap
   → patch_generator.to_structured_patches()
-  → test_repair_loop.run_with_repair() — execute_patch + run tests + repair on failure
-      → ast_patcher.apply_patch() — Tree-sitter AST edits (insert/replace/delete)
-      → patch_validator.validate_patch() — compile + AST reparse
-      → write on success; rollback on failure
+  → execution_loop.run_edit_test_fix_loop() — single repair mechanism
+      → Snapshot files to be modified (no git dependency)
+      → execute_patch() — AST patcher + patch_validator; write on success
+      → validate_project() — syntax check (py_compile / go build / cargo check) before tests
+      → run_tests(); on failure: snapshot rollback, retry guard, critic + retry_planner
+      → base_instruction + single retry hint (no instruction accumulation)
+      → strategy_explorer only when retries exhausted (MAX_EDIT_ATTEMPTS)
   → repo_index.update_index_for_file() on success
   → repo_graph.update_repo_map_for_file() on success (incremental repo_map refresh)
 ```
@@ -702,9 +726,10 @@ EDIT (via dispatch)
 - **Diff planner:** Identifies affected symbols, queries graph for callers.
 - **Conflict resolver:** Splits conflicting edits into sequential groups.
 - **Patch generator:** Converts plan to structured patches (symbol, action, target_node, code).
+- **Execution loop:** Snapshot-based rollback (works in CI, zip, non-git repos); syntax validation before tests; deterministic stop (max attempts, same error N times, empty changes, patch rejected). Config: `config/agent_runtime.py` (MAX_EDIT_ATTEMPTS, MAX_PATCH_FILES, MAX_PATCH_LINES, MAX_SAME_ERROR_RETRIES, ENABLE_SANDBOX). See Docs/CONFIGURATION.md and Docs/OBSERVABILITY.md (execution loop metrics).
 - **AST patcher:** Symbol-level (function_body_start, function_body, class_body) and statement-level edits; preserves relative indentation.
 - **Patch validator:** Ensures code compiles and AST reparse succeeds before write.
-- **Patch executor:** Applies validated patches; max 5 files, 200 lines per patch; rollback on invalid syntax, validation failure, or apply error.
+- **Patch executor:** Applies validated patches; max 5 files, 200 lines per patch; forbidden-path checks; rollback on invalid syntax, validation failure, or apply error.
 
 ### EXPLAIN
 
@@ -774,6 +799,11 @@ All configuration values are centralized under `config/`. See [Docs/CONFIGURATIO
     "planner": "REASONING_V2",
     "context_ranking": "REASONING_V2"
   },
+  "reranker": {
+    "gpu_model": "Qwen/Qwen3-Reranker-0.6B",
+    "cpu_model": "models/reranker/qwen3_reranker_int8.onnx",
+    "cpu_tokenizer": "Qwen/Qwen3-Reranker-0.6B"
+  },
   "task_params": {
     "EXPLAIN": { "temperature": 0.0, "max_tokens": null, "request_timeout_seconds": 600 },
     "planner": { "temperature": 0.0, "max_tokens": 1024, "request_timeout_seconds": 600 },
@@ -783,8 +813,9 @@ All configuration values are centralized under `config/`. See [Docs/CONFIGURATIO
 ```
 
 - **models:** Maps model key (SMALL, REASONING, REASONING_V2) → name and endpoint
-- **task_models:** Maps task name → model key (new features use REASONING_V2)
+- **task_models:** Maps task name → model key. Required for `call_small_model` (no fallback; raises if task_name missing). All tasks must be listed.
 - **task_params:** Per-task temperature, max_tokens, timeout
+- **reranker:** Cross-encoder reranker config — gpu_model (HuggingFace ID), cpu_model (ONNX path), cpu_tokenizer (local path or HuggingFace ID). Source of truth; retrieval pipeline derives from here. Env vars RERANKER_GPU_MODEL, RERANKER_CPU_MODEL, RERANKER_CPU_TOKENIZER override.
 
 ---
 
@@ -802,9 +833,11 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `MODEL_TEMPERATURE` | Default temperature |
 | `MODEL_MAX_TOKENS` | Default max tokens |
 | `MODEL_REQUEST_TIMEOUT` | Default request timeout (seconds) |
+| `MODEL_RETRY_MAX_ATTEMPTS` | Max retries on connection/timeout (default 5); exponential backoff |
+| `MODEL_RETRY_BASE_DELAY_SECONDS` | Base delay for exponential backoff (default 1.0) |
 | `REASONING_V2_MODEL_ENDPOINT` | Override REASONING_V2 endpoint |
 | `ENABLE_TOOL_GRAPH` | 1 (default) or 0 — restrict tools by graph |
-| `ENABLE_CONTEXT_RANKING` | 1 (default) or 0 — rank and prune context before EXPLAIN |
+| `ENABLE_CONTEXT_RANKING` | 1 (default) or 0 — (unused by retrieval; kept for compatibility) |
 | `ENABLE_VECTOR_SEARCH` | 1 (default) or 0 — use embedding search when graph returns nothing |
 | `ENABLE_HYBRID_RETRIEVAL` | 1 (default) or 0 — run graph, vector, grep in parallel; 0 = sequential fallback |
 | `RETRIEVAL_CACHE_SIZE` | LRU cache size for search results (default 100); 0 to disable. Read at runtime from env. |
@@ -839,6 +872,7 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `MAX_HISTORY_TOKENS` | Phase 14: token budget for history (default 2000) |
 | `MAX_REPO_CONTEXT_TOKENS` | Phase 14: threshold for conditional compression (default 7200) |
 | `MAX_RETRIEVAL_RESULTS` | Phase 14: max candidates from retrieval to ranker (default 20) |
+| `RERANKER_STARTUP` | 1 (default) or 0 — auto-init reranker at service startup. 0 = lazy-load on first use |
 | `HISTORY_WINDOW_TURNS` | Phase 14: last N turns kept raw (default 10) |
 | `HISTORY_SUMMARY_TURNS` | Phase 14: older turns summarized (default 30) |
 

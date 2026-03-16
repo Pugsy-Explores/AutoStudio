@@ -3,6 +3,9 @@
 Public API:
   init_reranker()    — call once at process start
   create_reranker()  — returns singleton BaseReranker or None if disabled
+
+When RERANKER_USE_DAEMON=1 and retrieval daemon is reachable, returns
+HttpRerankerClient (no in-process model load). Otherwise builds in-process reranker.
 """
 
 from __future__ import annotations
@@ -11,6 +14,8 @@ import logging
 
 from agent.retrieval.reranker.base_reranker import BaseReranker
 from agent.retrieval.reranker.hardware import detect_hardware
+from agent.retrieval.reranker.http_reranker import HttpRerankerClient, _check_daemon_health
+from config.retrieval_config import RERANKER_USE_DAEMON, RERANKER_USE_INT8, RETRIEVAL_DAEMON_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +26,8 @@ _RERANKER_DISABLED: bool = False
 def create_reranker() -> BaseReranker | None:
     """Return the singleton reranker instance, or None when disabled.
 
-    Lazy-creates the instance on first call if init_reranker() was not
-    called at startup. Returns None immediately when the reranker has
-    been permanently disabled by a prior load or warmup failure.
+    When RERANKER_USE_DAEMON=1, tries retrieval daemon first. If reachable,
+    returns HttpRerankerClient. Otherwise falls back to in-process build.
     """
     global _reranker_instance, _RERANKER_DISABLED  # noqa: PLW0603
 
@@ -31,12 +35,16 @@ def create_reranker() -> BaseReranker | None:
         return None
 
     if _reranker_instance is None:
-        try:
-            _reranker_instance = _build_reranker()
-        except Exception as exc:
-            logger.warning("[reranker] create failed — disabling reranker: %s", exc)
-            _RERANKER_DISABLED = True
-            return None
+        if RERANKER_USE_DAEMON and _check_daemon_health(RETRIEVAL_DAEMON_PORT):
+            _reranker_instance = HttpRerankerClient(port=RETRIEVAL_DAEMON_PORT)
+            logger.info("[reranker] using retrieval daemon (HTTP)")
+        else:
+            try:
+                _reranker_instance = _build_reranker()
+            except Exception as exc:
+                logger.warning("[reranker] create failed — disabling reranker: %s", exc)
+                _RERANKER_DISABLED = True
+                return None
 
     return _reranker_instance
 
@@ -73,13 +81,23 @@ def init_reranker() -> None:
 def _build_reranker() -> BaseReranker | None:
     """Instantiate the correct reranker for the detected hardware.
 
-    Lazy-imports GPU/CPU classes to avoid ImportError on machines
-    missing torch or onnxruntime at import time.
+    When RERANKER_USE_INT8: both CPU and GPU use ONNX INT8 (lower memory, consistent quality).
+    When INT8 disabled: GPU uses sentence-transformers FP16, CPU uses ONNX INT8.
     """
     global _RERANKER_DISABLED  # noqa: PLW0603
 
     device = detect_hardware()
     try:
+        if device == "gpu" and RERANKER_USE_INT8:
+            try:
+                from agent.retrieval.reranker.onnx_gpu_reranker import OnnxGPUReranker  # noqa: PLC0415
+
+                return OnnxGPUReranker()
+            except Exception as gpu_exc:
+                logger.info("[reranker] INT8 GPU failed, falling back to CPU INT8: %s", gpu_exc)
+                from agent.retrieval.reranker.cpu_reranker import CPUReranker  # noqa: PLC0415
+
+                return CPUReranker()
         if device == "gpu":
             from agent.retrieval.reranker.gpu_reranker import GPUReranker  # noqa: PLC0415
 

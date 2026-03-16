@@ -34,6 +34,12 @@ _DEFAULT_API_KEY = "none"
 _DEFAULT_REQUEST_TIMEOUT = 120
 _DEFAULT_TEMPERATURE = 0.0
 
+_DEFAULT_RERANKER = {
+    "gpu_model": "Qwen/Qwen3-Reranker-0.6B",
+    "cpu_model": "models/reranker/model.onnx",
+    "cpu_tokenizer": "models/reranker",
+}
+
 
 def _parse_max_tokens(v) -> int | None:
     """Return int max_tokens or None (no limit)."""
@@ -120,6 +126,7 @@ def _load_config() -> dict:
         },
         "task_models": _DEFAULT_TASK_MODELS.copy(),
         "task_params": {},
+        "reranker": dict(_DEFAULT_RERANKER),
     }
     if not _CONFIG_FILE.is_file():
         return defaults
@@ -154,6 +161,15 @@ def _load_config() -> dict:
             defaults["task_params"] = out_params
         else:
             defaults["task_params"] = {}
+        if "reranker" in data and isinstance(data["reranker"], dict):
+            r = data["reranker"]
+            defaults["reranker"] = {
+                "gpu_model": str(r.get("gpu_model", _DEFAULT_RERANKER["gpu_model"])).strip() or _DEFAULT_RERANKER["gpu_model"],
+                "cpu_model": str(r.get("cpu_model", _DEFAULT_RERANKER["cpu_model"])).strip() or _DEFAULT_RERANKER["cpu_model"],
+                "cpu_tokenizer": str(r.get("cpu_tokenizer", _DEFAULT_RERANKER["cpu_tokenizer"])).strip() or _DEFAULT_RERANKER["cpu_tokenizer"],
+            }
+        else:
+            defaults["reranker"] = dict(_DEFAULT_RERANKER)
         return defaults
     except (json.JSONDecodeError, OSError):
         return defaults
@@ -215,6 +231,28 @@ def get_model_name(model_key: str) -> str:
     key = (model_key or "REASONING").upper()
     entry = _MODELS_REGISTRY.get(key) or {}
     return entry.get("name", "Unknown")
+
+
+def get_reranker_config() -> dict:
+    """Return reranker model config from models_config.json.
+
+    Returns dict with keys: gpu_model, cpu_model, cpu_tokenizer.
+    Env vars RERANKER_GPU_MODEL, RERANKER_CPU_MODEL override when set.
+    """
+    r = _loaded.get("reranker", _DEFAULT_RERANKER)
+    out = {
+        "gpu_model": r.get("gpu_model", _DEFAULT_RERANKER["gpu_model"]),
+        "cpu_model": r.get("cpu_model", _DEFAULT_RERANKER["cpu_model"]),
+        "cpu_tokenizer": r.get("cpu_tokenizer", _DEFAULT_RERANKER["cpu_tokenizer"]),
+    }
+    if os.environ.get("RERANKER_GPU_MODEL"):
+        out["gpu_model"] = os.environ["RERANKER_GPU_MODEL"]
+    if os.environ.get("RERANKER_CPU_MODEL"):
+        out["cpu_model"] = os.environ["RERANKER_CPU_MODEL"]
+    if os.environ.get("RERANKER_CPU_TOKENIZER"):
+        out["cpu_tokenizer"] = os.environ["RERANKER_CPU_TOKENIZER"]
+    return out
+
 
 # Endpoints: from config, overridable by env (backward compat)
 SMALL_MODEL_ENDPOINT = os.environ.get("SMALL_MODEL_ENDPOINT", get_endpoint_for_model("SMALL"))

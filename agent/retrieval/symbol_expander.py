@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 
 from agent.retrieval.context_pruner import prune_context
-from agent.retrieval.context_ranker import rank_context
 from agent.retrieval.retrieval_expander import normalize_file_path
 from agent.tools import read_symbol_body
 from config.repo_graph_config import INDEX_SQLITE, SYMBOL_GRAPH_DIR
@@ -142,9 +141,9 @@ def expand_from_anchors(
         if not candidates:
             return []
 
-        ranked = rank_context(query, candidates)
+        # Task 5: Single ranking pass only. Cross-encoder reranker runs later in run_retrieval_pipeline.
         final = prune_context(
-            ranked, max_snippets=max_snippets, max_chars=DEFAULT_MAX_CHARS
+            candidates, max_snippets=max_snippets, max_chars=DEFAULT_MAX_CHARS
         )
         logger.info("[symbol_expander] pruned to %d snippets", len(final))
         return final

@@ -18,7 +18,7 @@ from agent.observability.trace_logger import log_event, trace_stage
 from agent.retrieval import rewrite_query_with_context
 from agent.retrieval.context_builder_v2 import assemble_reasoning_context
 from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline
-from agent.tools import list_files, read_file, run_command, search_code
+from agent.tools import build_context, list_files, read_file, run_command, search_candidates, search_code
 from config.retrieval_config import (
     ENABLE_HYBRID_RETRIEVAL,
     ENABLE_VECTOR_SEARCH,
@@ -207,13 +207,13 @@ def _search_fn(query: str, state: AgentState):
 
 
 def _edit_fn(step: dict, state: AgentState) -> dict:
-    """Dispatch-style: { success, output, error }. Pipeline: plan_diff -> resolve_conflicts -> to_structured_patches -> run_with_repair."""
+    """Dispatch-style: { success, output, error }. Pipeline: plan_diff -> resolve_conflicts -> run_edit_test_fix_loop (single repair path)."""
     try:
+        from config.agent_runtime import MAX_EDIT_ATTEMPTS
         from config.editing_config import MAX_FILES_EDITED, MAX_PATCH_SIZE
         from editing.conflict_resolver import resolve_conflicts
         from editing.diff_planner import plan_diff
-        from editing.patch_generator import to_structured_patches
-        from editing.test_repair_loop import run_with_repair
+        from agent.runtime.execution_loop import run_edit_test_fix_loop
         from repo_graph.change_detector import RISK_HIGH, detect_change_impact
         from repo_index.indexer import update_index_for_file
     except ImportError:
@@ -262,7 +262,7 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
         from agent.observability.trace_logger import log_event
         log_event(trace_id, "high_risk_edit", {"impact": impact})
 
-    # Conflict resolution
+    # Conflict resolution (informational; execution loop re-plans each attempt)
     resolve_result = resolve_conflicts(diff_plan)
     if resolve_result.get("valid"):
         groups = [changes]
@@ -274,19 +274,20 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
     for group in groups:
         if not group:
             continue
-        patch_plan = to_structured_patches({"changes": group}, instruction, context)
-        repair_result = run_with_repair(patch_plan, project_root, context, max_attempts=3)
-        if not repair_result.get("success"):
+        loop_result = run_edit_test_fix_loop(
+            instruction, context, project_root, max_attempts=MAX_EDIT_ATTEMPTS
+        )
+        if not loop_result.get("success"):
             return {
                 "success": False,
                 "output": {
-                    "error": repair_result.get("error"),
-                    "reason": repair_result.get("reason"),
+                    "error": loop_result.get("error"),
+                    "reason": loop_result.get("reason"),
                 },
-                "error": repair_result.get("reason", repair_result.get("error")),
+                "error": loop_result.get("reason", loop_result.get("error")),
             }
-        all_modified.extend(repair_result.get("files_modified", []))
-        all_patches += repair_result.get("patches_applied", 0)
+        all_modified.extend(loop_result.get("files_modified", []))
+        all_patches += loop_result.get("patches_applied", 0)
 
     for file_path in all_modified:
         update_index_for_file(file_path, project_root)
@@ -419,6 +420,42 @@ def dispatch(step: dict, state: AgentState) -> dict:
     preferred_from_graph = _tool_graph.get_preferred_tool(current_node)
     chosen_tool = resolve_tool(action, allowed_tools, preferred_from_graph, current_node)
     state.context["chosen_tool"] = chosen_tool
+
+    if action == "SEARCH_CANDIDATES":
+        query = step.get("query") or step.get("description") or ""
+        last_error = None
+        for attempt in range(3):  # retry limit 2 + 1 initial = 3 attempts
+            try:
+                out = search_candidates(query, state)
+                candidates = out.get("candidates") or []
+                if candidates:
+                    state.context["candidates"] = candidates
+                    state.context["query"] = query
+                    return {"success": True, "output": out}
+                last_error = "empty results"
+            except Exception as e:
+                last_error = str(e)
+                logger.debug("[SEARCH_CANDIDATES] attempt %d failed: %s", attempt + 1, e)
+        # Fallback: grep search (Task 8)
+        try:
+            grep_out = search_code(query, tool_hint="search_for_pattern")
+            results = grep_out.get("results") or []
+            candidates = [
+                {"symbol": r.get("symbol", ""), "file": r.get("file", ""), "snippet": r.get("snippet", ""), "score": 0.5, "source": "grep"}
+                for r in results[:20]
+            ]
+            state.context["candidates"] = candidates
+            state.context["query"] = query
+            return {"success": True, "output": {"candidates": candidates, "fallback": "grep"}}
+        except Exception as e:
+            return {"success": False, "output": {}, "error": f"{last_error}; fallback grep failed: {e}"}
+
+    if action == "BUILD_CONTEXT":
+        try:
+            out = build_context(candidates=None, state=state)
+            return {"success": True, "output": out}
+        except Exception as e:
+            return {"success": False, "output": {}, "error": str(e)}
 
     if action == "SEARCH":
         raw = _policy_engine.execute_with_policy(step, state)

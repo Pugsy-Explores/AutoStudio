@@ -1,14 +1,14 @@
 """Entry point for python -m agent. Delegates to run_agent and prints results."""
 
-import logging
 import sys
 
 from config.config_validator import validate_config
-from config.logging_config import LOG_FORMAT, LOG_LEVEL
+from config.logging_config import configure_logging
 from agent.orchestrator.agent_loop import run_agent
 
 validate_config()
-logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format=LOG_FORMAT)
+# Errors highlighted in red when stderr is a TTY
+configure_logging()
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

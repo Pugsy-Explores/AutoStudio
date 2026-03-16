@@ -159,6 +159,12 @@ class TestValidateStepInput(unittest.TestCase):
     def test_valid_infra_step_passes(self):
         validate_step_input({"action": "INFRA", "description": ""})
 
+    def test_valid_search_candidates_step_passes(self):
+        validate_step_input({"action": "SEARCH_CANDIDATES", "query": "find foo", "description": "candidate discovery"})
+
+    def test_valid_build_context_step_passes(self):
+        validate_step_input({"action": "BUILD_CONTEXT", "description": "build context from candidates"})
+
     def test_invalid_action_raises(self):
         with self.assertRaises(InvalidStepError) as ctx:
             validate_step_input({"action": "UNKNOWN", "description": "x"})

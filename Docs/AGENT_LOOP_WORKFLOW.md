@@ -1,6 +1,18 @@
 # Agent Loop Workflow Diagram
 
-End-to-end flow of the AutoStudio agent: instruction → plan → execute steps → validate → optional replan → return state. Includes details on model routing, query rewriting, policy-engine retries, fallbacks, and heuristics.
+End-to-end flow of the AutoStudio agent: instruction → plan → execute steps → validate → optional replan → return state.
+
+## Retrieval Pipeline (Stabilized)
+
+```
+SEARCH_CANDIDATES
+        ↓
+BUILD_CONTEXT
+        ↓
+EXECUTOR
+```
+
+Preferred flow for locate-then-edit: SEARCH_CANDIDATES (with query) → BUILD_CONTEXT → EDIT. Includes details on model routing, query rewriting, policy-engine retries, fallbacks, and heuristics.
 
 **Architecture (phase.md):** router decides, planner plans, dispatcher executes.
 
@@ -128,7 +140,7 @@ flowchart LR
 
 ## Model routing (task → model)
 
-Config: `models_config.json` → `task_models`. Defaults in code: `query rewriting` → SMALL, `validation` → SMALL, `EXPLAIN` → REASONING.
+Config: `models_config.json` → `task_models`. All task names used by `call_small_model` / `call_reasoning_model` must be in `task_models` (no fallback). Endpoint resolved via `task_models[task_name]` → `models[model_key].endpoint`.
 
 ```mermaid
 flowchart LR
@@ -281,7 +293,7 @@ flowchart TB
                                     └───────────────────────────────┘
 ```
 
-- **Diff planner (EDIT via dispatch):** `_edit_fn` runs full pipeline: `plan_diff` → `conflict_resolver` → `patch_generator.to_structured_patches` → `run_with_repair` (execute_patch + test repair loop). Validation: compile + AST reparse before write; rollback on invalid syntax, >200 lines, >5 files, or apply error. Max 5 files, 200 lines per patch. All EDIT execution goes through `dispatch(step, state)`.
+- **Edit→test→fix loop (EDIT via dispatch):** `_edit_fn` runs: `plan_diff` → `conflict_resolver` → `patch_generator.to_structured_patches` → **`agent/runtime/execution_loop.run_edit_test_fix_loop`** (single repair mechanism). Loop behaviour: (1) **Snapshot rollback** — before apply, snapshot affected files; on failure or syntax/test failure, restore from snapshot (no git). (2) **Syntax validation** — after `execute_patch` succeeds, `agent/runtime/syntax_validator.validate_project` runs (manifest-based: Python py_compile, Node npm run build, Go/Cargo); on invalid, rollback and return `syntax_error` without running tests. (3) **Instruction mutation guard** — `base_instruction` fixed at loop start; each retry uses `base_instruction + "\nRetry hint: " + hint` (no accumulation). (4) **Retry guard** — `agent/runtime/retry_guard.should_retry_strategy(failure_type, attempt)` (e.g. syntax_error/timeout retry once; unknown stop). (5) **Strategy explorer** — invoked only when `attempt >= MAX_EDIT_ATTEMPTS` (retries exhausted). Stop conditions: max_attempts, same error ≥ MAX_SAME_ERROR_RETRIES, no changes, patch rejected. Optional **sandbox** (ENABLE_SANDBOX=1): copy project to temp dir for patch + tests. Config: `config/agent_runtime.py`. All EDIT execution goes through `dispatch(step, state)`.
 - **Mutation**: `symbol_retry(step)` → currently returns `[step]` (single variant). Placeholder for future symbol/path variants.
 - **Retry condition**: `result.error` or `result.success is False`.
 
@@ -517,6 +529,7 @@ flowchart LR
 - **Vector retriever**: `agent/retrieval/vector_retriever.py` — search_by_embedding (fallback).
 - **Retrieval cache**: `agent/retrieval/retrieval_cache.py` — LRU cache for search results.
 - **Diff planner**: `editing/diff_planner.py` — plan_diff.
+- **Execution loop**: `agent/runtime/execution_loop.py` — run_edit_test_fix_loop (snapshot rollback, syntax validation, retry guard, strategy explorer when retries exhausted); `agent/runtime/syntax_validator.py` — validate_project; `agent/runtime/retry_guard.py` — should_retry_strategy.
 - **Patch pipeline**: `editing/patch_generator.py` — to_structured_patches; `editing/ast_patcher.py` — apply_patch; `editing/patch_validator.py` — validate_patch; `editing/patch_executor.py` — execute_patch (rollback on failure).
 - **Agent controller**: `agent/orchestrator/agent_controller.py` — run_controller (mode routing: deterministic/autonomous/multi_agent); delegates deterministic loop to run_deterministic.
 - **Deterministic runner**: `agent/orchestrator/deterministic_runner.py` — run_deterministic (plan → dispatch loop); single source of truth for Mode 1.

@@ -122,11 +122,7 @@ class TestStage4RetrievalPipeline:
             context={"project_root": project_root},
         )
 
-        def mock_rank_context(rank_query: str, candidates: list) -> list:
-            return list(candidates)
-
-        with patch("agent.retrieval.retrieval_pipeline.rank_context", side_effect=mock_rank_context):
-            run_retrieval_pipeline(graph_results, state, query="Explain StepExecutor")
+        run_retrieval_pipeline(graph_results, state, query="Explain StepExecutor")
 
         assert "retrieved_symbols" in state.context
         assert "context_snippets" in state.context

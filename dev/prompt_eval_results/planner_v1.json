@@ -1,0 +1,711 @@
+{
+  "prompt_name": "planner",
+  "version": "v1",
+  "num_cases": 100,
+  "avg_action_accuracy": 0.0,
+  "avg_json_validity": 0.0,
+  "avg_tool_correctness": 1.0,
+  "avg_task_success": 0.0,
+  "scores": [
+    {
+      "case_id": "nav001",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav002",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav003",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav004",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav005",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav006",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav007",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav008",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav009",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav010",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav011",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav012",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav013",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav014",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "nav015",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan001",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan002",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan003",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan004",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan005",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan006",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan007",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan008",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan009",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan010",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan011",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan012",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan013",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan014",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan015",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan016",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan017",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan018",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan019",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "plan020",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit001",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit002",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit003",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit004",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit005",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit006",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit007",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit008",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit009",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit010",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit011",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit012",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit013",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit014",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit015",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit016",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit017",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit018",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit019",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "edit020",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref001",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref002",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref003",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref004",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref005",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref006",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref007",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref008",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref009",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref010",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref011",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref012",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref013",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref014",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "ref015",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test001",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test002",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test003",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test004",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test005",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test006",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test007",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test008",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test009",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test010",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test011",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test012",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test013",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test014",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "test015",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo001",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo002",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo003",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo004",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo005",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo006",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo007",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo008",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo009",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo010",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo011",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo012",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo013",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo014",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    },
+    {
+      "case_id": "repo015",
+      "action_accuracy": 0.0,
+      "json_validity": 0.0,
+      "tool_correctness": 1.0,
+      "task_success": 0.0
+    }
+  ]
+}

@@ -31,6 +31,10 @@ _DEFAULT_REGISTRY: dict[str, tuple[ModelType, ...]] = {
     "context_ranker_single": (ModelType.REASONING,),
     "context_ranker_batch": (ModelType.REASONING,),
     "replanner_user": (ModelType.REASONING,),
+    # Phase 15: query expansion, context interpreter, patch generator
+    "query_expansion": (ModelType.SMALL,),
+    "context_interpreter": (ModelType.REASONING,),
+    "patch_generator": (ModelType.REASONING,),
 }
 
 

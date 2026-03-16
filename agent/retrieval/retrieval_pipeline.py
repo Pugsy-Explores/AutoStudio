@@ -3,18 +3,22 @@
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from agent.memory.state import AgentState
+from agent.retrieval.query_expansion import generate_query_expansions
+from agent.retrieval.rank_fusion import reciprocal_rank_fusion
+from agent.retrieval.retrieval_cache import get_candidate_cached, set_candidate_cached
+from agent.retrieval.retrieval_metrics import RetrievalMetrics
+from agent.retrieval.reranker.symbol_query_detector import is_symbol_query
 from agent.retrieval.anchor_detector import detect_anchors
 from agent.retrieval.context_builder import build_context_from_symbols
 from agent.retrieval.context_pruner import prune_context
-from agent.retrieval.context_ranker import rank_context
 from agent.retrieval.retrieval_expander import expand_search_results
 from agent.retrieval.reranker.cache import cache_stats
 from agent.retrieval.reranker.deduplicator import deduplicate_candidates
 from agent.retrieval.reranker.reranker_factory import create_reranker
-from agent.retrieval.reranker.symbol_query_detector import is_symbol_query
 from agent.retrieval.symbol_expander import expand_from_anchors
 from agent.tools import find_referencing_symbols, read_file, read_symbol_body
 from config.agent_config import MAX_RETRIEVAL_RESULTS
@@ -32,10 +36,216 @@ from config.retrieval_config import (
     RERANKER_ENABLED,
     RERANKER_GPU_MODEL,
     RERANKER_TOP_K,
+    RETRIEVAL_AUTO_DETECT_SERVICE_DIRS,
+    RETRIEVAL_SERVICE_DIRS,
+    RETRIEVAL_TEST_DOWNWEIGHT,
+    RETRIEVAL_USE_SERVICE_DIRS,
     RETRIEVER_FUSION_WEIGHT,
 )
 
 logger = logging.getLogger(__name__)
+
+SEARCH_CANDIDATES_TOP_K = 20
+
+
+def search_candidates(query: str, project_root: str | None = None, state: AgentState | None = None) -> list[dict]:
+    """
+    Candidate discovery only: BM25, vector, repo_map, grep. No graph expansion, ranking, or pruning.
+    Returns list of {symbol, file, snippet, score, source} up to SEARCH_CANDIDATES_TOP_K.
+    """
+    if not query or not query.strip():
+        return []
+
+    root = project_root or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    cached = get_candidate_cached(query, root)
+    if cached is not None:
+        return cached
+    _bypass, _ = is_symbol_query(query)
+    if _bypass:
+        expansions = [query.strip()]
+    else:
+        expansions = generate_query_expansions(query)
+        if not expansions:
+            expansions = [query.strip()]
+
+    def _to_candidate(r: dict, source: str, score: float = 1.0) -> dict:
+        return {
+            "symbol": (r.get("symbol") or r.get("anchor") or "").strip(),
+            "file": (r.get("file") or r.get("path") or "").strip(),
+            "snippet": (r.get("snippet") or r.get("symbol") or r.get("anchor") or "")[:500],
+            "score": float(r.get("score", score)),
+            "source": source,
+        }
+
+    def _normalize_scores(lst: list[dict]) -> None:
+        """Task 12: normalized_score = raw_score / max_score per list."""
+        if not lst:
+            return
+        max_s = max(float(c.get("score", 0) or 0) for c in lst)
+        if max_s <= 0:
+            return
+        for c in lst:
+            c["score"] = float(c.get("score", 0) or 0) / max_s
+
+    ctx = (state.context or {}) if state else {}
+    metrics = RetrievalMetrics(
+        trace_id=ctx.get("trace_id"),
+        query_id=ctx.get("query_id"),
+        step_id=ctx.get("current_step_id"),
+    )
+    all_lists: list[list[dict]] = []
+
+    def _run_bm25() -> list[dict]:
+        metrics.start("bm25")
+        try:
+            from agent.retrieval.bm25_retriever import search_bm25
+            from config.retrieval_config import BM25_TOP_K, ENABLE_BM25_SEARCH
+
+            if not ENABLE_BM25_SEARCH:
+                return []
+            raw = search_bm25(expansions[0], root, top_k=BM25_TOP_K)
+            lst = [_to_candidate(r, "bm25", score=1.0 / (i + 1)) for i, r in enumerate(raw)]
+            _normalize_scores(lst)
+            return lst
+        except Exception as e:
+            logger.debug("[search_candidates] bm25 failed: %s", e)
+            return []
+        finally:
+            metrics.end("bm25")
+
+    def _run_vector() -> list[dict]:
+        metrics.start("vector")
+        try:
+            from agent.retrieval.vector_retriever import search_by_embedding
+            from config.retrieval_config import ENABLE_VECTOR_SEARCH
+
+            if not ENABLE_VECTOR_SEARCH:
+                return []
+            out = search_by_embedding(expansions[0], root, top_k=10)
+            if not out or not out.get("results"):
+                return []
+            lst = [_to_candidate(r, "vector", score=1.0 / (i + 1)) for i, r in enumerate(out["results"])]
+            _normalize_scores(lst)
+            return lst
+        except Exception as e:
+            logger.debug("[search_candidates] vector failed: %s", e)
+            return []
+        finally:
+            metrics.end("vector")
+
+    def _run_grep() -> list[dict]:
+        metrics.start("grep")
+        try:
+            from agent.tools.serena_adapter import search_code
+
+            out = search_code(query, tool_hint="search_for_pattern")
+            if not out or not out.get("results"):
+                return []
+            lst = [_to_candidate(r, "grep", score=1.0 / (i + 1)) for i, r in enumerate(out["results"])]
+            _normalize_scores(lst)
+            return lst
+        except Exception as e:
+            logger.debug("[search_candidates] grep failed: %s", e)
+            return []
+        finally:
+            metrics.end("grep")
+
+    def _run_repo_map() -> list[dict]:
+        metrics.start("repo_map")
+        try:
+            from agent.retrieval.repo_map_lookup import lookup_repo_map
+
+            raw = lookup_repo_map(query, root)
+            lst = []
+            for i, r in enumerate(raw):
+                c = {"anchor": r.get("anchor", ""), "file": r.get("file", ""), "snippet": r.get("anchor", "")}
+                lst.append(_to_candidate(c, "symbol", score=1.0 / (i + 1)))
+            _normalize_scores(lst)
+            return lst
+        except Exception as e:
+            logger.debug("[search_candidates] repo_map failed: %s", e)
+            return []
+        finally:
+            metrics.end("repo_map")
+
+    # Task 17: Parallel candidate retrieval
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_bm25 = ex.submit(_run_bm25)
+        f_vector = ex.submit(_run_vector)
+        f_grep = ex.submit(_run_grep)
+        f_repo = ex.submit(_run_repo_map)
+        for fut in as_completed([f_bm25, f_vector, f_grep, f_repo]):
+            lst = fut.result()
+            if lst:
+                all_lists.append(lst)
+
+    # Task 13: Penalize test files before RRF (extended patterns)
+    TEST_PATH_PATTERNS = ("/tests/", "/test/", "test_", "_test.py", "conftest.py", "\\tests\\", "\\test\\")
+    downweight = RETRIEVAL_TEST_DOWNWEIGHT
+    for lst in all_lists:
+        for c in lst:
+            path = (c.get("file") or "").lower()
+            if any(p in path for p in TEST_PATH_PATTERNS):
+                c["score"] = float(c.get("score", 1.0)) * downweight
+
+    lists = all_lists
+    if not lists:
+        return []
+
+    metrics.start("rrf_merge")
+    merged = reciprocal_rank_fusion(lists, top_n=SEARCH_CANDIDATES_TOP_K)
+    metrics.end("rrf_merge")
+
+    if RETRIEVAL_USE_SERVICE_DIRS:
+        root = project_root or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+        service_dirs = RETRIEVAL_SERVICE_DIRS
+        if RETRIEVAL_AUTO_DETECT_SERVICE_DIRS:
+            candidates = ["src", "lib", "app", "services"]
+            detected = [d for d in candidates if (Path(root) / d).is_dir()]
+            if detected:
+                service_dirs = detected
+        merged = _filter_by_service_dirs(merged, service_dirs, root)
+
+    result: list[dict] = []
+    for i, m in enumerate(merged[:SEARCH_CANDIDATES_TOP_K]):
+        rrf_score = 1.0 / (60 + i + 1) if i < len(merged) else 0.0
+        result.append({
+            "symbol": m.get("symbol", ""),
+            "file": m.get("file", ""),
+            "snippet": m.get("snippet", ""),
+            "score": rrf_score,
+            "source": m.get("source", "rrf"),
+        })
+    metrics.log()
+    try:
+        from agent.observability.metrics import record_metric
+        total_s = sum(metrics.get_durations().values())
+        record_metric("retrieval_latency_ms", total_s * 1000, trace_id=ctx.get("trace_id"), project_root=root, append_jsonl=False)
+    except Exception:
+        pass
+    set_candidate_cached(query, root, result)
+    return result
+
+
+def _filter_by_service_dirs(candidates: list[dict], service_dirs: list[str], project_root: str) -> list[dict]:
+    """Keep only paths under any of service_dirs."""
+    if not service_dirs or not candidates:
+        return candidates
+    root = Path(project_root or ".").resolve()
+    allowed = {d.strip().lower() for d in service_dirs if d.strip()}
+    out: list[dict] = []
+    for c in candidates:
+        f = (c.get("file") or "").strip()
+        if not f:
+            out.append(c)
+            continue
+        p = Path(f)
+        if not p.is_absolute():
+            p = root / f
+        parts = p.parts
+        if any(part.lower() in allowed for part in parts):
+            out.append(c)
+    return out
 
 
 def _apply_reranker_scores(
@@ -98,6 +308,7 @@ def _log_rerank_telemetry(
     stats = cache_stats()
     metrics = state.context.get("retrieval_metrics") or {}
     metrics.update({
+        "ranking_method": "reranker" if skipped_reason is None else "retriever_score",
         "rerank_latency_ms": rerank_ms,
         "rerank_model": RERANKER_GPU_MODEL if device == "gpu" else RERANKER_CPU_MODEL,
         "rerank_device": device,
@@ -192,6 +403,11 @@ def run_retrieval_pipeline(
 
     # Initialize retrieval metrics for graph telemetry, dedupe, budget
     retrieval_metrics: dict = state.context.get("retrieval_metrics") or {}
+    pipe_metrics = RetrievalMetrics(
+        trace_id=state.context.get("trace_id"),
+        query_id=state.context.get("query_id"),
+        step_id=state.context.get("current_step_id"),
+    )
 
     # Ext Step 4: Graph index fallback — skip graph expansion when index absent
     index_path = Path(project_root) / SYMBOL_GRAPH_DIR / INDEX_SQLITE
@@ -200,15 +416,18 @@ def run_retrieval_pipeline(
         retrieval_metrics["graph_stage_skipped"] = True
         symbol_snippets = []
     else:
+        pipe_metrics.start("graph_expand")
         graph_telemetry: dict = {}
         symbol_snippets = expand_from_anchors(
             anchors, query or "", project_root, graph_telemetry_out=graph_telemetry
         )
+        pipe_metrics.end("graph_expand")
         retrieval_metrics.update(graph_telemetry)
         retrieval_metrics["graph_stage_skipped"] = False
 
     state.context["retrieval_metrics"] = retrieval_metrics
 
+    pipe_metrics.start("symbol_expand")
     expanded = expand_search_results(anchors)
     symbol_results = []
     reference_results = []
@@ -238,6 +457,7 @@ def run_retrieval_pipeline(
                 reference_results.extend(refs if isinstance(refs, list) else [])
         except Exception as e:
             logger.warning("[retrieval_pipeline] expand %s: %s", path, e)
+    pipe_metrics.end("symbol_expand")
 
     built = build_context_from_symbols(
         symbol_results, reference_results, file_snippets, project_root=project_root
@@ -282,11 +502,13 @@ def run_retrieval_pipeline(
     if _reranker and not _bypass and len(candidates) >= RERANK_MIN_CANDIDATES:
         candidates_in = len(candidates)
         try:
+            pipe_metrics.start("rerank")
             t0 = time.monotonic()
             deduped = candidates  # already deduped above
             snippets = [c.get("snippet") or "" for c in deduped]
             scored = _reranker.rerank(rank_query, snippets)
             rerank_ms = int((time.monotonic() - t0) * 1000)
+            pipe_metrics.end("rerank")
             total_tokens = sum(len(s.split()) for s in snippets)
 
             from agent.retrieval.reranker.hardware import detect_hardware  # noqa: PLC0415
@@ -294,16 +516,22 @@ def run_retrieval_pipeline(
 
             reranked = _apply_reranker_scores(deduped, scored, RERANKER_TOP_K)
             impact = _compute_rerank_impact(deduped, reranked)
+            pipe_metrics.start("context_prune")
             final_context = prune_context(
                 reranked, max_snippets=MAX_CONTEXT_SNIPPETS, max_chars=DEFAULT_MAX_CHARS
             )
+            pipe_metrics.end("context_prune")
             _log_rerank_telemetry(
                 state, rerank_ms, device,
                 candidates_in, len(deduped), len(final_context),
                 total_tokens, skipped_reason=None, impact=impact,
             )
         except Exception as exc:
-            logger.warning("[retrieval_pipeline] reranker inference failed — falling back to LLM ranker: %s", exc)
+            logger.warning(
+                "[retrieval_pipeline] reranker inference failed — using retriever-score ordering: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             _skipped_reason = f"inference_error:{type(exc).__name__}"
             _reranker = None  # trigger fallback below
     elif _reranker is None and RERANKER_ENABLED:
@@ -313,19 +541,31 @@ def run_retrieval_pipeline(
     elif candidates and len(candidates) < RERANK_MIN_CANDIDATES:
         _skipped_reason = "below_min_candidates"
 
-    # Fallback: existing LLM ranker when reranker was skipped or failed
+    # Fallback: retriever-score ordering when reranker was skipped or failed (no LLM fallback)
     if not final_context:
-        if ENABLE_CONTEXT_RANKING and candidates:
-            ranked = rank_context(rank_query, candidates)
+        if candidates:
+            ranked = sorted(
+                candidates,
+                key=lambda c: float(c.get("retriever_score") or 0.0),
+                reverse=True,
+            )
+            pipe_metrics.start("context_prune")
             final_context = prune_context(
                 ranked, max_snippets=MAX_CONTEXT_SNIPPETS, max_chars=DEFAULT_MAX_CHARS
             )
+            pipe_metrics.end("context_prune")
         if _skipped_reason:
             _log_rerank_telemetry(
                 state, 0, "none",
                 len(candidates), len(candidates), len(final_context),
                 0, skipped_reason=_skipped_reason,
             )
+            if candidates:
+                logger.info(
+                    "[retrieval] Reranker skipped (%s); using retriever-score ordering. "
+                    "Ensure reranker loads for faster ranking: pip install onnxruntime, run download_reranker.py",
+                    _skipped_reason,
+                )
 
     # Phase 10: optional context compression in repo-scale mode
     if final_context and state.context.get("repo_summary"):
@@ -342,6 +582,7 @@ def run_retrieval_pipeline(
 
     state.context["ranked_context"] = final_context
     state.context["ranking_scores"] = []
+    pipe_metrics.log()
 
     search_memory = state.context.get("search_memory") or {}
     if isinstance(search_memory, dict):

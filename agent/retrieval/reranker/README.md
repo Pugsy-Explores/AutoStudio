@@ -1,6 +1,6 @@
 # Cross-Encoder Reranker Subsystem
 
-Reranks retrieval candidates using a cross-encoder model (Qwen3-Reranker-0.6B). Supports GPU (sentence-transformers) and CPU (ONNX INT8). Includes cache, deduplication, symbol-query bypass, and score fusion.
+Reranks retrieval candidates using a cross-encoder model (Qwen3-Reranker-0.6B). Supports INT8 on both CPU and GPU (ONNX); FP16 on GPU when RERANKER_USE_INT8=0. Includes cache, deduplication, symbol-query bypass, and score fusion.
 
 ## Purpose
 
@@ -11,7 +11,8 @@ Improves retrieval precision by re-scoring candidates with a cross-encoder befor
 | Module | Purpose |
 |--------|---------|
 | base_reranker | Abstract base; cache integration, adaptive gating, preprocessing |
-| gpu_reranker | Sentence-transformers CrossEncoder on CUDA |
+| gpu_reranker | Sentence-transformers CrossEncoder on CUDA (FP16; when RERANKER_USE_INT8=0) |
+| onnx_gpu_reranker | ONNX INT8 on CUDA (default when GPU + RERANKER_USE_INT8=1) |
 | cpu_reranker | ONNX INT8 inference (Qwen3-Reranker-0.6B) |
 | reranker_factory | Singleton factory; lazy build; warm start |
 | cache | LRU score cache (SHA-256 keyed); hit/miss counters |
@@ -40,7 +41,28 @@ Improves retrieval precision by re-scoring candidates with a cross-encoder befor
 
 ## Configuration
 
-See [Docs/CONFIGURATION.md](../../Docs/CONFIGURATION.md) — retrieval_config: RERANKER_ENABLED, RERANKER_DEVICE, RERANKER_GPU_MODEL, RERANKER_CPU_MODEL, RERANKER_TOP_K, RERANK_CACHE_SIZE, etc.
+See [Docs/CONFIGURATION.md](../../Docs/CONFIGURATION.md) — retrieval_config: RERANKER_ENABLED, RERANKER_STARTUP (default ON), RERANKER_DEVICE, RERANKER_USE_INT8, RERANKER_GPU_MODEL, RERANKER_CPU_MODEL, RERANKER_TOP_K, RERANK_CACHE_SIZE, etc.
+
+- **RERANKER_USE_INT8** (default 1): Use ONNX INT8 for both CPU and GPU. When 0, GPU uses sentence-transformers FP16.
+- **RERANKER_STARTUP** (default 1): Auto-init reranker at service startup. Set to 0 to skip; reranker will lazy-load on first retrieval.
+
+## Retrieval Daemon
+
+Run the unified retrieval daemon (reranker + embedding) as a standalone HTTP service to avoid cold-start latency. The agent uses it when `RERANKER_USE_DAEMON=1` and `EMBEDDING_USE_DAEMON=1` (defaults).
+
+```bash
+python scripts/retrieval_daemon.py              # foreground
+python scripts/retrieval_daemon.py --daemon     # background
+python scripts/retrieval_daemon.py --stop       # stop daemon
+```
+
+Requires: `pip install fastapi uvicorn sentence-transformers`. Endpoints:
+
+| Endpoint | Body | Response |
+|----------|------|----------|
+| `POST /rerank` | `{"query": "...", "docs": ["snippet1", ...]}` | `{"results": [(snippet, score), ...]}` |
+| `POST /embed` | `{"texts": ["text1", "text2", ...]}` | `{"embeddings": [[...], [...]]}` |
+| `GET /health` | — | `{"reranker_loaded": bool, "embedding_loaded": bool}` |
 
 ## See Also
 

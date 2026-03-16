@@ -50,3 +50,62 @@ def clear_cache() -> None:
     global _cache, _cache_order
     _cache.clear()
     _cache_order.clear()
+
+
+# Task 11: candidate_cache (query -> candidate list) and context_cache (symbol -> expanded context), LRU 1024
+CANDIDATE_CACHE_SIZE = 1024
+CONTEXT_CACHE_SIZE = 1024
+
+_candidate_cache: dict[tuple[str, str], list] = {}
+_candidate_order: list[tuple[str, str]] = []
+
+_context_cache: dict[str, list] = {}
+_context_order: list[str] = []
+
+
+def _evict_lru(cache: dict, order: list, max_size: int) -> None:
+    """Evict oldest entry if over limit."""
+    while len(cache) >= max_size and order:
+        oldest = order.pop(0)
+        if oldest in cache:
+            del cache[oldest]
+
+
+def get_candidate_cached(query: str, project_root: str | None = None) -> list | None:
+    """Return cached candidate list if present. None on miss."""
+    key = _make_cache_key(query, project_root or "")
+    return _candidate_cache.get(key)
+
+
+def set_candidate_cached(query: str, project_root: str | None, candidates: list) -> None:
+    """Store candidates in cache. Evict oldest if over limit."""
+    global _candidate_cache, _candidate_order
+    key = _make_cache_key(query, project_root or "")
+    if key in _candidate_cache:
+        _candidate_order.remove(key)
+    else:
+        _evict_lru(_candidate_cache, _candidate_order, CANDIDATE_CACHE_SIZE)
+    _candidate_cache[key] = candidates
+    _candidate_order.append(key)
+
+
+def _context_key(symbol: str, project_root: str) -> str:
+    return f"{project_root}|{symbol}"
+
+
+def get_context_cached(symbol: str, project_root: str | None = None) -> list | None:
+    """Return cached expanded context if present. None on miss."""
+    key = _context_key(symbol or "", project_root or "")
+    return _context_cache.get(key)
+
+
+def set_context_cached(symbol: str, project_root: str | None, context_blocks: list) -> None:
+    """Store context in cache. Evict oldest if over limit."""
+    global _context_cache, _context_order
+    key = _context_key(symbol or "", project_root or "")
+    if key in _context_cache:
+        _context_order.remove(key)
+    else:
+        _evict_lru(_context_cache, _context_order, CONTEXT_CACHE_SIZE)
+    _context_cache[key] = context_blocks
+    _context_order.append(key)
