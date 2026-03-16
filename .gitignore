@@ -48,3 +48,7 @@ autostudio.egg-info/
 
 # Accidental None path (bug artifact)
 None/
+
+# Runtime and generated
+logs/
+models/
