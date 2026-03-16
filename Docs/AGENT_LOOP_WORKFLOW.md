@@ -1,6 +1,6 @@
 # Agent Loop Workflow Diagram
 
-End-to-end flow of the AutoStudio agent: instruction → plan → execute steps → validate → optional replan → return state.
+End-to-end flow of the AutoStudio agent (Mode 1, Phase 5): **run_attempt_loop** wraps each task; per attempt: get_plan(retry_context) → plan → execute steps → validate → optional replan → **GoalEvaluator** → record in **TrajectoryMemory** → if not goal_met: **Critic** + **RetryPlanner** → next attempt; else return state.
 
 ## Retrieval Pipeline (Stabilized)
 
@@ -22,11 +22,14 @@ Preferred flow for locate-then-edit: SEARCH_CANDIDATES (with query) → BUILD_CO
 
 ## High-level flow
 
+**Phase 5:** Deterministic mode uses **run_controller** → **run_attempt_loop**. Each attempt runs **run_deterministic** (get_plan → step loop); after the attempt, **GoalEvaluator.evaluate**; on failure, **Critic.analyze** and **RetryPlanner.build_retry_context** feed the next attempt's **get_plan(retry_context)**. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+
 ```mermaid
 flowchart TB
     subgraph ENTRY[" "]
-        A["User instruction"] --> B["run_agent"]
-        B --> C["get_plan"]
+        A["User instruction"] --> B["run_controller (deterministic)"]
+        B --> B2["run_attempt_loop"]
+        B2 --> C["get_plan with retry_context"]
     end
 
     subgraph PLAN["Plan resolver (router + planner)"]
@@ -52,9 +55,9 @@ flowchart TB
         L --> M["AgentState with instruction, plan, completed_steps, results, context"]
     end
 
-    subgraph LOOP["Execution loop"]
+    subgraph STEPLOOP["Attempt: step loop (run_deterministic)"]
         M --> N{"Termination?"}
-        N -->|max_iter/runtime/replan| O["Return state"]
+        N -->|max_iter/runtime/replan| O["Attempt done"]
         N -->|no| P["state.next_step"]
         P --> Q["StepExecutor.execute_step"]
         Q --> R["dispatch step and state"]
@@ -66,34 +69,35 @@ flowchart TB
         T -->|yes| N
         N -->|is_finished| O
     end
+
+    subgraph AFTER["After attempt (Phase 5)"]
+        O --> G["GoalEvaluator.evaluate"]
+        G --> Traj["TrajectoryMemory.record_attempt"]
+        Traj --> GM{"goal_met?"}
+        GM -->|yes| RET["Return state"]
+        GM -->|no| Crit["Critic.analyze"]
+        Crit --> RP["RetryPlanner.build_retry_context"]
+        RP --> C
+    end
 ```
 
 **ASCII diagram:**
 
 ```
-  User instruction ──► run_agent ──► get_plan
-                                        │
-                    ┌──────────────────┴──────────────────┐
-                    │ ENABLE_INSTRUCTION_ROUTER? (default: yes) │
-                    │ yes: route_instruction ──► category  │
-                    │   CODE_SEARCH ──► Single SEARCH       │
-                    │   CODE_EXPLAIN ──► Single EXPLAIN     │
-                    │   INFRA ──► Single INFRA             │
-                    │   CODE_EDIT/GENERAL ──► plan         │
-                    │ no: plan instruction                 │
-                    └──────────────────┬──────────────────┘
-                                       │
-                                       ▼
-  AgentState (instruction, plan, completed_steps, results, context)
-                                       │
-                    ┌──────────────────┴──────────────────┐
-                    │ Execution loop                       │
-                    │ next_step ──► execute_step ──►       │
-                    │   dispatch ──► state.record          │
-                    │   validate? ──► success: continue     │
-                    │   fail: undo, replan, update_plan    │
-                    │ Termination: max_iter/runtime/replan │
-                    └─────────────────────────────────────┘
+  User instruction ──► run_controller ──► run_attempt_loop
+                                                    │
+         ┌──────────────────────────────────────────┴──────────────────────────────────────────┐
+         │ for each attempt: get_plan(retry_context)                                            │
+         │   ENABLE_INSTRUCTION_ROUTER? (default: yes)                                          │
+         │   yes: route_instruction ──► category                                                 │
+         │     CODE_SEARCH ──► Single SEARCH  │  CODE_EXPLAIN ──► Single EXPLAIN  │  INFRA ──► Single INFRA │
+         │     CODE_EDIT/GENERAL ──► plan     │  no: plan instruction                           │
+         │   ──► AgentState (instruction, plan, completed_steps, results, context)             │
+         │   ──► Step loop: next_step ──► execute_step ──► dispatch ──► state.record             │
+         │        validate? ──► success: continue │ fail: undo, replan, update_plan             │
+         │   attempt done ──► GoalEvaluator.evaluate ──► TrajectoryMemory.record_attempt         │
+         │   goal_met? return │ else: Critic.analyze ──► RetryPlanner.build_retry_context ──► get_plan (next attempt)
+         └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Context initialization:** `run_agent` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
@@ -491,9 +495,11 @@ flowchart LR
 
 | Component              | Role |
 |------------------------|------|
-| `run_agent`            | Entry; get_plan → state → loop execute → validate → replan until finished. |
-| `get_plan`             | Plan resolver; instruction router (when enabled) or planner; single-step for CODE_SEARCH/CODE_EXPLAIN/INFRA. |
-| `plan(instruction)`    | Planner; reasoning model + JSON parse; fallback single EXPLAIN step. |
+| `run_controller`       | Entry; mode routing; deterministic → run_attempt_loop. |
+| `run_attempt_loop`     | Phase 5: for each attempt run_deterministic → GoalEvaluator → TrajectoryMemory; on failure Critic + RetryPlanner → next attempt with retry_context. |
+| `run_deterministic`    | Single attempt: get_plan(retry_context) → state → step loop execute → validate → replan until finished. |
+| `get_plan`             | Plan resolver; instruction router (when enabled) or planner; single-step for CODE_SEARCH/CODE_EXPLAIN/INFRA; accepts retry_context for Phase 5. |
+| `plan(instruction)`    | Planner; reasoning model + JSON parse; fallback single EXPLAIN step; receives retry_context (strategy_hint, previous_attempts, critic_feedback). |
 | `StepExecutor`         | Calls `dispatch(step, state)`; wraps result in `StepResult` (includes `files_modified`, `patch_size` for EDIT steps). |
 | `dispatch`             | Routes by action to policy engine (SEARCH/EDIT/INFRA) or EXPLAIN. |
 | `ExecutionPolicyEngine`| Retry loop + mutation; injects search_fn, edit_fn, infra_fn, rewrite_query_fn. |
@@ -508,8 +514,12 @@ flowchart LR
 
 ## File reference
 
-- **Agent loop**: `agent/orchestrator/agent_loop.py` — `run_agent`, loop, validate, replan, termination conditions.
-- **Plan resolver**: `agent/orchestrator/plan_resolver.py` — `get_plan`, router + planner integration.
+- **Agent controller**: `agent/orchestrator/agent_controller.py` — `run_controller`, `run_attempt_loop` (Phase 5), mode routing.
+- **Deterministic runner**: `agent/orchestrator/deterministic_runner.py` — `run_deterministic`, step loop, validate, replan, termination; accepts retry_context.
+- **Goal evaluator**: `agent/orchestrator/goal_evaluator.py` — `GoalEvaluator.evaluate` (deterministic goal-satisfaction check).
+- **Trajectory memory**: `agent/meta/trajectory_memory.py` — `TrajectoryMemory.record_attempt`, attempt-level data for retry.
+- **Critic / Retry planner**: `agent/meta/critic.py`, `agent/meta/retry_planner.py` — failure analysis and retry_context for next attempt.
+- **Plan resolver**: `agent/orchestrator/plan_resolver.py` — `get_plan`, router + planner integration, retry_context passthrough.
 - **Executor**: `agent/execution/executor.py` — `StepExecutor.execute_step`, `execute_plan`.
 - **Dispatch**: `agent/execution/step_dispatcher.py` — `dispatch`, _search_fn, _edit_fn, _infra_fn, _rewrite_for_search, _format_explain_context, EXPLAIN.
 - **Explain gate**: `agent/execution/explain_gate.py` — `ensure_context_before_explain` (inject SEARCH when ranked_context empty).

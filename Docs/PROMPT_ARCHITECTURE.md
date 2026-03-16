@@ -138,9 +138,13 @@ planner
 
 ## 3. Pipeline Prompt Map
 
+**Phase 5:** The attempt loop wraps each task: **get_plan(retry_context)** → Planner → Agent Loop (steps) → **GoalEvaluator** (no prompt) → on failure: **Critic** (critic prompt) → **RetryPlanner** (retry_planner prompt) → next attempt’s get_plan. Planner receives retry_context (strategy_hint, previous_attempts, critic_feedback). See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+
 ```mermaid
 flowchart TD
     UserQuery[User Query]
+    AttemptLoop[run_attempt_loop]
+    GetPlan[get_plan]
     Router[Instruction Router]
     Planner[Planner]
     AgentLoop[Agent Loop]
@@ -150,10 +154,15 @@ flowchart TD
     Validator[Step Validator]
     Replanner[Replanner]
     ContextRanker[Context Ranker]
+    GoalEval[Goal Evaluator]
+    Critic[Critic]
+    RetryPlanner[Retry Planner]
 
-    UserQuery --> Router
+    UserQuery --> AttemptLoop
+    AttemptLoop --> GetPlan
+    GetPlan --> Router
     Router -->|"instruction_router"| Planner
-    Planner -->|"planner"| AgentLoop
+    Planner -->|"planner" + retry_context| AgentLoop
     AgentLoop --> Search
     AgentLoop --> Explain
     AgentLoop --> Edit
@@ -164,17 +173,24 @@ flowchart TD
     Edit --> Validator
     Validator -->|"validate_step optional"| Replanner
     Replanner -->|"replanner + replanner_user"| AgentLoop
+    AgentLoop -->|attempt done| GoalEval
+    GoalEval -->|goal_met| Done[Return]
+    GoalEval -->|retry| Critic
+    Critic -->|"critic"| RetryPlanner
+    RetryPlanner -->|"retry_planner"| GetPlan
 ```
 
 ### Narrative Flow
 
-1. **User Query** → Optional instruction router (`ENABLE_INSTRUCTION_ROUTER=1`) uses `get_registry().get_instructions("instruction_router")` to classify into CODE_SEARCH, CODE_EDIT, CODE_EXPLAIN, INFRA, GENERAL. CODE_SEARCH/EXPLAIN/INFRA bypass planner with single-step plans.
-2. **Planner** → Uses `PromptRegistry.get("planner")` (planner/v1.yaml) to produce `{"steps": [...]}` JSON.
-3. **Agent Loop** → For each step: SEARCH, EDIT, EXPLAIN, or INFRA.
-4. **SEARCH** → Policy engine calls `rewrite_query_with_context()` (query_rewrite_with_context + query_rewrite_system from registry) → retrieval → `run_retrieval_pipeline()` → optional `rank_context()` (context_ranker_single / context_ranker_batch from registry).
-5. **EXPLAIN** → Context gate ensures `ranked_context` exists; uses `get_registry().get_instructions("explain_system")` with formatted context.
-6. **Validator** → Rule-based by default; when `ENABLE_LLM_VALIDATION=1`, uses `PromptRegistry.get("validate_step")` for SEARCH/EXPLAIN.
-7. **Replanner** → On failure, uses `PromptRegistry.get("replanner")` + `get_registry().get_instructions("replanner_user", variables={...})` to produce revised plan.
+1. **User Query** → **run_attempt_loop** (Phase 5): for each attempt, **get_plan(retry_context)** is called; retry_context is null on first attempt and from RetryPlanner on retries.
+2. **Instruction Router** → Optional (`ENABLE_INSTRUCTION_ROUTER=1`) uses `get_registry().get_instructions("instruction_router")` to classify into CODE_SEARCH, CODE_EDIT, CODE_EXPLAIN, INFRA, GENERAL. CODE_SEARCH/EXPLAIN/INFRA bypass planner with single-step plans.
+3. **Planner** → Uses `PromptRegistry.get("planner")` (planner/v1.yaml); when retry_context is present, prompt order is [Strategy Hint] → [Previous Attempts] → [Planning Guidance] → [Instruction]. Produces `{"steps": [...]}` JSON.
+4. **Agent Loop** → For each step: SEARCH, EDIT, EXPLAIN, or INFRA.
+5. **SEARCH** → Policy engine calls `rewrite_query_with_context()` (query_rewrite_with_context + query_rewrite_system from registry) → retrieval → `run_retrieval_pipeline()` → optional `rank_context()` (context_ranker_single / context_ranker_batch from registry).
+6. **EXPLAIN** → Context gate ensures `ranked_context` exists; uses `get_registry().get_instructions("explain_system")` with formatted context.
+7. **Validator** → Rule-based by default; when `ENABLE_LLM_VALIDATION=1`, uses `PromptRegistry.get("validate_step")` for SEARCH/EXPLAIN.
+8. **Replanner** → On step failure within attempt, uses `PromptRegistry.get("replanner")` + `get_registry().get_instructions("replanner_user", variables={...})` to produce revised plan.
+9. **After attempt (Phase 5):** **GoalEvaluator** (no prompt) → if not goal_met: **Critic** uses `PromptRegistry.get("critic")` (trajectory summary, not raw steps) → **RetryPlanner** uses `PromptRegistry.get("retry_planner")` → retry_context → next attempt’s get_plan.
 
 ---
 

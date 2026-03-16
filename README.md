@@ -35,10 +35,18 @@ AutoStudio converts natural-language instructions into executable plans, runs co
 
 ## Architecture Overview
 
+Mode 1 (deterministic) uses **run_controller** → **run_attempt_loop** (Phase 5): up to `MAX_AGENT_ATTEMPTS` per task; each attempt runs plan → step loop → **GoalEvaluator** → on failure: **Critic** + **RetryPlanner** → next attempt with `retry_context`. See [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md) and [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md).
+
 ```mermaid
 flowchart TB
     subgraph Entry
         User[User instruction]
+    end
+
+    subgraph Controller["Controller (deterministic)"]
+        RunController[run_controller]
+        RunAttemptLoop[run_attempt_loop]
+        GetPlan[get_plan with retry_context]
     end
 
     subgraph PlanResolver["Plan resolver (router + planner)"]
@@ -47,12 +55,18 @@ flowchart TB
         Plan[JSON plan: steps with action, description]
     end
 
-    subgraph Execution
+    subgraph Execution["Attempt: step loop"]
         Loop[Agent Loop]
         Exec[StepExecutor]
         Dispatch[Dispatcher]
         ToolGraph[ToolGraph]
         Policy[PolicyEngine]
+    end
+
+    subgraph AfterAttempt["After attempt (Phase 5)"]
+        GoalEval[GoalEvaluator]
+        Critic[Critic]
+        RetryPlanner[Retry Planner]
     end
 
     subgraph SearchPath["SEARCH path — Hybrid Retrieval"]
@@ -83,7 +97,10 @@ flowchart TB
         Explain[EXPLAIN model call]
     end
 
-    User --> InstructionRouter
+    User --> RunController
+    RunController --> RunAttemptLoop
+    RunAttemptLoop --> GetPlan
+    GetPlan --> InstructionRouter
     InstructionRouter -->|CODE_EDIT or GENERAL| Planner
     InstructionRouter -->|CODE_SEARCH/EXPLAIN/INFRA| Plan
     Planner --> Plan
@@ -92,6 +109,11 @@ flowchart TB
     Exec --> Dispatch
     Dispatch --> ToolGraph
     ToolGraph --> Policy
+    Policy -->|attempt done| GoalEval
+    GoalEval -->|goal_met| Result[Return state]
+    GoalEval -->|retry| Critic
+    Critic --> RetryPlanner
+    RetryPlanner --> GetPlan
     Policy -->|SEARCH| RepoMapLookup
     RepoMapLookup --> AnchorDetector1
     AnchorDetector1 --> ParallelSearch
@@ -121,18 +143,26 @@ flowchart TB
                │
                ▼
     ┌──────────────────────────────────────────┐
-    │  Plan resolver (router + planner)        │
-    │  InstructionRouter ──► Planner ──► Plan  │
-    │  CODE_EDIT/GENERAL ──► Planner           │
-    │  CODE_SEARCH/EXPLAIN/INFRA ──► Plan      │
+    │  run_controller ──► run_attempt_loop      │
+    │  (for each attempt: get_plan + step loop │
+    │   ──► GoalEvaluator ──► Critic/RetryPlanner on retry) │
     └──────────┬───────────────────────────────┘
                │
                ▼
     ┌──────────────────────────────────────────┐
-    │  Execution                                │
+    │  get_plan(retry_context) ──► Plan resolver │
+    │  InstructionRouter ──► Planner ──► Plan    │
+    └──────────┬───────────────────────────────┘
+               │
+               ▼
+    ┌──────────────────────────────────────────┐
+    │  Execution (step loop)                    │
     │  Loop ──► Exec ──► Dispatch ──► ToolGraph │
     │                    └──► PolicyEngine      │
     └──────────┬───────────────────────────────┘
+               │ attempt done
+               ▼
+    GoalEvaluator ──► goal_met? return : Critic ──► RetryPlanner ──► get_plan (next attempt)
                │
        ┌───────┴───────┐
        │               │
@@ -153,7 +183,7 @@ Stabilized retrieval flow: SEARCH_CANDIDATES (candidate discovery, <1s)
 └─────────────────────────────┘
 ```
 
-**High-level flow:** Instruction → Plan resolver (instruction router by default, else planner) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → **Goal evaluation** → Optional replan on `goal_not_satisfied` → Return state. SEARCH uses `_search_fn` (RepoMapLookup → hybrid_retrieve: BM25 + graph + vector + grep → RRF) then `run_retrieval_pipeline` (anchor → expand → reference lookup → call-chain → dedup → reranker → prune). EXPLAIN uses ExplainGate to inject SEARCH when `ranked_context` is empty.
+**High-level flow:** Instruction → **run_attempt_loop** (Phase 5): per attempt, **get_plan**(retry_context) → Plan resolver (instruction router by default, else planner) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan within attempt → **GoalEvaluator** → if not goal_met: **Critic** + **RetryPlanner** → next attempt with retry_context; else return state. SEARCH uses `_search_fn` (RepoMapLookup → hybrid_retrieve: BM25 + graph + vector + grep → RRF) then `run_retrieval_pipeline` (anchor → expand → reference lookup → call-chain → dedup → reranker → prune). EXPLAIN uses ExplainGate to inject SEARCH when `ranked_context` is empty.
 
 ---
 

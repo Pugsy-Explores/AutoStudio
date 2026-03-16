@@ -13,7 +13,7 @@ See also:
 
 AutoStudio is a repository-aware autonomous coding agent that converts natural-language instructions into executable plans, runs hybrid code search, ranks context, applies structured patches, and persists task memory. The system follows a deterministic pipeline (Mode 1) with optional autonomous retry (Mode 2).
 
-**Core flow:** User instruction → Plan resolver (router + planner) → Agent loop → Step dispatcher → Policy engine → Tools (SEARCH, EDIT, INFRA, EXPLAIN) → Validation → Optional replan → Trajectory retry on failure.
+**Core flow (Phase 5):** User instruction → **run_attempt_loop** → per attempt: get_plan(retry_context) → Plan resolver (router + planner) → **Deterministic runner** (step loop: Dispatcher → Policy engine → Tools) → **GoalEvaluator** → if not goal_met: **Critic** → **RetryPlanner** → next attempt with retry_context. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
 
 ---
 
@@ -21,10 +21,13 @@ AutoStudio is a repository-aware autonomous coding agent that converts natural-l
 
 ```mermaid
 flowchart TD
-    Query[User Query] --> PlanResolver[Plan Resolver]
+    Query[User Query] --> RunController[run_controller]
+    RunController --> AttemptLoop[run_attempt_loop]
+    AttemptLoop --> GetPlan[get_plan with retry_context]
+    GetPlan --> PlanResolver[Plan Resolver]
     PlanResolver --> Planner[Planner]
-    Planner --> AgentLoop[Agent Orchestrator Loop]
-    AgentLoop --> Dispatcher[Step Dispatcher]
+    Planner --> StepLoop[Attempt: Deterministic Runner]
+    StepLoop --> Dispatcher[Step Dispatcher]
     Dispatcher --> PolicyEngine[Policy Engine]
     PolicyEngine --> SearchPipeline
 
@@ -49,11 +52,13 @@ flowchart TD
 
     ContextPruner --> LLM[LLM Reasoning]
     LLM --> EditPipeline[Editing Pipeline]
-    EditPipeline --> Output[Result]
+    EditPipeline --> StepOutput[Attempt state]
 
-    AgentLoop --> MetaLoop[Trajectory Retry Loop]
-    MetaLoop --> Critic[Critic]
+    StepOutput --> GoalEval[Goal Evaluator]
+    GoalEval -->|goal_met| Output[Result]
+    GoalEval -->|retry| Critic[Critic]
     Critic --> RetryPlanner[Retry Planner]
+    RetryPlanner --> GetPlan
 ```
 
 ---
@@ -101,9 +106,9 @@ The retrieval pipeline is **immutable in order** (Rule 11). Stages:
 - **Explain gate** ensures ranked context before model call; injects SEARCH if empty.
 - **Context builder v2** formats FILE/SYMBOL/LINES/SNIPPET blocks.
 
-### 6. Trajectory Retry Loop (Meta)
+### 6. Attempt Loop (Phase 5 — Goal / Trajectory)
 
-On task failure, **TrajectoryLoop** runs: attempt → evaluate → critic → retry planner → retry. Retry strategies escalate (rewrite_query, expand_scope, new_plan, etc.).
+After each attempt, **GoalEvaluator** decides if the task goal is satisfied. If not, **Critic** analyzes the attempt (deterministic + LLM strategy hint) and **RetryPlanner** builds retry_context (previous_attempts, critic_feedback, strategy_hint); the next attempt’s **get_plan(retry_context)** feeds the planner. **TrajectoryMemory** stores attempt-level data; critic uses a trajectory summary (not raw step results). See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
 
 ---
 
