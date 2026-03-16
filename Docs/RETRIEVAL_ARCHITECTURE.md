@@ -1,0 +1,317 @@
+# Retrieval Architecture
+
+This document describes the full AutoStudio retrieval pipeline, with emphasis on the hybrid retrieval layer (BM25, vector, graph, grep), Reciprocal Rank Fusion, and the cross-encoder reranking layer.
+
+See also:
+- [CODING_AGENT_ARCHITECTURE_GUIDE.md](CODING_AGENT_ARCHITECTURE_GUIDE.md) — end-to-end agent architecture
+- [REPOSITORY_SYMBOL_GRAPH.md](REPOSITORY_SYMBOL_GRAPH.md) — symbol graph and graph expansion
+
+---
+
+## Hybrid Retrieval Pipeline
+
+```
+User Query
+    │
+    ▼
+query_rewriter          (LLM or heuristic rewrite)
+    │
+    ▼
+search_pipeline.hybrid_retrieve
+    ├── bm25_retriever    (BM25 lexical: symbol names, docstrings, file paths)
+    ├── graph_retriever   (SQLite symbol graph, depth=2)
+    ├── vector_retriever  (ChromaDB + all-MiniLM-L6-v2)
+    └── grep/regex search
+    │
+    ▼
+reciprocal_rank_fusion  (RRF merges BM25, vector, graph, grep → top 100)
+    │
+    ▼
+retrieval_pipeline.run_retrieval_pipeline
+    ├── anchor_detector
+    ├── localization_engine        [ENABLE_LOCALIZATION_ENGINE]
+    ├── graph_stage_skipped check  (skip symbol_expander when index absent)
+    ├── symbol_expander            (expand_symbol_dependencies: calls, imports, references)
+    ├── retrieval_expander         (read_symbol_body / read_file)
+    ├── find_referencing_symbols   (callers, callees, imports, referenced_by; cap 10 each)
+    ├── context_builder            (build_call_chain_context when project_root + symbols)
+    ├── deduplicate_candidates     (unconditional; SHA-256 snippet key)
+    ├── candidate_budget           (slice to MAX_RERANK_CANDIDATES before reranker)
+    │
+    ├── ── cross-encoder reranker ──────────────────────────────┐
+    │   symbol_query_detector  → bypass if symbol query         │
+    │   adaptive gate          → bypass if < RERANK_MIN_CANDIDATES
+    │   deduplicator           → remove duplicate snippets      │
+    │   preprocessor           → truncate to token limits       │
+    │   cache                  → skip inference on cache hits   │
+    │   RerankQueue            → coalesce queries for batching  │
+    │   GPUReranker / CPUReranker → batched inference           │
+    │   score_fusion           → 0.8×reranker + 0.2×retriever  │
+    │   ─────────────────────────────────────────────────────── │
+    │   fallback → context_ranker (LLM-based)                   │
+    │                                                           ◄┘
+    ├── context_pruner            (max snippets + char budget)
+    └── context_compressor        [repo_summary present]
+    │
+    ▼
+state.context["ranked_context"]
+    │
+    ▼
+LLM reasoning
+```
+
+---
+
+## 1. BM25 Lexical Retrieval
+
+`agent/retrieval/bm25_retriever.py` indexes symbol names, docstrings, file paths, and signatures from the symbol graph (or repo_map fallback). BM25 is critical for exact identifier queries (e.g. `StepExecutor`, `route_instruction`). Toggle via `ENABLE_BM25_SEARCH`; top-k via `BM25_TOP_K` (default 30).
+
+BM25 scores from `rank_bm25` can be zero or negative (e.g. when IDF is low). Results are returned by rank order (top-k) regardless of raw score. Tests use `_reset_for_testing()` to isolate module state.
+
+---
+
+## 2. Reciprocal Rank Fusion (RRF)
+
+`agent/retrieval/rank_fusion.py` merges BM25, vector, graph, and grep results using RRF to avoid score-scale problems. RRF score: `sum over lists of 1/(k + rank)`. Config: `ENABLE_RRF_FUSION`, `RRF_TOP_N` (100), `RRF_K` (60).
+
+---
+
+## 2.5 Graph Dependency Expansion and Reference Lookup
+
+After anchor detection, the pipeline uses the symbol graph for dependency-aware expansion and reference lookup.
+
+### Graph query helpers (`repo_graph/graph_query.py`)
+
+| Function | Purpose |
+|---|---|
+| `get_callers(symbol_id, storage)` | Nodes that call this symbol (incoming calls) |
+| `get_callees(symbol_id, storage)` | Nodes this symbol calls (outgoing calls) |
+| `get_imports(symbol_id, storage)` | Nodes this symbol imports |
+| `get_referenced_by(symbol_id, storage)` | Nodes that reference this symbol |
+
+### expand_symbol_dependencies
+
+BFS expansion along dependency edges (calls, imports, references). Cycle-safe; respects `RETRIEVAL_GRAPH_EXPANSION_DEPTH`, `RETRIEVAL_GRAPH_MAX_NODES`, and `RETRIEVAL_MAX_SYMBOL_EXPANSIONS`. Returns `(nodes, telemetry)` with `graph_nodes_expanded`, `graph_edges_traversed`, `graph_expansion_depth_used`.
+
+### find_referencing_symbols (`agent/tools/reference_tools.py`)
+
+Returns structured dict `{callers, callees, imports, referenced_by}`; each list capped at 10. Uses GraphStorage when `.symbol_graph/index.sqlite` exists; falls back to empty dict otherwise.
+
+### build_call_chain_context (`agent/retrieval/context_builder.py`)
+
+Formats execution paths as `symbol()\n  calls callee1()\n  calls callee2()`. Injected into `build_context_from_symbols` when `project_root` and symbols are present.
+
+### Graph index fallback
+
+When `.symbol_graph/index.sqlite` is absent, `graph_stage_skipped=True` is set in telemetry; `symbol_expander` is skipped; pipeline continues with grep/vector results only.
+
+---
+
+## 3. Vector Retrieval Stage
+
+`agent/retrieval/vector_retriever.py` uses ChromaDB with the `all-MiniLM-L6-v2` sentence-transformers model for dense semantic search. Results are merged with BM25, graph, and grep by `search_pipeline.hybrid_retrieve` (parallel execution via `ThreadPoolExecutor`), then fused via RRF when `ENABLE_RRF_FUSION` is on. Deduplication by `(file, symbol, line)`; capped at `MAX_SEARCH_RESULTS` (default 20).
+
+Each candidate produced by hybrid retrieval carries a `retriever_score` field (normalized to `[0, 1]`) that the reranker uses for score fusion.
+
+---
+
+## 4. Cross-Encoder Reranking Layer
+
+The reranker lives in `agent/retrieval/reranker/` and is inserted into the pipeline after candidate assembly, before `context_pruner`.
+
+### 4.1 When the reranker runs
+
+All of the following must be true:
+
+| Condition | Config / code |
+|---|---|
+| `RERANKER_ENABLED=true` | `config/retrieval_config.py` |
+| Reranker loaded without error | `reranker_factory._RERANKER_DISABLED == False` |
+| Query is not a symbol query | `symbol_query_detector.is_symbol_query()` returns `False` |
+| Candidate count >= threshold | `len(candidates) >= RERANK_MIN_CANDIDATES` (default 6) |
+
+When any condition fails the pipeline falls through to the existing LLM ranker (`context_ranker.rank_context`) unchanged. The `rerank_skipped_reason` telemetry field records the reason.
+
+### 4.2 Pipeline steps
+
+Deduplication runs unconditionally before the reranker gate (see hybrid pipeline diagram). Candidates passed to the reranker are already deduped and budgeted to `MAX_RERANK_CANDIDATES`. When the reranker runs:
+
+```
+candidates (pre-deduped, pre-budgeted)
+    │
+    ▼
+preprocessor.prepare_rerank_pairs()
+    Truncates each snippet to MAX_RERANK_SNIPPET_TOKENS (default 256).
+    Enforces MAX_RERANK_PAIR_TOKENS (default 512) across query + snippet.
+    When snippet alone exceeds the pair limit, snippet is truncated to fit.
+    │
+    ▼
+cache lookup  (per pair, keyed by SHA-256(query + snippet))
+    Cache hits skip inference entirely.
+    │
+    ▼
+BaseReranker._score_pairs()  — batched inference (RERANKER_BATCH_SIZE=16)
+    GPU path: CrossEncoder.predict() with FP16 on Volta+ GPUs
+    CPU path: ONNX INT8 session.run() with AutoTokenizer batching
+    │
+    ▼
+cache population (new scores written back)
+    │
+    ▼
+score threshold filter  (RERANK_SCORE_THRESHOLD; keep ≥ RERANK_MIN_RESULTS_AFTER_THRESHOLD)
+    │
+    ▼
+score fusion
+    final_score = reranker_score × SCORE_FUSION_RERANKER_WEIGHT (0.8)
+                + retriever_score × SCORE_FUSION_RETRIEVER_WEIGHT (0.2)
+    Sort descending; slice to RERANKER_TOP_K (default 10).
+```
+
+### 4.3 Model registry
+
+| Model | Use case | Format |
+|---|---|---|
+| `Qwen/Qwen3-Reranker-0.6B` | GPU default | PyTorch FP16 |
+| `Qwen/Qwen3-Reranker-0.6B-ONNX` | CPU default | ONNX INT8 |
+| `BAAI/bge-reranker-v2-gemma` | GPU alternate | PyTorch |
+| `jinaai/jina-reranker-v3` | GPU alternate | PyTorch |
+
+Download the correct model with:
+
+```bash
+python scripts/download_reranker.py                        # auto-detect
+python scripts/download_reranker.py --device cpu           # force CPU model
+python scripts/download_reranker.py --model BAAI/bge-reranker-v2-gemma
+```
+
+### 4.4 Hardware auto-selection
+
+`hardware.detect_hardware()` returns `"gpu"` or `"cpu"`:
+
+1. If `RERANKER_DEVICE` is set to `"cpu"` or `"gpu"`, use that value directly.
+2. Otherwise probe `torch.cuda.is_available()`.
+3. Fall back to `"cpu"` when torch is absent.
+
+### 4.5 Warm start
+
+Call `init_reranker()` once at process startup (e.g. from the agent controller or worker entrypoint). This builds the singleton and runs a dummy inference pass to absorb CUDA kernel compilation, model graph creation, and memory allocation before the first real query.
+
+```python
+from agent.retrieval.reranker import init_reranker
+init_reranker()  # idempotent; safe to call multiple times
+```
+
+### 4.6 Symbol query bypass
+
+`symbol_query_detector.is_symbol_query(query)` returns `(True, reason)` for queries that are better served by lexical + graph retrieval:
+
+- CamelCase identifiers (`RetrievalPipeline`)
+- File names (`retrieval_pipeline.py`)
+- `snake_case_symbol` bare words
+- Python/JS keyword prefixes (`def run`, `class Foo`, `import X`)
+
+### 4.7 RerankQueue (query batching)
+
+`agent/retrieval/reranker/rerank_queue.py` provides `RerankQueue` for coalescing multiple rerank requests into batched inference. Use `add(query, snippets)` to enqueue, `flush()` to run batched inference, and `clear()` to reset. The coalescing window is `RERANK_BATCH_WINDOW_MS` (default 50 ms).
+
+### 4.8 Failure fallback
+
+Any exception during model load, warmup, or `create_reranker()`:
+
+1. Logs a warning via the standard logger.
+2. Sets `_RERANKER_DISABLED = True` in the factory (permanent for the process lifetime).
+3. `create_reranker()` returns `None`; pipeline falls through to `context_ranker.rank_context` (LLM-based).
+4. Records `rerank_skipped_reason = "inference_error:<ExceptionType>"` in telemetry.
+
+The retrieval pipeline **never crashes** due to reranker failures.
+
+---
+
+## 5. Context Pruning
+
+`context_pruner.prune_context(candidates, max_snippets, max_chars)` enforces the final budget:
+
+- `MAX_CONTEXT_SNIPPETS` (default 6) — maximum number of snippets
+- `DEFAULT_MAX_CHARS` (default 8000) — maximum total character count
+
+Deduplicates by `(file, symbol)` pair. Iterates ranked candidates in order and stops when either budget is exceeded.
+
+---
+
+## 6. Configuration Reference
+
+All values are overridable via environment variables.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RERANKER_ENABLED` | `true` | Master on/off switch |
+| `RERANKER_DEVICE` | `auto` | `auto` \| `cpu` \| `gpu` |
+| `RERANKER_GPU_MODEL` | `Qwen/Qwen3-Reranker-0.6B` | GPU model HuggingFace ID |
+| `RERANKER_CPU_MODEL` | `models/reranker/qwen3_reranker_int8.onnx` | CPU ONNX model path |
+| `RERANKER_TOP_K` | `10` | Reranker output size |
+| `RERANKER_BATCH_SIZE` | `16` | Inference batch size |
+| `RERANK_MIN_CANDIDATES` | `6` | Minimum candidates to trigger reranker |
+| `MAX_RERANK_SNIPPET_TOKENS` | `256` | Per-snippet token truncation limit |
+| `MAX_RERANK_PAIR_TOKENS` | `512` | Hard cap on query + snippet tokens |
+| `RERANK_CACHE_SIZE` | `2048` | LRU score cache capacity |
+| `SCORE_FUSION_RERANKER_WEIGHT` | `0.8` | Reranker score weight in fusion |
+| `SCORE_FUSION_RETRIEVER_WEIGHT` | `0.2` | Retriever score weight in fusion |
+| `RERANK_FUSION_WEIGHT` | `0.8` | Reranker weight (alias) |
+| `RETRIEVER_FUSION_WEIGHT` | `0.2` | Retriever weight (alias) |
+| `RERANK_SCORE_THRESHOLD` | `0.15` | Discard results below this score |
+| `RERANK_MIN_RESULTS_AFTER_THRESHOLD` | `3` | Fallback: keep top_k if fewer pass |
+| `ENABLE_BM25_SEARCH` | `true` | BM25 lexical retrieval toggle |
+| `BM25_TOP_K` | `30` | BM25 result count |
+| `ENABLE_RRF_FUSION` | `true` | Reciprocal Rank Fusion toggle |
+| `RRF_TOP_N` | `100` | RRF merged result cap |
+| `RRF_K` | `60` | RRF constant |
+| `RERANK_BATCH_WINDOW_MS` | `50` | RerankQueue coalescing window |
+| `MAX_RERANK_CANDIDATES` | `50` | Cap candidates before reranker (candidate budget) |
+| `RETRIEVAL_GRAPH_EXPANSION_DEPTH` | `2` | BFS depth for expand_symbol_dependencies |
+| `RETRIEVAL_GRAPH_MAX_NODES` | `20` | Max nodes per symbol expansion |
+| `RETRIEVAL_MAX_SYMBOL_EXPANSIONS` | `8` | Per-symbol expansion cap (safety limit) |
+| `MAX_CONTEXT_SNIPPETS` | `6` | Final snippet count after pruning |
+| `DEFAULT_MAX_CHARS` | `8000` | Final char budget after pruning |
+| `ENABLE_CONTEXT_RANKING` | `true` | LLM ranker fallback toggle |
+
+---
+
+## 7. Telemetry
+
+The reranker emits metrics into `state.context["retrieval_metrics"]` after every pipeline run:
+
+| Field | Type | Description |
+|---|---|---|
+| `rerank_latency_ms` | int | End-to-end reranker wall time |
+| `rerank_model` | str | Model ID or path used |
+| `rerank_device` | str | `"gpu"`, `"cpu"`, or `"none"` |
+| `candidates_in` | int | Candidate count before deduplication |
+| `candidates_out` | int | Final ranked snippet count |
+| `rerank_dedup_removed` | int | Duplicates removed before reranking |
+| `rerank_cache_hits` | int | Cache hits across all pairs |
+| `rerank_cache_misses` | int | Cache misses (inference required) |
+| `rerank_tokens` | int | Total tokens processed |
+| `rerank_batch_size` | int | Batch size used |
+| `rerank_skipped_reason` | str \| None | Reason reranker was skipped, or `None` |
+| `rerank_position_changes` | int | Number of docs that changed rank |
+| `rerank_avg_rank_shift` | float | Average absolute rank change |
+| `rerank_top1_changed` | int | 1 if top-1 doc changed, else 0 |
+| `dedupe_removed_count` | int | Duplicates removed (unconditional stage) |
+| `candidate_count` | int | Candidate count after deduplication |
+| `candidate_budget_applied` | int | Candidates trimmed by MAX_RERANK_CANDIDATES |
+| `graph_nodes_expanded` | int | Nodes added by expand_symbol_dependencies |
+| `graph_edges_traversed` | int | Edges traversed during BFS expansion |
+| `graph_expansion_depth_used` | int | Actual max depth reached in BFS |
+| `graph_stage_skipped` | bool | True when .symbol_graph/index.sqlite absent |
+
+---
+
+## 8. Retrieval Evaluation
+
+`scripts/run_retrieval_eval.py` evaluates retrieval on `tests/failure_mining_tasks.json`:
+
+```bash
+python scripts/run_retrieval_eval.py --limit 5
+```
+
+Reports recall@10, recall@20, latency, and candidate counts. Requires `rank_bm25` for BM25 tests (`pip install rank_bm25`).

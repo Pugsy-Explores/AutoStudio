@@ -55,23 +55,26 @@ flowchart TB
         Policy[PolicyEngine]
     end
 
-    subgraph SearchPath["SEARCH path"]
+    subgraph SearchPath["SEARCH path — Hybrid Retrieval"]
         RepoMapLookup[RepoMapLookup]
         AnchorDetector1[AnchorDetector]
-        SearchPipeline[SearchPipeline]
-        GraphRetriever[GraphRetriever]
-        VectorRetriever[VectorRetriever]
-        SerenaGrep[Serena search_code]
-    end
-
-    subgraph PostSearch["Post-SEARCH pipeline"]
-        AnchorDetector2[AnchorDetector]
-        LocalizationEngine[LocalizationEngine]
-        SymbolExpander[SymbolExpander]
-        Expand[RetrievalExpansion]
-        ContextBuilder[ContextBuilder]
-        Ranker[ContextRanker]
-        Pruner[ContextPruner]
+        subgraph ParallelSearch [Parallel Search]
+            BM25[BM25 Lexical]
+            GraphRetriever[Graph Retriever]
+            VectorRetriever[Vector Retriever]
+            SerenaGrep[Serena / Grep]
+        end
+        RRF[RRF Rank Fusion]
+        AnchorDetector2[Anchor Detector]
+        SymbolExpander[Symbol Expander]
+        GraphExpansion[Graph Expansion]
+        ReferenceLookup[Reference Lookup]
+        CallChain[Call-Chain Context]
+        Deduplicator[Deduplicator]
+        Reranker[Cross-Encoder Reranker]
+        ContextBuilder[Context Builder]
+        Ranker[Context Ranker]
+        Pruner[Context Pruner]
     end
 
     subgraph ExplainPath["EXPLAIN"]
@@ -91,16 +94,16 @@ flowchart TB
     ToolGraph --> Policy
     Policy -->|SEARCH| RepoMapLookup
     RepoMapLookup --> AnchorDetector1
-    AnchorDetector1 --> SearchPipeline
-    SearchPipeline --> GraphRetriever
-    SearchPipeline --> VectorRetriever
-    SearchPipeline --> SerenaGrep
-    Dispatch -->|SEARCH success| AnchorDetector2
-    AnchorDetector2 --> LocalizationEngine
-    LocalizationEngine --> SymbolExpander
-    AnchorDetector2 --> Expand
-    SymbolExpander --> ContextBuilder
-    Expand --> ContextBuilder
+    AnchorDetector1 --> ParallelSearch
+    ParallelSearch --> RRF
+    RRF --> AnchorDetector2
+    AnchorDetector2 --> SymbolExpander
+    SymbolExpander --> GraphExpansion
+    GraphExpansion --> ReferenceLookup
+    ReferenceLookup --> CallChain
+    CallChain --> Deduplicator
+    Deduplicator --> Reranker
+    Reranker --> ContextBuilder
     ContextBuilder --> Ranker
     Ranker --> Pruner
     Dispatch -->|EXPLAIN| ExplainGate
@@ -134,20 +137,20 @@ flowchart TB
        ┌───────┴───────┐
        │               │
        ▼               ▼
-┌──────────────┐  ┌─────────────────────────────┐
-│ SEARCH path  │  │ Post-SEARCH pipeline         │
-│ RepoMapLookup│  │ AnchorDetector ──► Localization│
-│ ──► Anchor  │  │ ──► SymbolExp ──► Expand     │
-│ ──► Search   │  │ ──► ContextBuilder ──► Ranker ──► Pruner │
-│   Pipeline   │  └─────────────────────────────┘
-│ ──► Graph/   │  ┌─────────────────────────────┐
-│   Vector/    │  │ EXPLAIN path                  │
-│   SerenaGrep│  │ ExplainGate ──► ContextBuilderV2
-└──────────────┘  │ ──► EXPLAIN model call        │
-                  └─────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ SEARCH path — Hybrid Retrieval                            │
+│ RepoMapLookup ──► Anchor ──► BM25 + Graph + Vector + Grep │
+│ ──► RRF Fusion ──► Graph Expansion ──► Reference Lookup    │
+│ ──► Call-Chain Context ──► Deduplicator ──► Reranker       │
+│ ──► ContextBuilder ──► Ranker ──► Pruner                   │
+└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────┐
+│ EXPLAIN path                │
+│ ExplainGate ──► ContextBuilderV2 ──► EXPLAIN model call    │
+└─────────────────────────────┘
 ```
 
-**High-level flow:** Instruction → Plan resolver (instruction router by default, else planner) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state. SEARCH uses `_search_fn` (RepoMapLookup → SearchPipeline) then `run_retrieval_pipeline` on success. EXPLAIN uses ExplainGate to inject SEARCH when `ranked_context` is empty.
+**High-level flow:** Instruction → Plan resolver (instruction router by default, else planner) → Plan → Execute steps (SEARCH / EDIT / INFRA / EXPLAIN) → Validate → Optional replan → Return state. SEARCH uses `_search_fn` (RepoMapLookup → hybrid_retrieve: BM25 + graph + vector + grep → RRF) then `run_retrieval_pipeline` (anchor → expand → reference lookup → call-chain → dedup → reranker → prune). EXPLAIN uses ExplainGate to inject SEARCH when `ranked_context` is empty.
 
 ---
 
@@ -379,20 +382,23 @@ AutoStudio/
 │   │
 │   ├── retrieval/              # Query rewrite, context building, ranking
 │   │   ├── __init__.py
-│   │   ├── search_pipeline.py      # Hybrid parallel (graph + vector + grep); repo_map anchor
-│   │   ├── retrieval_pipeline.py   # anchor → localization → symbol_expander + expand → build_context
+│   │   ├── search_pipeline.py      # Hybrid parallel (BM25 + graph + vector + grep); RRF fusion
+│   │   ├── retrieval_pipeline.py   # anchor → expand → reference lookup → call-chain → dedup → reranker → prune
+│   │   ├── bm25_retriever.py       # BM25 lexical retrieval
+│   │   ├── rank_fusion.py          # Reciprocal Rank Fusion
 │   │   ├── repo_map_lookup.py      # lookup_repo_map: tokenize query → match symbols → anchor
 │   │   ├── anchor_detector.py      # detect_anchors (results); detect_anchor (query + repo_map)
-│   │   ├── symbol_expander.py      # expand_from_anchors: graph depth=2 → rank → prune
+│   │   ├── symbol_expander.py      # expand_from_anchors: expand_symbol_dependencies → rank → prune
 │   │   ├── graph_retriever.py      # Symbol lookup + 2-hop expansion
 │   │   ├── vector_retriever.py     # Embedding-based search (ChromaDB)
 │   │   ├── retrieval_cache.py     # LRU cache for search results
 │   │   ├── retrieval_expander.py   # expand_search_results
 │   │   ├── query_rewriter.py
-│   │   ├── context_builder.py
+│   │   ├── context_builder.py     # build_call_chain_context
 │   │   ├── context_builder_v2.py   # assemble_reasoning_context: FILE/SYMBOL/LINES/SNIPPET
 │   │   ├── context_ranker.py
 │   │   ├── context_pruner.py
+│   │   ├── reranker/               # Cross-encoder reranker (Qwen3-Reranker-0.6B)
 │   │   ├── symbol_graph.py         # Symbol graph query wrapper
 │   │   └── localization/           # Phase 10.5: graph-guided localization
 │   │       ├── __init__.py
@@ -649,25 +655,26 @@ SEARCH
       → _search_fn: repo_map_lookup(query) + detect_anchor(query, repo_map) → state.context[repo_map_anchor, repo_map_candidates]
       → retrieval_cache.get_cached() [if RETRIEVAL_CACHE_SIZE > 0]
       → hybrid_retrieve() [when ENABLE_HYBRID_RETRIEVAL=1]
-          → graph uses repo_map_anchor when confidence ≥ 0.9
-          → parallel: graph_retriever + vector_retriever + search_code (grep)
-          → merge_results() → top 20 candidates
+          → parallel: bm25_retriever + graph_retriever + vector_retriever + search_code (grep)
+          → reciprocal_rank_fusion() or merge_results() → top 20 candidates
       → else: sequential fallback (graph → vector → grep)
       → retrieval_cache.set_cached() on success
   → run_retrieval_pipeline(results, state, query)
       → anchor_detector.detect_anchors()  # filter to symbol/class/def matches; fallback top N
-      → localization_engine.localize_issue() [Phase 10.5: when ENABLE_LOCALIZATION_ENGINE; dependency traversal → execution paths → symbol ranking → prepend to candidates]
-      → symbol_expander.expand_from_anchors() [when graph exists; anchor → expand depth=2 → fetch bodies → rank → prune to 6]
+      → localization_engine.localize_issue() [Phase 10.5: when ENABLE_LOCALIZATION_ENGINE]
+      → symbol_expander.expand_from_anchors() [when graph exists; expand_symbol_dependencies → get_callers/callees/imports/referenced_by]
       → retrieval_expander.expand_search_results() [capped at MAX_SYMBOL_EXPANSION]
       → read_symbol_body / read_file → find_referencing_symbols
-      → context_builder.build_context_from_symbols()
-      → context_ranker.rank_context() [when ENABLE_CONTEXT_RANKING=1]
+      → context_builder.build_context_from_symbols() [includes build_call_chain_context]
+      → deduplicate_candidates() [unconditional pre-rerank dedup]
+      → candidate_budget [slice to MAX_RERANK_CANDIDATES]
+      → cross-encoder reranker [Qwen3-Reranker-0.6B; GPU/CPU; symbol bypass, cache] or context_ranker fallback
       → context_pruner.prune_context() [max 6 snippets, 8000 chars]
-      → context_compressor.compress_context() [Phase 10: when repo_summary present; summaries if over budget]
+      → context_compressor.compress_context() [Phase 10: when repo_summary present]
   → state.context["ranked_context"], context_snippets (list of {file, symbol, snippet})
 ```
 
-- **Hybrid retrieval (default):** Runs graph, vector, grep in parallel; merges and dedupes; returns top 20. Improves recall (semantics + exact matches). Set `ENABLE_HYBRID_RETRIEVAL=0` for sequential fallback.
+- **Hybrid retrieval (default):** Runs BM25, graph, vector, grep in parallel; merges via RRF (Reciprocal Rank Fusion); returns top 20. Improves recall (lexical + semantic + exact matches). Set `ENABLE_HYBRID_RETRIEVAL=0` for sequential fallback.
 - **Retrieval budgets:** MAX_SEARCH_RESULTS=20, MAX_SYMBOL_EXPANSION=10, MAX_CONTEXT_SNIPPETS=6.
 - **Query rewrite:** `rewrite_query_with_context(planner_step, user_request, attempt_history, state)` — LLM returns `{tool, query, reason}`; wires `chosen_tool`; prompts prefer high recall, regex-style patterns.
 - **Symbol expander:** When graph index exists, `expand_from_anchors()` expands anchor symbols via `expand_neighbors(depth=2)`, fetches bodies, ranks, prunes to top 6 (max 15 symbols).
@@ -804,6 +811,8 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `INDEX_EMBEDDINGS` | 1 (default) or 0 — build ChromaDB embedding index during index_repo |
 | `INDEX_PARALLEL_WORKERS` | Parallel file parsing workers (default 8) |
 | `SERENA_PROJECT_DIR` | Project root for Serena MCP |
+| `SERENA_MCP_COMMAND` | Command to run Serena (default: `uvx`) |
+| `SERENA_MCP_ARGS` | Override Serena args; default includes `--open-web-dashboard false` to avoid browser auto-open |
 | `SERENA_USE_PLACEHOLDER` | 1 to disable Serena (return empty results) |
 | `SERENA_GREP_FALLBACK` | 1 (default) or 0 — use ripgrep when Serena MCP unavailable |
 | `SERENA_VERBOSE` | 1 for Serena debug logs |
@@ -845,7 +854,7 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `read_file` | filesystem_adapter | Read file contents |
 | `write_file` | filesystem_adapter | Write file contents |
 | `list_files` | filesystem_adapter | List directory |
-| `find_referencing_symbols` | reference_tools | Stub; wire to Serena when available |
+| `find_referencing_symbols` | reference_tools | Symbol graph: callers, callees, imports, referenced_by |
 | `read_symbol_body` | reference_tools | Read symbol body (or file window) |
 | `run_command` | terminal_adapter | Execute shell command |
 | `lookup_docs` | context7_adapter | Optional doc lookup |
@@ -1052,6 +1061,8 @@ The **workflow layer** (`agent/workflow/`) turns AutoStudio into a developer tea
 
 | Doc | Description |
 |-----|--------------|
+| [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md) | Authoritative system architecture: pipeline diagram, component descriptions, data flow |
+| [Docs/OBSERVABILITY.md](Docs/OBSERVABILITY.md) | Telemetry fields, trace logging, retrieval metrics |
 | [Docs/PROMPT_ARCHITECTURE.md](Docs/PROMPT_ARCHITECTURE.md) | Prompt layer: PromptRegistry, versioning, all prompts, pipeline position, design philosophy, safety risks, testing |
 | [Docs/prompt_engineering_rules.md](Docs/prompt_engineering_rules.md) | Phase 13: governance rules (1 prompt = 1 capability, versioning, evaluation, failure logging, Rules 6–7, guardrails, A/B testing) |
 | [Docs/CONFIGURATION.md](Docs/CONFIGURATION.md) | Centralized config: all modules, env overrides, validation |

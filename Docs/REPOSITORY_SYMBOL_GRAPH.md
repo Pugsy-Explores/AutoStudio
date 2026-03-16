@@ -18,7 +18,7 @@ Research systems (e.g. code understanding, program synthesis) use knowledge grap
 
 - **repo_index/** — Tree-sitter parser, parallel indexing, symbol extraction, dependency extraction; optional embedding index (ChromaDB at `.symbol_graph/embeddings/`)
 - **repo_graph/** — SQLite graph storage, 2-hop expansion; `repo_map_builder` (architectural map); `change_detector` (affected callers, risk levels)
-- **agent/retrieval/** — `search_pipeline` (hybrid parallel retrieval); `symbol_expander` (expand_from_anchors: anchor → expand depth=2 → fetch bodies → rank → prune; max 15 symbols, 6 snippets); `graph_retriever` (symbol lookup → expansion); `vector_retriever` (embedding search); `retrieval_cache` (LRU); `context_builder_v2` (assemble_reasoning_context: FILE/SYMBOL/LINES/SNIPPET, ~8000 chars)
+- **agent/retrieval/** — `search_pipeline` (hybrid parallel retrieval); `symbol_expander` (expand_from_anchors: anchor → expand_symbol_dependencies → fetch bodies → rank → prune; max 15 symbols, 6 snippets); `graph_retriever` (symbol lookup → expansion); `vector_retriever` (embedding search); `retrieval_cache` (LRU); `context_builder` (build_call_chain_context for execution paths); `context_builder_v2` (assemble_reasoning_context: FILE/SYMBOL/LINES/SNIPPET, ~8000 chars)
 - **editing/** — `diff_planner`, `patch_generator`, `ast_patcher`, `patch_validator`, `patch_executor`, `conflict_resolver`, `test_repair_loop`
 
 ### Retrieval flow
@@ -27,10 +27,11 @@ Research systems (e.g. code understanding, program synthesis) use knowledge grap
 2. `retrieval_cache.get_cached(query)` (if enabled)
 3. **Hybrid retrieval** (when `ENABLE_HYBRID_RETRIEVAL=1`): `search_pipeline.hybrid_retrieve()` — when `repo_map_anchor` has confidence ≥ 0.9, graph retriever uses anchor symbol; runs graph, vector, grep in parallel; merges and returns top 20
 4. **Sequential fallback**: `graph_retriever.retrieve_symbol_context(query)` → `vector_retriever.search_by_embedding(query)` → Serena `search_for_pattern`
-5. **Symbol expansion** (when graph exists): `symbol_expander.expand_from_anchors` — anchor (from search results or repo_map) → expand_neighbors(depth=2) → fetch symbol bodies → rank → prune to 6 (max 15 symbols)
-6. Retrieval expansion (capped at MAX_SYMBOL_EXPANSION=10) → `read_symbol_body`, `read_file`, `find_referencing_symbols`
-7. Context builder → symbols, references, files
-8. Ranker (max 20 candidates) + pruner (max 6 snippets) → final context; `context_builder_v2.assemble_reasoning_context` formats for EXPLAIN
+5. **Symbol expansion** (when graph exists): `symbol_expander.expand_from_anchors` — anchor → `expand_symbol_dependencies` (BFS along calls/imports/references; depth=2, max_nodes=20, max_symbol_expansions=8) → fetch symbol bodies → rank → prune to 6 (max 15 symbols)
+6. Retrieval expansion (capped at MAX_SYMBOL_EXPANSION=10) → `read_symbol_body`, `read_file`, `find_referencing_symbols` (structured: callers, callees, imports, referenced_by; cap 10 each)
+7. Context builder → symbols, references, files; `build_call_chain_context` when project_root + symbols (execution path formatting)
+8. Deduplication (unconditional) → candidate budget (MAX_RERANK_CANDIDATES=50)
+9. Ranker (max 20 candidates) + pruner (max 6 snippets) → final context; `context_builder_v2.assemble_reasoning_context` formats for EXPLAIN
 
 All retrieval budgets and flags are configurable via `config/retrieval_config.py`; see [CONFIGURATION.md](CONFIGURATION.md).
 
@@ -74,10 +75,11 @@ StepExecutor
 
 ### Retrieval Path
 
-- **`get_symbol_dependencies(symbol: str) -> dict`**
-  - Returns `{calls: [...], imported_by: [...], referenced_by: [...]}`
-  - O(1) lookup when index exists
-- **Integration:** When `find_referencing_symbols` is called and an index exists, use precomputed graph instead of runtime MCP call
+- **`find_referencing_symbols(symbol, file_path, project_root?) -> dict`**
+  - Returns `{callers: [...], callees: [...], imports: [...], referenced_by: [...]}`; each list capped at 10
+  - Uses GraphStorage when `.symbol_graph/index.sqlite` exists; O(1) lookup via `get_callers`, `get_callees`, `get_imports`, `get_referenced_by`
+- **`expand_symbol_dependencies(symbol_id, storage, depth, max_nodes, max_symbol_expansions) -> (nodes, telemetry)`**
+  - BFS along dependency edges; cycle-safe; returns telemetry for observability
 
 ---
 
@@ -95,7 +97,8 @@ StepExecutor
 ### Graph (repo_graph)
 
 - **Storage:** SQLite `nodes` (id, name, type, file, start_line, end_line, docstring, type_info, signature), `edges` (source_id, target_id, edge_type)
-- **Query:** `find_symbol`, `expand_neighbors(depth=2)`
+- **Query:** `find_symbol`, `expand_neighbors(depth=2)`, `expand_symbol_dependencies(symbol_id, storage, depth, max_nodes, max_symbol_expansions)`
+- **Dependency helpers:** `get_callers`, `get_callees`, `get_imports`, `get_referenced_by` — filter by edge type (calls, call_graph, imports, references)
 
 ### Retrieval (search_pipeline, graph_retriever, vector_retriever)
 

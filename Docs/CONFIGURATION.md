@@ -141,6 +141,34 @@ Phase 4 reliability limits; not configurable via env:
 | MAX_DEPENDENCY_NODES | 100 | MAX_DEPENDENCY_NODES | Phase 10.5: cap on graph nodes |
 | MAX_EXECUTION_PATHS | 10 | MAX_EXECUTION_PATHS | Phase 10.5: cap on execution path chains |
 | ENABLE_LOCALIZATION_ENGINE | True | ENABLE_LOCALIZATION_ENGINE | Phase 10.5: graph-guided localization (1/0 or true/false) |
+| ENABLE_BM25_SEARCH | True | ENABLE_BM25_SEARCH | Phase 17: BM25 lexical retrieval toggle |
+| BM25_TOP_K | 30 | BM25_TOP_K | Phase 17: BM25 result count |
+| ENABLE_RRF_FUSION | True | ENABLE_RRF_FUSION | Phase 17: Reciprocal Rank Fusion toggle |
+| RRF_TOP_N | 100 | RRF_TOP_N | Phase 17: RRF merged result cap |
+| RRF_K | 60 | RRF_K | Phase 17: RRF constant |
+| RERANKER_ENABLED | True | RERANKER_ENABLED | Phase 17: cross-encoder reranker on/off |
+| RERANKER_DEVICE | auto | RERANKER_DEVICE | Phase 17: auto \| cpu \| gpu |
+| RERANKER_GPU_MODEL | Qwen/Qwen3-Reranker-0.6B | RERANKER_GPU_MODEL | Phase 17: GPU model ID |
+| RERANKER_CPU_MODEL | models/reranker/qwen3_reranker_int8.onnx | RERANKER_CPU_MODEL | Phase 17: CPU ONNX model path |
+| RERANKER_TOP_K | 10 | RERANKER_TOP_K | Phase 17: reranker output size |
+| RERANKER_BATCH_SIZE | 16 | RERANKER_BATCH_SIZE | Phase 17: batch size for inference |
+| RERANK_MIN_CANDIDATES | 6 | RERANK_MIN_CANDIDATES | Phase 17: min candidates to trigger reranker |
+| MAX_RERANK_CANDIDATES | 50 | MAX_RERANK_CANDIDATES | Phase 17: cap candidates before reranker |
+| MAX_RERANK_SNIPPET_TOKENS | 256 | MAX_RERANK_SNIPPET_TOKENS | Phase 17: per-snippet token limit |
+| MAX_RERANK_PAIR_TOKENS | 512 | MAX_RERANK_PAIR_TOKENS | Phase 17: query+snippet pair limit |
+| RERANK_CACHE_SIZE | 2048 | RERANK_CACHE_SIZE | Phase 17: LRU score cache size |
+| RERANK_SCORE_THRESHOLD | 0.15 | RERANK_SCORE_THRESHOLD | Phase 17: discard results below this score |
+| RERANK_MIN_RESULTS_AFTER_THRESHOLD | 3 | RERANK_MIN_RESULTS_AFTER_THRESHOLD | Phase 17: fallback if fewer pass threshold |
+| RERANK_BATCH_WINDOW_MS | 5 | RERANK_BATCH_WINDOW_MS | Phase 17: RerankQueue coalescing window (ms) |
+| RERANK_FUSION_WEIGHT | 0.8 | RERANK_FUSION_WEIGHT | Phase 17: reranker weight in score fusion |
+| RETRIEVER_FUSION_WEIGHT | 0.2 | RETRIEVER_FUSION_WEIGHT | Phase 17: retriever weight in score fusion |
+| SCORE_FUSION_RERANKER_WEIGHT | 0.8 | SCORE_FUSION_RERANKER_WEIGHT | Phase 17: reranker weight in fusion |
+| SCORE_FUSION_RETRIEVER_WEIGHT | 0.2 | SCORE_FUSION_RETRIEVER_WEIGHT | Phase 17: retriever weight in fusion |
+| RETRIEVAL_GRAPH_EXPANSION_DEPTH | 2 | RETRIEVAL_GRAPH_EXPANSION_DEPTH | Phase 18: graph expansion BFS depth |
+| RETRIEVAL_GRAPH_MAX_NODES | 20 | RETRIEVAL_GRAPH_MAX_NODES | Phase 18: cap on expanded nodes |
+| RETRIEVAL_MAX_SYMBOL_EXPANSIONS | 8 | RETRIEVAL_MAX_SYMBOL_EXPANSIONS | Phase 18: cap on symbol expansions |
+
+See [RETRIEVAL_ARCHITECTURE.md](RETRIEVAL_ARCHITECTURE.md) for the full reranker config (models, cache, preprocessor, etc.).
 
 ### router_config.py
 
@@ -176,6 +204,10 @@ export MAX_TASK_RUNTIME_SECONDS=1800
 
 # Debug logging
 export LOG_LEVEL=DEBUG
+
+# Run integration tests (real services, no mocks)
+export TEST_MODE=integration
+# Then: pytest tests/integration/ -v
 ```
 
 ## Validation

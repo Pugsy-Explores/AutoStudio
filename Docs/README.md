@@ -4,6 +4,8 @@
 
 | Document | Description |
 |----------|--------------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Authoritative system architecture: pipeline diagram, component descriptions, data flow, config sections. |
+| [OBSERVABILITY.md](OBSERVABILITY.md) | Telemetry fields, trace logging, retrieval metrics, UX metrics, failure mining metrics. |
 | [PROMPT_ARCHITECTURE.md](PROMPT_ARCHITECTURE.md) | Prompt layer: PromptRegistry (Phase 13), versioning, all prompts, pipeline position, design philosophy, safety risks, testing. |
 | [prompt_engineering_rules.md](prompt_engineering_rules.md) | Phase 13 governance: 1 prompt = 1 capability, versioning, evaluation, failure logging, Rules 6–7 (eval coverage, context budget), guardrails at LLM boundary, A/B testing. |
 | [CONFIGURATION.md](CONFIGURATION.md) | Centralized config: all modules (`config/`), env overrides, validation rules. |
@@ -11,8 +13,13 @@
 | [AGENT_CONTROLLER.md](AGENT_CONTROLLER.md) | Full pipeline: run_controller (mode: deterministic/autonomous/multi_agent), run_deterministic, all tools via dispatch, safety limits, task memory, trace logging. |
 | [ROUTING_ARCHITECTURE_REPORT.md](ROUTING_ARCHITECTURE_REPORT.md) | Routing architecture: instruction router, tool graph (retrieve_graph/vector/grep/list_dir), Serena and filesystem rules, query rewrite prompts, replanner. |
 | [REPOSITORY_SYMBOL_GRAPH.md](REPOSITORY_SYMBOL_GRAPH.md) | Symbol graph design and implementation: indexing, graph storage, repo map (builder, lookup, incremental updater), anchor detection, change detector, vector search, retrieval cache, editing pipeline (diff_planner, patch_generator, ast_patcher, patch_validator, patch_executor), testing and validation. |
+| [RETRIEVAL_ARCHITECTURE.md](RETRIEVAL_ARCHITECTURE.md) | Full retrieval pipeline: BM25 lexical, vector retrieval, RRF fusion, graph dependency expansion (get_callers/get_callees/get_imports/get_referenced_by, expand_symbol_dependencies), reference lookup, call-chain context builder, unconditional deduplication, candidate budget, cross-encoder reranking (GPU/CPU auto-select, dedup, cache, score threshold, RerankQueue batching, symbol bypass, warm start, failure fallback), context pruning, config reference, telemetry (graph_nodes_expanded, graph_stage_skipped, dedupe_removed_count, candidate_budget_applied), run_retrieval_eval. |
 | [CODING_AGENT_ARCHITECTURE_GUIDE.md](CODING_AGENT_ARCHITECTURE_GUIDE.md) | Architecture patterns for coding agents: retrieval, code understanding, editing, fault tolerance, memory. |
 | [FAILURE_MINING.md](FAILURE_MINING.md) | Phase 16 failure pattern mining: trajectory_loader, failure_extractor, failure_clusterer, root_cause_report; loop/hallucination detection; run_failure_mining.py; CI guardrails. |
+| [../agent/retrieval/README.md](../agent/retrieval/README.md) | Retrieval subsystem: purpose, architecture, key classes, data flow. |
+| [../agent/retrieval/reranker/README.md](../agent/retrieval/reranker/README.md) | Cross-encoder reranker: purpose, architecture, key classes. |
+| [../agent/meta/README.md](../agent/meta/README.md) | Meta layer: trajectory loop, critic, retry planner. |
+| [../agent/failure_mining/README.md](../agent/failure_mining/README.md) | Failure mining subsystem: purpose, architecture, key classes. |
 | [../dev/roadmap/phase_1_pipeline.md](../dev/roadmap/phase_1_pipeline.md) | Phase 1 pipeline convergence: steps 1–8, verification tests, full system test (`python -m agent "Explain how StepExecutor works"`). |
 | [../dev/roadmap/phase_3_scenarios.md](../dev/roadmap/phase_3_scenarios.md) | Phase 3 scenario evaluation: 40-task benchmark, `run_principal_engineer_suite --scenarios`, `reports/eval_report.json`. |
 | [../dev/roadmap/phase_4_reliability.md](../dev/roadmap/phase_4_reliability.md) | Phase 4 reliability: failure policies, replanner safeguards, execution limits, retrieval fallback, patch safety, trace integrity, failure mining, stress testing. |
@@ -22,6 +29,8 @@
 | [../dev/roadmap/phase_8_autonomous_mode.md](../dev/roadmap/phase_8_autonomous_mode.md) | Phase 8 self-improving loop: agent/meta/ (evaluator, critic, retry_planner, trajectory_store); outer retry loop; reflection metrics. |
 | [../dev/roadmap/phase_15_trajectory.md](../dev/roadmap/phase_15_trajectory.md) | Phase 15 trajectory improvement loop: TrajectoryLoop, attempt/start_time/end_time in trajectory_store, retry-strategy fallback, retry diversity (DIVERSITY_SEQUENCE), failure_type telemetry, config; run_retry_eval. |
 | [../dev/roadmap/phase_16_failure_mining.md](../dev/roadmap/phase_16_failure_mining.md) | Phase 16 failure pattern mining: agent/failure_mining/ (trajectory_loader, failure_extractor, failure_clusterer, root_cause_report); loop/hallucination detection; reports/failure_analysis.md; run_failure_mining.py. |
+| [../dev/roadmap/phase_17_retrieval_reranker.md](../dev/roadmap/phase_17_retrieval_reranker.md) | Phase 17 retrieval reranker: agent/retrieval/reranker/ (GPU/CPU cross-encoder, dedup, cache, score fusion, symbol bypass, warm start); scripts/download_reranker.py; Docs/RETRIEVAL_ARCHITECTURE.md. |
+| [../dev/roadmap/phase_18_retrieval_precision_upgrade.md](../dev/roadmap/phase_18_retrieval_precision_upgrade.md) | Phase 18 retrieval precision: graph dependency expansion (get_callers/get_callees/get_imports/get_referenced_by, expand_symbol_dependencies), reference lookup, call-chain context builder, unconditional deduplication, candidate budget, graph telemetry, graph index fallback, RRF tests. |
 | [../dev/roadmap/phase_9_workflow_integration.md](../dev/roadmap/phase_9_workflow_integration.md) | Phase 9 hierarchical multi-agent: agent/roles/ (supervisor, planner, localization, edit, test, critic); run_multi_agent(); AgentWorkspace; safety limits; multi_agent_tasks.json; run_multi_agent_eval. |
 | [../dev/roadmap/phase_10_capability_expansion.md](../dev/roadmap/phase_10_capability_expansion.md) | Phase 10 repository-scale intelligence: agent/repo_intelligence/ (repo_summary_graph, architecture_map, impact_analyzer, context_compressor, long_horizon_planner); repository_tasks.json; run_repository_eval. |
 | [../dev/roadmap/phase_10-5_graph_traversal.md](../dev/roadmap/phase_10-5_graph_traversal.md) | Phase 10.5 graph-guided localization: agent/retrieval/localization/ (dependency_traversal, execution_path_analyzer, symbol_ranker, localization_engine); localization_tasks.json; run_localization_eval. |
@@ -29,6 +38,7 @@
 | [../dev/roadmap/phase_12_last_stop.md](../dev/roadmap/phase_12_last_stop.md) | Phase 12 developer workflow: agent/workflow/ (issue_parser, pr_generator, ci_runner, code_review_agent, developer_feedback, workflow_controller); CLI: issue, fix, pr, review, ci; workflow_tasks.json; run_workflow_eval. |
 | [../dev/roadmap/phase_13_prompt_framwork.md](../dev/roadmap/phase_13_prompt_framwork.md) | Phase 13 prompt infrastructure: agent/prompt_system/ (registry, versioning, guardrails, skills, context, retry_strategies, observability); agent/prompt_eval/; agent/prompt_versions/; scripts/run_prompt_ci.py. |
 | [WORKFLOW.md](WORKFLOW.md) | Phase 12 workflow layer: modules, CLI, flow, safety limits, trace events, persistence, evaluation. |
+| [INTEGRATION_TESTS.md](INTEGRATION_TESTS.md) | Integration tests: real services (no mocks), `TEST_MODE=integration`, run `pytest tests/integration/`, success criteria, debug output. |
 
 ## Agent robustness
 
@@ -55,7 +65,10 @@ See `tests/test_agent_robustness.py` for coverage.
 - **Run autonomous (Mode 2, Phase 7/8/11/15):** `from agent.autonomous import run_autonomous` — `run_autonomous(goal, project_root, max_retries=MAX_RETRY_ATTEMPTS)`; goal-driven loop; Phase 11: experience_retriever injects experience_hints before planning; when max_retries>1, TrajectoryLoop (Phase 15) runs meta loop (attempt→evaluate→critic→retry); on success, stores solution to intelligence layer; reuses dispatcher, retrieval, editing pipeline
 - **Run multi-agent (Phase 9):** `from agent.roles import run_multi_agent` — `run_multi_agent(goal, project_root, success_criteria=...)`; supervisor → planner → localization → edit → test → critic (on failure); reuses dispatcher, retrieval, editing pipeline; limits: max_agent_steps=30, max_patch_attempts=3, max_runtime=120s. **Phase 10 repo intelligence:** Before planner, builds repo_summary and architecture_map; plan_long_horizon when architecture present; impact_analyzer after edit; context_compressor in retrieval when repo_summary present.
 - **Index repo:** `python -m repo_index.index_repo <path>` — respects `.gitignore` by default; `-v` verbose, `--no-gitignore` to include all files; API supports `include_dirs`, `ignore_gitignore`, `verbose`
+- **Download reranker:** `python scripts/download_reranker.py` — auto-detect hardware and download GPU (Qwen3-Reranker-0.6B) or CPU (ONNX INT8) model to `models/reranker/`; `--device cpu|gpu` to force; `--model <id>` for alternate models (see [RETRIEVAL_ARCHITECTURE.md](RETRIEVAL_ARCHITECTURE.md))
+- **Retrieval eval:** `python scripts/run_retrieval_eval.py --limit 5` — recall@10/20, latency on failure_mining_tasks.json
 - **E2E tests:** `python -m pytest tests/test_agent_e2e.py -v` (default: try LLM, fallback to mock; `--mock` to force mock)
+- **Integration tests:** `TEST_MODE=integration pytest tests/integration/ -v` (real services only; no mocks; requires reasoning model + reranker; see [INTEGRATION_TESTS.md](INTEGRATION_TESTS.md))
 - **Agent loop tests:** `python -m pytest tests/test_agent_loop.py -v` (execution loop, planner→executor→results; mocks dispatch for fast runs)
 - **Explain gate tests:** `python -m pytest tests/test_explain_gate.py -v` (context gate: ensure_context_before_explain)
 - **Repo map tests:** `python -m pytest tests/test_repo_map.py -v` (repo_map build, lookup, anchor detection, incremental update)
