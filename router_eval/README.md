@@ -61,6 +61,13 @@ from router_eval.routers.baseline_router import route
 
 **Rule:** Do not change the dataset and a router in the same change. The dataset is the fixed test suite.
 
+## Subpackages
+
+- **`router_eval/routers/`**: router variants under test — see [`router_eval/routers/README.md`](routers/README.md)
+- **`router_eval/prompts/`**: evaluation prompts/assets — see [`router_eval/prompts/README.md`](prompts/README.md)
+- **`router_eval/utils/`**: metrics + dataset helpers — see [`router_eval/utils/README.md`](utils/README.md)
+- **`router_eval/tests/`**: harness tests — see [`router_eval/tests/README.md`](tests/README.md)
+
 ## See also
 
 - [Docs/PROMPT_ARCHITECTURE.md](../Docs/PROMPT_ARCHITECTURE.md) — Prompt layer: router prompts, few-shot strategy, evaluation prompts

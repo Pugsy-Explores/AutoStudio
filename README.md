@@ -26,12 +26,24 @@ AutoStudio converts natural-language instructions into executable plans, runs co
 - [Environment Variables](#environment-variables)
 - [Tools and Adapters](#tools-and-adapters)
 - [Testing](#testing)
+- [Module index](#module-index)
 - [Subsystems](#subsystems)
 - [Repository Symbol Graph](#repository-symbol-graph-implemented)
 - [Evaluation](#evaluation)
 - [Documentation](#documentation)
 
 ---
+
+## Module index
+
+- **`agent/`**: main runtime orchestration, execution, retrieval integration, workflows — see [`agent/README.md`](agent/README.md)
+- **`config/`**: centralized configuration + startup checks — see [`config/README.md`](config/README.md)
+- **`editing/`**: diff planning, patch validation/execution, repair helpers — see [`editing/README.md`](editing/README.md)
+- **`planner/`**: instruction → atomic step plan — see [`planner/README.md`](planner/README.md)
+- **`repo_index/`**: scan/parse/extract symbols + edges — see [`repo_index/README.md`](repo_index/README.md)
+- **`repo_graph/`**: symbol graph + repo map generation — see [`repo_graph/README.md`](repo_graph/README.md)
+- **`router_eval/`**: router evaluation harness — see [`router_eval/README.md`](router_eval/README.md)
+- **`tests/`**: unit/integration tests + fixtures — see [`tests/README.md`](tests/README.md)
 
 ## Architecture Overview
 
