@@ -22,6 +22,42 @@ BUILD_CONTEXT (heavy operations, < 5s)
 EXECUTOR (EDIT, EXPLAIN, etc.)
 ```
 
+## Phase 5A — Explicit docs retrieval lane (`artifact_mode`)
+
+Phase 5A adds an explicit retrieval lane selector field named `artifact_mode` on steps and tool adapters.
+
+- **Allowed values**: `"code"` (default), `"docs"`.
+- **Default**: when `artifact_mode` is missing, the system behaves exactly as code mode.
+- **No auto-detection**: the lane is only selected when the step explicitly sets `artifact_mode="docs"`.
+
+### Code lane (`artifact_mode="code"`)
+
+Unchanged. Uses the existing hybrid retrieval pipeline (BM25/vector/graph/grep + RRF, then graph expansion, symbol reads, reference lookup, reranker, pruning).
+
+### Docs lane (`artifact_mode="docs"`)
+
+Deterministic, filesystem-driven docs retrieval:
+
+- **Candidate discovery**: scan documentation artifacts under `project_root` (repo-root `README*`, `*.md`, `docs/**`, `Docs/**`; optionally `*.rst`, `*.txt`).
+- **Exclusions**: `tests/**`, `test/**`, paths containing `test`, `node_modules/**`, `vendor/**`, `.venv/**`, `.git/**`, and obvious binary files.
+- **Scoring**: explicit deterministic heuristics (repo-root README boost, docs-dir boost, query-token overlap on path + early content, examples penalty).
+- **Context build**: read only top-ranked doc files (bounded), emit `state.context["ranked_context"]` entries with `{file, symbol:"", snippet, artifact_type:"doc"}` for EXPLAIN.
+
+Docs lane explicitly **does not** use: graph expansion, symbol expansion, localization, reference traversal, BM25, code vector retrieval, code grep, or reranker.
+
+## Phase 5B — Planner/replanner contract (`artifact_mode` propagation)
+
+Phase 5B wires the planner → execution contract so that the planner and replanner can **explicitly** emit (and preserve across replans) the optional step field:
+
+- `artifact_mode`: `"code"` (default when omitted) or `"docs"`
+
+The retrieval lane remains explicit and is **not inferred** inside retrieval. When replanning a docs-lane failure, the replanner preserves `artifact_mode="docs"` on `SEARCH_CANDIDATES` / `BUILD_CONTEXT` / `EXPLAIN` steps unless it intentionally changes strategy.
+
+### Phase 5B.1 guardrails (fallback + preservation)
+
+- **Planner fallback shape**: when planner output is invalid, the fallback remains a single `SEARCH` step **unless** there is an explicit docs-lane lineage signal (either the parsed plan contained valid `artifact_mode="docs"` on docs-compatible steps, or `retry_context.previous_attempts` contains a prior docs-lane plan). In that explicit lineage case, the fallback is docs-shaped: `SEARCH_CANDIDATES → BUILD_CONTEXT → EXPLAIN`, all with `artifact_mode="docs"`.
+- **Replanner preservation rule (narrow)**: docs-mode is preserved only when the failed step is explicitly docs-mode, or when the active plan being replanned is explicitly docs-lane **by structure** (all docs-compatible steps are explicitly `artifact_mode="docs"`). This avoids leaking docs mode into unrelated replans.
+
 See also:
 - [CODING_AGENT_ARCHITECTURE_GUIDE.md](CODING_AGENT_ARCHITECTURE_GUIDE.md) — end-to-end agent architecture
 - [REPOSITORY_SYMBOL_GRAPH.md](REPOSITORY_SYMBOL_GRAPH.md) — symbol graph and graph expansion

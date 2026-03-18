@@ -362,7 +362,7 @@ AutoStudio/
 │   │   ├── __init__.py
 │   │   ├── trajectory_memory.py # TrajectoryMemory: in-memory attempt data for retry loop
 │   │   ├── evaluator.py        # SUCCESS/FAILURE/PARTIAL from step results
-│   │   ├── critic.py           # Hybrid: deterministic failure_reason + LLM analysis/strategy_hint; trajectory summary
+│   │   ├── critic.py           # Hybrid: deterministic failure_type + LLM analysis/strategy_hint; trajectory summary
 │   │   ├── retry_planner.py    # RetryPlanner.build_retry_context (previous_attempts, critic_feedback, strategy_hint)
 │   │   └── trajectory_store.py # Persist attempts under .agent_memory/trajectories/
 │   │
@@ -757,6 +757,13 @@ SEARCH
 - **Context ranker:** Hybrid score = 0.6×LLM + 0.2×symbol_match + 0.1×filename_match + 0.1×reference_score − same_file_penalty; batch LLM; caps at 20 candidates.
 - **Context pruner:** Max 6 snippets, 8000 chars; deduplicate by (file, symbol).
 
+### Phase 5A: docs retrieval lane (explicit)
+
+Phase 5A introduces an explicit step field `artifact_mode` with allowed values `"code"` (default) and `"docs"`.
+
+- **Default**: when `artifact_mode` is missing, retrieval remains code-mode and behaves as before.
+- **Docs mode** (`artifact_mode="docs"`): deterministic filesystem-based docs scanning and context building (no graph/vector/grep/reranker/localization/reference traversal).
+
 ### EDIT pipeline (inside dispatcher `_edit_fn`)
 
 All EDIT execution goes through `dispatch(step, state)`. The dispatcher's `_edit_fn` runs the **edit→test→fix loop** (`agent/runtime/execution_loop.run_edit_test_fix_loop`):
@@ -814,7 +821,7 @@ instruction
             goal_met = GoalEvaluator.evaluate(instruction, state)
             TrajectoryMemory.record_attempt(attempt_data)
             if goal_met: return
-            critic_feedback = Critic.analyze(instruction, attempt_data)   # hybrid: failure_reason + strategy_hint
+            critic_feedback = Critic.analyze(instruction, attempt_data)   # hybrid: failure_type + strategy_hint
             retry_context = RetryPlanner.build_retry_context(instruction, trajectory_memory, critic_feedback)
   → save_task() — persist to .agent_memory/tasks/
   → return task summary

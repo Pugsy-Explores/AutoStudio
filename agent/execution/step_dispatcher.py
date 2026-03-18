@@ -413,6 +413,15 @@ def dispatch(step: dict, state: AgentState) -> dict:
 
     action = (step.get("action") or "EXPLAIN").upper()
     description = step.get("description") or ""
+    artifact_mode = step.get("artifact_mode") or "code"
+    if artifact_mode not in ("code", "docs"):
+        return {
+            "success": False,
+            "output": {},
+            "error": f"Invalid artifact_mode: {artifact_mode!r} (allowed: 'code', 'docs')",
+            "classification": ResultClassification.FATAL_FAILURE.value,
+        }
+    state.context["artifact_mode"] = artifact_mode
     print(f"[workflow] dispatch {action}")
 
     current_node = state.context.get("tool_node", "START")
@@ -426,7 +435,7 @@ def dispatch(step: dict, state: AgentState) -> dict:
         last_error = None
         for attempt in range(3):  # retry limit 2 + 1 initial = 3 attempts
             try:
-                out = search_candidates(query, state)
+                out = search_candidates(query, state, artifact_mode=artifact_mode)
                 candidates = out.get("candidates") or []
                 if candidates:
                     state.context["candidates"] = candidates
@@ -436,28 +445,38 @@ def dispatch(step: dict, state: AgentState) -> dict:
             except Exception as e:
                 last_error = str(e)
                 logger.debug("[SEARCH_CANDIDATES] attempt %d failed: %s", attempt + 1, e)
-        # Fallback: grep search (Task 8)
-        try:
-            grep_out = search_code(query, tool_hint="search_for_pattern")
-            results = grep_out.get("results") or []
-            candidates = [
-                {"symbol": r.get("symbol", ""), "file": r.get("file", ""), "snippet": r.get("snippet", ""), "score": 0.5, "source": "grep"}
-                for r in results[:20]
-            ]
-            state.context["candidates"] = candidates
-            state.context["query"] = query
-            return {"success": True, "output": {"candidates": candidates, "fallback": "grep"}}
-        except Exception as e:
-            return {"success": False, "output": {}, "error": f"{last_error}; fallback grep failed: {e}"}
+        # Fallback: grep search (Task 8) — code mode only
+        if artifact_mode == "code":
+            try:
+                grep_out = search_code(query, tool_hint="search_for_pattern")
+                results = grep_out.get("results") or []
+                candidates = [
+                    {"symbol": r.get("symbol", ""), "file": r.get("file", ""), "snippet": r.get("snippet", ""), "score": 0.5, "source": "grep"}
+                    for r in results[:20]
+                ]
+                state.context["candidates"] = candidates
+                state.context["query"] = query
+                return {"success": True, "output": {"candidates": candidates, "fallback": "grep"}}
+            except Exception as e:
+                return {"success": False, "output": {}, "error": f"{last_error}; fallback grep failed: {e}"}
+        return {"success": True, "output": {"candidates": [], "fallback": "none", "artifact_mode": artifact_mode}}
 
     if action == "BUILD_CONTEXT":
         try:
-            out = build_context(candidates=None, state=state)
+            out = build_context(candidates=None, state=state, artifact_mode=artifact_mode)
             return {"success": True, "output": out}
         except Exception as e:
             return {"success": False, "output": {}, "error": str(e)}
 
     if action == "SEARCH":
+        if artifact_mode == "docs":
+            return {
+                "success": False,
+                "output": {},
+                "error": "SEARCH with artifact_mode='docs' is intentionally deferred in Phase 5A. "
+                "Use SEARCH_CANDIDATES + BUILD_CONTEXT with artifact_mode='docs' (or EXPLAIN with artifact_mode='docs').",
+                "classification": ResultClassification.RETRYABLE_FAILURE.value,
+            }
         raw = _policy_engine.execute_with_policy(step, state)
         state.context["tool_node"] = chosen_tool
         if raw.get("success") and raw.get("output"):
@@ -472,6 +491,28 @@ def dispatch(step: dict, state: AgentState) -> dict:
         return raw
 
     if action == "INFRA":
+        # If the router chose list_dir, treat INFRA as a directory listing instead of a shell command.
+        # This prevents natural-language queries from being executed via run_command().
+        if chosen_tool == "list_dir":
+            try:
+                project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+                q = (step.get("description") or step.get("command") or "").strip()
+                # If the planner produced a question (e.g. "where are readmes and docs"),
+                # default to listing the project root.
+                path = q if (q and ("/" in q or q in (".", ".."))) else "."
+                root = Path(project_root)
+                resolved = (root / path).resolve() if path != "." else root.resolve()
+                if not resolved.is_dir():
+                    resolved = root.resolve()
+                entries = list_files(str(resolved))
+                state.context["tool_node"] = chosen_tool
+                return {
+                    "success": True,
+                    "output": {"path": str(resolved), "entries": entries, "returncode": 0, "router_override": "infra->list_dir"},
+                }
+            except Exception as e:
+                # Fall back to normal INFRA policy execution if listing fails.
+                logger.debug("[INFRA] list_dir override failed: %s", e)
         raw = _policy_engine.execute_with_policy(step, state)
         state.context["tool_node"] = chosen_tool
         return raw
@@ -484,21 +525,42 @@ def dispatch(step: dict, state: AgentState) -> dict:
     if not has_context:
         logger.info("[context_gate] explain requested without context -> injecting SEARCH")
         query = step.get("description", "") or ""
-        search_output = _search_fn(query, state)
-        results = (search_output or {}).get("results") or []
-        if not _is_valid_search_result(results):
-            return {
-                "success": False,
-                "output": "",
-                "error": "No context for EXPLAIN. Run SEARCH first.",
-                "classification": ResultClassification.RETRYABLE_FAILURE.value,
-            }
-        if results:
-            run_retrieval_pipeline(
-                (search_output or {}).get("results", []),
-                state,
-                (search_output or {}).get("query"),
+        if artifact_mode == "docs":
+            # Idempotency: reuse candidates when already present for this query.
+            reuse = (
+                (state.context.get("artifact_mode") == "docs")
+                and (state.context.get("query") == query)
+                and bool(state.context.get("candidates"))
             )
+            if reuse:
+                if state.context.get("trace_id"):
+                    log_event(
+                        state.context["trace_id"],
+                        "docs_explain_context_reused",
+                        {"artifact_mode": "docs", "reused": True},
+                    )
+            else:
+                out = search_candidates(query, state, artifact_mode="docs")
+                candidates = out.get("candidates") or []
+                state.context["candidates"] = candidates
+                state.context["query"] = query
+            build_context(candidates=None, state=state, artifact_mode="docs")
+        else:
+            search_output = _search_fn(query, state)
+            results = (search_output or {}).get("results") or []
+            if not _is_valid_search_result(results):
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": "No context for EXPLAIN. Run SEARCH first.",
+                    "classification": ResultClassification.RETRYABLE_FAILURE.value,
+                }
+            if results:
+                run_retrieval_pipeline(
+                    (search_output or {}).get("results", []),
+                    state,
+                    (search_output or {}).get("query"),
+                )
 
     trace_id = state.context.get("trace_id")
     step_id = state.context.get("current_step_id")
