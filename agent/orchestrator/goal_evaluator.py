@@ -25,6 +25,14 @@ class GoalEvaluator:
         if not results:
             return False
 
+        # Phase 6A: single-lane per task. Any lane violation makes the goal unmet.
+        try:
+            violations = (state.context or {}).get("lane_violations") if hasattr(state, "context") else None
+            if violations and isinstance(violations, list) and len(violations) > 0:
+                return False
+        except Exception:
+            pass
+
         instruction_lower = (instruction or "").lower()
 
         for r in results:

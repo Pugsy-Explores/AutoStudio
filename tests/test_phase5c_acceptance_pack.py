@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.memory.state import AgentState
-from agent.observability.trace_logger import add_event_listener, remove_event_listener, start_trace, finish_trace
+from agent.observability.trace_logger import add_event_listener, remove_event_listener, start_trace, finish_trace, log_event
 from agent.orchestrator.execution_loop import ExecutionLoopMode, execution_loop
 from planner.planner import plan as planner_plan
 
@@ -63,6 +63,9 @@ def test_acceptance_docs_style_emits_docs_mode_and_runs_docs_lane(tmp_path: Path
 
         trace_id = start_trace("phase5c_docs", str(tmp_path), query="where are readmes and docs")
         state = _state(plan_dict, tmp_path, trace_id)
+        # Phase 6A: dominant lane lock for the task/attempt.
+        state.context["dominant_artifact_mode"] = "docs"
+        state.context["lane_violations"] = []
 
         # Avoid external model dependency: stub EXPLAIN model call.
         with patch(
@@ -71,11 +74,23 @@ def test_acceptance_docs_style_emits_docs_mode_and_runs_docs_lane(tmp_path: Path
         ):
             # Use AGENT mode to avoid goal-evaluator replans that can overwrite state.context["artifact_mode"]
             # after the three planned docs steps are complete.
-            result = execution_loop(state, "where are readmes and docs", trace_id=trace_id, mode=ExecutionLoopMode.AGENT)
+            result = execution_loop(
+                state,
+                "where are readmes and docs",
+                trace_id=trace_id,
+                log_event_fn=log_event,
+                mode=ExecutionLoopMode.AGENT,
+            )
         finish_trace(trace_id)
 
         assert result.state.context.get("artifact_mode") == "docs"
+        assert result.state.context.get("dominant_artifact_mode") == "docs"
         assert any(e["type"].startswith("docs_") for e in events), "docs lane should emit docs_* trace events"
+        # Trace must prove lane consistency signals exist in step events.
+        step_events = [e for e in events if e["type"] == "step_executed"]
+        assert step_events, "should emit step_executed events"
+        assert all(e["payload"].get("dominant_artifact_mode") == "docs" for e in step_events)
+        assert all(e["payload"].get("step_artifact_mode") == "docs" for e in step_events if e["payload"].get("action") in ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN"))
     finally:
         remove_event_listener(listener)
 

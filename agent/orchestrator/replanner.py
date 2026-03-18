@@ -13,7 +13,7 @@ from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
 from agent.prompt_system import get_registry
-from planner.planner_utils import normalize_actions, validate_plan
+from planner.planner_utils import DOCS_COMPATIBLE_ACTIONS, is_explicit_docs_lane_by_structure, normalize_actions, validate_plan
 
 logger = logging.getLogger(__name__)
 
@@ -23,32 +23,8 @@ _DOCS_PRESERVE_ACTIONS = ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN")
 
 
 def _is_explicit_docs_lane_plan_by_structure(plan: dict | None) -> bool:
-    """
-    True when the *active plan being replanned* is explicitly docs-lane by structure.
-
-    Rule (narrow on purpose):
-    - Consider only docs-compatible actions: SEARCH_CANDIDATES, BUILD_CONTEXT, EXPLAIN.
-    - For every step with one of those actions, artifact_mode must be explicitly "docs".
-    - At least one such step must exist.
-
-    This prevents accidental preservation due to unrelated/mixed plans where a single docs step
-    is present but other retrieval/explain steps are code-lane (field missing/default code).
-    """
-    if not plan or not isinstance(plan, dict):
-        return False
-    steps = plan.get("steps") or []
-    if not isinstance(steps, list):
-        return False
-    seen = 0
-    for s in steps:
-        if not isinstance(s, dict):
-            continue
-        action = (s.get("action") or "").upper()
-        if action in _DOCS_PRESERVE_ACTIONS:
-            seen += 1
-            if s.get("artifact_mode") != "docs":
-                return False
-    return seen > 0
+    # Kept for backward compatibility: delegate to shared planner_utils semantics.
+    return is_explicit_docs_lane_by_structure(plan)
 
 
 def _should_preserve_docs_mode(state: AgentState, failed_step: dict | None) -> bool:
@@ -98,6 +74,71 @@ def _fallback_remaining(state: AgentState) -> dict:
     return {"plan_id": new_plan_id(), "steps": remaining}
 
 
+def _fallback_docs_lane(state: AgentState) -> dict:
+    """Lane-consistent fallback plan for dominant docs lane."""
+    instruction = (getattr(state, "instruction", "") or "")[:200]
+    return {
+        "plan_id": new_plan_id(),
+        "steps": [
+            {
+                "id": 1,
+                "action": "SEARCH_CANDIDATES",
+                "artifact_mode": "docs",
+                "description": "Find README/docs artifacts",
+                "query": "readme docs",
+                "reason": f"Dominant docs lane fallback for: {instruction}",
+            },
+            {
+                "id": 2,
+                "action": "BUILD_CONTEXT",
+                "artifact_mode": "docs",
+                "description": "Build docs context from candidates",
+                "reason": "Read top docs files",
+            },
+            {
+                "id": 3,
+                "action": "EXPLAIN",
+                "artifact_mode": "docs",
+                "description": "Answer using docs context",
+                "reason": "Complete docs fallback plan",
+            },
+        ],
+    }
+
+
+def _dominant_lane(state: AgentState) -> str:
+    """Dominant artifact mode lock for this task/attempt."""
+    am = (state.context or {}).get("dominant_artifact_mode") if hasattr(state, "context") else None
+    return am if am in ("code", "docs") else "code"
+
+
+def _enforce_replan_lane_contract(state: AgentState, plan_dict: dict) -> bool:
+    """
+    Enforce Phase 6A single-lane contract on replanned output.
+    Returns True if plan_dict is lane-consistent; False otherwise.
+    """
+    dom = _dominant_lane(state)
+    steps = plan_dict.get("steps") or []
+    if not isinstance(steps, list):
+        return False
+    if dom == "docs":
+        # Only docs-compatible actions allowed; require explicit artifact_mode="docs".
+        for s in steps:
+            if not isinstance(s, dict):
+                return False
+            a = (s.get("action") or "").upper()
+            if a not in DOCS_COMPATIBLE_ACTIONS:
+                return False
+            if s.get("artifact_mode") != "docs":
+                return False
+        return True
+    # dom == "code": no docs steps allowed.
+    for s in steps:
+        if isinstance(s, dict) and s.get("artifact_mode") == "docs":
+            return False
+    return True
+
+
 def replan(
     state: AgentState,
     failed_step: dict | None = None,
@@ -118,7 +159,12 @@ def replan(
         )
 
     if not failed_step and not error:
-        return _fallback_remaining(state)
+        # Keep lane lock: if dominant lane is docs, remaining mixed plans are not allowed.
+        dom = _dominant_lane(state)
+        fb = _fallback_remaining(state)
+        if dom == "docs":
+            return _fallback_docs_lane(state)
+        return fb
 
     instruction = (getattr(state, "instruction", "") or "")[:1500]
     current_plan = state.current_plan
@@ -153,26 +199,26 @@ def replan(
             )
     except Exception as e:
         logger.warning("[replanner] LLM call failed: %s, using fallback", e)
-        return _fallback_remaining(state)
+        return _fallback_docs_lane(state) if _dominant_lane(state) == "docs" else _fallback_remaining(state)
 
     raw_json = _extract_json(response)
     if not raw_json:
         logger.warning("[replanner] No JSON in response, using fallback")
-        return _fallback_remaining(state)
+        return _fallback_docs_lane(state) if _dominant_lane(state) == "docs" else _fallback_remaining(state)
 
     try:
         data = json.loads(raw_json)
     except json.JSONDecodeError as e:
         logger.warning("[replanner] Invalid JSON: %s, using fallback", e)
-        return _fallback_remaining(state)
+        return _fallback_docs_lane(state) if _dominant_lane(state) == "docs" else _fallback_remaining(state)
 
     if not isinstance(data, dict) or "steps" not in data:
         logger.warning("[replanner] Missing steps in response, using fallback")
-        return _fallback_remaining(state)
+        return _fallback_docs_lane(state) if _dominant_lane(state) == "docs" else _fallback_remaining(state)
 
     steps = data.get("steps")
     if not isinstance(steps, list):
-        return _fallback_remaining(state)
+        return _fallback_docs_lane(state) if _dominant_lane(state) == "docs" else _fallback_remaining(state)
 
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
@@ -186,23 +232,13 @@ def replan(
     data = normalize_actions(data)
     if not validate_plan(data):
         logger.warning("[replanner] Validation failed, using fallback")
-        return _fallback_remaining(state)
+        return _fallback_docs_lane(state) if _dominant_lane(state) == "docs" else _fallback_remaining(state)
 
-    # Phase 5B: preserve docs lane across replans unless explicitly changed.
-    # Phase 5B.1: preserve docs mode only under explicit lineage:
-    # - failed_step artifact_mode == "docs", OR
-    # - the active plan being replanned is explicitly docs-lane by structure.
-    try:
-        if _should_preserve_docs_mode(state, failed_step):
-            for s in (data.get("steps") or []):
-                if not isinstance(s, dict):
-                    continue
-                action = (s.get("action") or "").upper()
-                if action in _DOCS_PRESERVE_ACTIONS:
-                    if "artifact_mode" not in s:
-                        s["artifact_mode"] = "docs"
-    except Exception as e:
-        logger.debug("[replanner] artifact_mode preservation skipped: %s", e)
+    # Phase 6A: dominant lane lock is the source of truth.
+    # Do not silently coerce missing artifact_mode for docs-compatible actions; reject and fallback.
+    if not _enforce_replan_lane_contract(state, data):
+        logger.warning("[replanner] Lane contract violation in replanned plan, using lane-consistent fallback")
+        return _fallback_docs_lane(state) if _dominant_lane(state) == "docs" else _fallback_remaining(state)
 
     # Phase 4: replanned plan always gets a new plan_id (do not reuse previous).
     data["plan_id"] = new_plan_id()

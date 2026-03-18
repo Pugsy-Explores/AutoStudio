@@ -29,6 +29,65 @@ logger = logging.getLogger(__name__)
 
 _tool_graph = ToolGraph()
 
+_DOCS_COMPATIBLE_ACTIONS = ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN")
+
+
+def _lane_violation(state: AgentState, *, message: str, step: dict | None = None) -> dict:
+    """Return a deterministic lane contract breach response (FATAL_FAILURE)."""
+    trace_id = (state.context or {}).get("trace_id") if state else None
+    payload = {
+        "error": "lane_violation",
+        "message": message,
+        "dominant_artifact_mode": (state.context or {}).get("dominant_artifact_mode", "code") if state else "code",
+        "step_action": ((step or {}).get("action") or "").upper() if isinstance(step, dict) else "",
+        "step_artifact_mode": (step or {}).get("artifact_mode") if isinstance(step, dict) else None,
+    }
+    try:
+        if state and isinstance(state.context, dict):
+            state.context.setdefault("lane_violations", []).append(payload)
+    except Exception:
+        pass
+    if trace_id:
+        try:
+            log_event(trace_id, "lane_violation", {k: v for k, v in payload.items() if k != "message"} | {"message": message[:200]})
+        except Exception:
+            pass
+    return {
+        "success": False,
+        "output": {},
+        "error": f"lane_violation: {message}",
+        "classification": ResultClassification.FATAL_FAILURE.value,
+    }
+
+
+def _enforce_runtime_lane_contract(step: dict, state: AgentState) -> dict | None:
+    """
+    Phase 6A: runtime enforcement for single-lane per task.
+    Returns an error dict when violation occurs; otherwise None.
+    """
+    dom = (state.context or {}).get("dominant_artifact_mode", "code")
+    if dom not in ("code", "docs"):
+        dom = "code"
+    action = (step.get("action") or "EXPLAIN").upper()
+
+    if dom == "docs":
+        # Only docs-compatible actions allowed.
+        if action not in _DOCS_COMPATIBLE_ACTIONS:
+            return _lane_violation(state, message=f"dominant docs lane forbids action {action!r}", step=step)
+        # Docs-compatible actions must explicitly carry artifact_mode="docs" (no silent defaulting).
+        if step.get("artifact_mode") != "docs":
+            return _lane_violation(
+                state,
+                message=f"dominant docs lane requires explicit artifact_mode='docs' for action {action!r}",
+                step=step,
+            )
+        return None
+
+    # dom == "code": no docs steps allowed.
+    if step.get("artifact_mode") == "docs":
+        return _lane_violation(state, message="dominant code lane forbids artifact_mode='docs' steps", step=step)
+    return None
+
 
 def _get_retrieval_cache_size() -> int:
     """Read at runtime so RETRIEVAL_CACHE_SIZE env is respected in tests."""
@@ -421,6 +480,10 @@ def dispatch(step: dict, state: AgentState) -> dict:
             "error": f"Invalid artifact_mode: {artifact_mode!r} (allowed: 'code', 'docs')",
             "classification": ResultClassification.FATAL_FAILURE.value,
         }
+    # Phase 6A: runtime lane contract enforcement (dominant lane is source of truth).
+    lane_err = _enforce_runtime_lane_contract(step, state)
+    if lane_err is not None:
+        return lane_err
     state.context["artifact_mode"] = artifact_mode
     print(f"[workflow] dispatch {action}")
 

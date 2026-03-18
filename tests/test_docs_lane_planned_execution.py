@@ -52,6 +52,8 @@ def test_planned_docs_lane_runs_end_to_end(tmp_path: Path):
             "ranked_context": [],
             "context_candidates": [],
             "ranking_scores": [],
+            "dominant_artifact_mode": "docs",
+            "lane_violations": [],
         },
     )
 

@@ -14,11 +14,15 @@ def _write(p: Path, text: str) -> None:
     p.write_text(text, encoding="utf-8")
 
 
-def _mk_state(project_root: str) -> AgentState:
+def _mk_state(project_root: str, *, dominant_artifact_mode: str = "code") -> AgentState:
     return AgentState(
         instruction="",
         current_plan={"plan_id": "t", "steps": []},
-        context={"project_root": project_root},
+        context={
+            "project_root": project_root,
+            "dominant_artifact_mode": dominant_artifact_mode,
+            "lane_violations": [],
+        },
     )
 
 
@@ -33,7 +37,7 @@ def test_docs_search_candidates_includes_docs_excludes_tests_and_vendor(tmp_path
     _write(root / ".venv" / "z.md", "# Should be excluded\n")
     _write(root / ".git" / "w.md", "# Should be excluded\n")
 
-    state = _mk_state(str(root))
+    state = _mk_state(str(root), dominant_artifact_mode="docs")
     out = dispatch(
         {"action": "SEARCH_CANDIDATES", "query": "readme docs install usage", "artifact_mode": "docs"},
         state,
@@ -56,7 +60,7 @@ def test_docs_build_context_populates_ranked_context(tmp_path: Path):
     _write(root / "README.md", "# Root Readme\nInstall steps...\nMore...\n")
     _write(root / "docs" / "guide.md", "# Guide\nUsage...\n")
 
-    state = _mk_state(str(root))
+    state = _mk_state(str(root), dominant_artifact_mode="docs")
     dispatch({"action": "SEARCH_CANDIDATES", "query": "install guide", "artifact_mode": "docs"}, state)
     out = dispatch({"action": "BUILD_CONTEXT", "artifact_mode": "docs"}, state)
     assert out["success"] is True
@@ -74,7 +78,7 @@ def test_docs_root_readme_ranks_above_nested_markdown(tmp_path: Path):
     _write(root / "sub" / "README.md", "# Sub Readme\nIrrelevant\n")
     _write(root / "docs" / "zzz.md", "# Z\nOther\n")
 
-    state = _mk_state(str(root))
+    state = _mk_state(str(root), dominant_artifact_mode="docs")
     out = dispatch({"action": "SEARCH_CANDIDATES", "query": "readme docs overview", "artifact_mode": "docs"}, state)
     cands = out["output"]["candidates"]
     assert cands
@@ -84,7 +88,7 @@ def test_docs_root_readme_ranks_above_nested_markdown(tmp_path: Path):
 
 def test_code_mode_search_candidates_path_unchanged_when_artifact_mode_absent(monkeypatch, tmp_path: Path):
     root = tmp_path
-    state = _mk_state(str(root))
+    state = _mk_state(str(root), dominant_artifact_mode="code")
 
     called = {"n": 0}
 
@@ -102,7 +106,7 @@ def test_code_mode_search_candidates_path_unchanged_when_artifact_mode_absent(mo
 
 def test_code_mode_search_candidates_same_when_artifact_mode_code_explicit(monkeypatch, tmp_path: Path):
     root = tmp_path
-    state = _mk_state(str(root))
+    state = _mk_state(str(root), dominant_artifact_mode="code")
 
     called = {"n": 0}
 
@@ -119,7 +123,7 @@ def test_code_mode_search_candidates_same_when_artifact_mode_code_explicit(monke
 
 
 def test_invalid_artifact_mode_fails_cleanly(tmp_path: Path):
-    state = _mk_state(str(tmp_path))
+    state = _mk_state(str(tmp_path), dominant_artifact_mode="code")
     out = dispatch({"action": "SEARCH_CANDIDATES", "query": "x", "artifact_mode": "nope"}, state)
     assert out["success"] is False
     assert "Invalid artifact_mode" in (out.get("error") or "")
@@ -135,14 +139,14 @@ def test_docs_mode_explain_gate_never_calls_search_fn(monkeypatch, tmp_path: Pat
     monkeypatch.setattr("agent.execution.step_dispatcher._search_fn", boom)
 
     # Force context gate path: no ranked_context initially.
-    state = _mk_state(str(root))
+    state = _mk_state(str(root), dominant_artifact_mode="docs")
     out = dispatch({"action": "EXPLAIN", "description": "Where are the docs?", "artifact_mode": "docs"}, state)
     # Model call may fail depending on environment; invariant is _search_fn not called.
     assert out is not None
 
 def test_code_mode_build_context_calls_run_retrieval_pipeline_when_artifact_mode_absent(monkeypatch, tmp_path: Path):
     root = tmp_path
-    state = _mk_state(str(root))
+    state = _mk_state(str(root), dominant_artifact_mode="code")
     state.context["query"] = "q"
     state.context["candidates"] = [{"file": "a.py", "symbol": "", "snippet": "x", "score": 1.0, "source": "bm25"}]
 
@@ -163,7 +167,7 @@ def test_code_mode_build_context_calls_run_retrieval_pipeline_when_artifact_mode
 def test_docs_mode_build_context_does_not_call_run_retrieval_pipeline(monkeypatch, tmp_path: Path):
     root = tmp_path
     _write(root / "README.md", "# Root Readme\nInstall steps...\n")
-    state = _mk_state(str(root))
+    state = _mk_state(str(root), dominant_artifact_mode="docs")
     dispatch({"action": "SEARCH_CANDIDATES", "query": "install", "artifact_mode": "docs"}, state)
 
     def boom(*args, **kwargs):
@@ -227,7 +231,7 @@ def test_docs_lane_isolation_fence_no_code_retrieval_calls(monkeypatch, tmp_path
     monkeypatch.setattr("agent.execution.step_dispatcher.call_small_model", lambda *_a, **_k: "ok")
     monkeypatch.setattr("agent.execution.step_dispatcher.call_reasoning_model", lambda *_a, **_k: "ok")
 
-    state = _mk_state(str(root))
+    state = _mk_state(str(root), dominant_artifact_mode="docs")
 
     # docs SEARCH_CANDIDATES must still succeed
     out = dispatch({"action": "SEARCH_CANDIDATES", "query": "install guide", "artifact_mode": "docs"}, state)
@@ -242,7 +246,7 @@ def test_docs_lane_isolation_fence_no_code_retrieval_calls(monkeypatch, tmp_path
     assert all(r.get("artifact_type") == "doc" for r in ranked)
 
     # docs EXPLAIN auto-context path must still succeed (and not call any patched internals)
-    state2 = _mk_state(str(root))
+    state2 = _mk_state(str(root), dominant_artifact_mode="docs")
     out3 = dispatch({"action": "EXPLAIN", "description": "How do I install?", "artifact_mode": "docs"}, state2)
     assert out3["success"] is True
     assert isinstance(out3.get("output"), str) and out3["output"].strip()

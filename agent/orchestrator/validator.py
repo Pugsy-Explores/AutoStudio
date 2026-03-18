@@ -81,6 +81,20 @@ def _validate_step_rules(
     When valid=False, feedback is the reason for the replanner.
     """
     action = (step.get("action") or "EXPLAIN").upper()
+    # Phase 6A: lane-aware validation guard (defense-in-depth).
+    if state and isinstance(getattr(state, "context", None), dict):
+        dom = state.context.get("dominant_artifact_mode", "code")
+        if dom not in ("code", "docs"):
+            dom = "code"
+        step_am = step.get("artifact_mode") if isinstance(step, dict) else None
+        if dom == "docs":
+            if action not in ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN"):
+                return False, f"lane_violation: dominant docs lane forbids action {action!r}"
+            if step_am != "docs":
+                return False, "lane_violation: dominant docs lane requires artifact_mode='docs' on docs-compatible steps"
+        else:
+            if step_am == "docs":
+                return False, "lane_violation: dominant code lane forbids artifact_mode='docs' steps"
     if not result.success:
         return False, result.error or "Step execution failed"
 

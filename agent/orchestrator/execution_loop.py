@@ -234,6 +234,8 @@ def execution_loop(
                     "success": result.success,
                     "error": getattr(result, "error", None),
                     "classification": classification,
+                    "dominant_artifact_mode": state.context.get("dominant_artifact_mode", "code"),
+                    "step_artifact_mode": step.get("artifact_mode") if isinstance(step, dict) else None,
                 },
             )
 

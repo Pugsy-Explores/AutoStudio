@@ -6,6 +6,7 @@ from agent.memory.state import AgentState
 from agent.observability.trace_logger import log_event
 from agent.orchestrator.execution_loop import ExecutionLoopMode, execution_loop
 from agent.orchestrator.plan_resolver import get_plan
+from planner.planner_utils import is_explicit_docs_lane_by_structure
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,8 @@ def run_deterministic(
     if trace_id:
         log_fn(trace_id, "planner_decision", {"plan": plan_result})
 
+    dominant_artifact_mode = "docs" if is_explicit_docs_lane_by_structure(plan_result) else "code"
+
     state = AgentState(
         instruction=instruction,
         current_plan=plan_result,
@@ -52,8 +55,19 @@ def run_deterministic(
             "instruction": instruction,
             "trace_id": trace_id,
             "similar_past_tasks": similar_tasks or [],
+            # Phase 6A: single-lane per task. Set once; immutable for the task/attempt.
+            "dominant_artifact_mode": dominant_artifact_mode,
+            "lane_violations": [],
         },
     )
+
+    if trace_id:
+        # Log once per deterministic attempt start.
+        log_fn(
+            trace_id,
+            "dominant_artifact_mode",
+            {"dominant_artifact_mode": dominant_artifact_mode, "plan_id": plan_result.get("plan_id")},
+        )
 
     result = execution_loop(
         state,

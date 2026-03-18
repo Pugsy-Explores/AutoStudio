@@ -41,6 +41,9 @@ class AgentWorkspace:
                 "ranked_context": [],
                 "context_candidates": [],
                 "ranking_scores": [],
+                # Phase 6A: workspace starts in code lane (no docs plan).
+                "dominant_artifact_mode": "code",
+                "lane_violations": [],
             },
         )
         return cls(goal=goal, state=state)

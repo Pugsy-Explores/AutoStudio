@@ -20,6 +20,7 @@ from agent.memory.state import AgentState
 from agent.observability.trace_logger import finish_trace, log_event, start_trace
 from agent.orchestrator.execution_loop import ExecutionLoopMode, execution_loop
 from agent.orchestrator.plan_resolver import get_plan
+from planner.planner_utils import is_explicit_docs_lane_by_structure
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def run_agent(instruction: str) -> AgentState:
 
     try:
         plan_result = get_plan(instruction, trace_id=trace_id, log_event_fn=log_event)
+        dominant_artifact_mode = "docs" if is_explicit_docs_lane_by_structure(plan_result) else "code"
         state = AgentState(
             instruction=instruction,
             current_plan=plan_result,
@@ -57,8 +59,13 @@ def run_agent(instruction: str) -> AgentState:
                 "ranked_context": [],
                 "context_candidates": [],
                 "ranking_scores": [],
+                # Phase 6A: single-lane per task. Set once at entrypoint.
+                "dominant_artifact_mode": dominant_artifact_mode,
+                "lane_violations": [],
             },
         )
+        # Emit once (matches deterministic runner trace pattern).
+        log_event(trace_id, "dominant_artifact_mode", {"dominant_artifact_mode": dominant_artifact_mode, "plan_id": plan_result.get("plan_id")})
 
         result = execution_loop(
             state,

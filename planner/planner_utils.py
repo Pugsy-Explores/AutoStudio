@@ -8,6 +8,36 @@ _ALLOWED_SET = set(ALLOWED_ACTIONS)
 _ALLOWED_ARTIFACT_MODES = ("code", "docs")
 _ALLOWED_ARTIFACT_MODE_SET = set(_ALLOWED_ARTIFACT_MODES)
 
+# Phase 6A: docs-compatible actions for single-lane contract.
+DOCS_COMPATIBLE_ACTIONS = ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN")
+_DOCS_COMPATIBLE_SET = set(DOCS_COMPATIBLE_ACTIONS)
+
+
+def is_explicit_docs_lane_by_structure(plan_dict: dict | None) -> bool:
+    """
+    True when the plan is explicitly docs-lane by structure (explicit signal only).
+
+    Rule (narrow, deterministic):
+    - Consider only docs-compatible actions: SEARCH_CANDIDATES, BUILD_CONTEXT, EXPLAIN.
+    - For every step with one of those actions, artifact_mode must be explicitly "docs".
+    - At least one such step must exist.
+    """
+    if not plan_dict or not isinstance(plan_dict, dict):
+        return False
+    steps = plan_dict.get("steps") or []
+    if not isinstance(steps, list):
+        return False
+    seen = 0
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        action = (s.get("action") or "").upper()
+        if action in _DOCS_COMPATIBLE_SET:
+            seen += 1
+            if s.get("artifact_mode") != "docs":
+                return False
+    return seen > 0
+
 
 def validate_plan(plan_dict: dict) -> bool:
     """
@@ -30,6 +60,32 @@ def validate_plan(plan_dict: dict) -> bool:
             am = step.get("artifact_mode")
             if am not in _ALLOWED_ARTIFACT_MODE_SET:
                 return False
+
+    # Phase 6A: single-lane per task (Option A) plan-level contract.
+    # Deterministic rules only; do not infer from instruction text.
+    has_any_docs_step = any(
+        isinstance(s, dict) and s.get("artifact_mode") == "docs" for s in (steps or [])
+    )
+    docs_by_structure = is_explicit_docs_lane_by_structure(plan_dict)
+    if has_any_docs_step or docs_by_structure:
+        # Docs-lane plan: forbid code-only actions and require explicit docs artifact_mode
+        # on all docs-compatible actions present in the plan.
+        for s in steps:
+            if not isinstance(s, dict):
+                return False
+            a = (s.get("action") or "").upper()
+            if a in ("SEARCH", "EDIT"):
+                return False
+            if a in _DOCS_COMPATIBLE_SET:
+                # Must be explicitly present and set to "docs". No silent defaulting.
+                if s.get("artifact_mode") != "docs":
+                    return False
+        return True
+
+    # Code-lane plan: no docs steps allowed.
+    for s in steps:
+        if isinstance(s, dict) and s.get("artifact_mode") == "docs":
+            return False
     return True
 
 

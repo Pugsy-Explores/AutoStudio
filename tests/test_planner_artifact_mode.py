@@ -151,3 +151,43 @@ def test_planner_invalid_json_fallback_is_docs_shaped_with_docs_lineage():
     assert [s.get("action") for s in steps] == ["SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN"]
     assert all(s.get("artifact_mode") == "docs" for s in steps)
 
+
+def test_validate_plan_rejects_mixed_lane_docs_and_search():
+    # Mixed-lane plan (docs step + code SEARCH) must be invalid under Phase 6A.
+    data = normalize_actions(
+        {
+            "steps": [
+                {"id": 1, "action": "SEARCH_CANDIDATES", "artifact_mode": "docs", "description": "Find docs", "reason": "r"},
+                {"id": 2, "action": "SEARCH", "description": "Search code too", "reason": "r"},
+            ]
+        }
+    )
+    assert validate_plan(data) is False
+
+
+def test_validate_plan_rejects_docs_lane_missing_artifact_mode_on_docs_compatible():
+    # If any docs lane is indicated, docs-compatible actions must explicitly be docs.
+    data = normalize_actions(
+        {
+            "steps": [
+                {"id": 1, "action": "SEARCH_CANDIDATES", "artifact_mode": "docs", "description": "Find docs", "reason": "r"},
+                {"id": 2, "action": "BUILD_CONTEXT", "description": "Build docs context", "reason": "r"},  # missing artifact_mode
+                {"id": 3, "action": "EXPLAIN", "artifact_mode": "docs", "description": "Explain", "reason": "r"},
+            ]
+        }
+    )
+    assert validate_plan(data) is False
+
+
+def test_validate_plan_rejects_code_lane_with_any_docs_step():
+    # Code-lane plans must not contain any artifact_mode='docs' step.
+    data = normalize_actions(
+        {
+            "steps": [
+                {"id": 1, "action": "SEARCH", "description": "Locate StepExecutor", "reason": "r"},
+                {"id": 2, "action": "EXPLAIN", "artifact_mode": "docs", "description": "Explain from docs", "reason": "r"},
+            ]
+        }
+    )
+    assert validate_plan(data) is False
+

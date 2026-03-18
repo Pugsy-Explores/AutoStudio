@@ -25,7 +25,7 @@ def _make_state(instruction: str, steps: list[dict], completed: list | None = No
         current_plan=plan,
         completed_steps=completed_steps,
         step_results=[],
-        context={},
+        context={"dominant_artifact_mode": "code", "lane_violations": []},
     )
 
 
@@ -102,7 +102,7 @@ def test_replan_fallback_on_invalid_json():
 
 
 def test_replanner_preserves_docs_artifact_mode_when_omitted_by_llm():
-    # Current plan is docs-mode; replanner LLM returns retrieval steps without artifact_mode.
+    # Dominant docs lane: replanner output that omits artifact_mode must be rejected (no silent coercion).
     state = _make_state(
         "where are readmes and docs",
         [
@@ -111,6 +111,7 @@ def test_replanner_preserves_docs_artifact_mode_when_omitted_by_llm():
             {"id": 3, "action": "EXPLAIN", "description": "Explain docs", "reason": "r", "artifact_mode": "docs"},
         ],
     )
+    state.context["dominant_artifact_mode"] = "docs"
     failed = {"id": 1, "action": "SEARCH_CANDIDATES", "description": "Find docs", "reason": "r", "artifact_mode": "docs"}
     mock_response = (
         '{"steps": ['
@@ -126,9 +127,8 @@ def test_replanner_preserves_docs_artifact_mode_when_omitted_by_llm():
         result = replan(state, failed_step=failed, error="some error")
 
     steps = result.get("steps") or []
-    assert steps[0].get("artifact_mode") == "docs"
-    assert steps[1].get("artifact_mode") == "docs"
-    assert steps[2].get("artifact_mode") == "docs"
+    assert [s.get("action") for s in steps] == ["SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN"]
+    assert all(s.get("artifact_mode") == "docs" for s in steps), "fallback must be lane-consistent docs plan"
 
 
 def test_replanner_does_not_preserve_docs_mode_for_mixed_plan_noise():
@@ -161,7 +161,7 @@ def test_replanner_does_not_preserve_docs_mode_for_mixed_plan_noise():
 
 
 def test_replanner_respects_explicit_artifact_mode_from_llm_and_never_sets_docs_on_edit_search():
-    # Docs lineage via failed_step, but replanner explicitly sets artifact_mode="code" on EXPLAIN and includes SEARCH/EDIT.
+    # Dominant docs lane: replanner must reject SEARCH/EDIT (fallback to docs-only plan).
     state = _make_state(
         "docs",
         [
@@ -170,6 +170,7 @@ def test_replanner_respects_explicit_artifact_mode_from_llm_and_never_sets_docs_
             {"id": 3, "action": "EXPLAIN", "description": "Explain docs", "reason": "r", "artifact_mode": "docs"},
         ],
     )
+    state.context["dominant_artifact_mode"] = "docs"
     failed = {"id": 3, "action": "EXPLAIN", "description": "Explain docs", "reason": "r", "artifact_mode": "docs"}
     mock_response = (
         '{"steps": ['
@@ -185,9 +186,57 @@ def test_replanner_respects_explicit_artifact_mode_from_llm_and_never_sets_docs_
         result = replan(state, failed_step=failed, error="boom")
 
     steps = result.get("steps") or []
-    assert steps[0].get("action") == "SEARCH"
-    assert "artifact_mode" not in steps[0]
-    assert steps[1].get("action") == "EDIT"
-    assert "artifact_mode" not in steps[1]
-    assert steps[2].get("action") == "EXPLAIN"
-    assert steps[2].get("artifact_mode") == "code"
+    assert [s.get("action") for s in steps] == ["SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN"]
+    assert all(s.get("artifact_mode") == "docs" for s in steps)
+
+
+def test_replanner_dominant_docs_rejects_docs_compatible_missing_artifact_mode():
+    state = _make_state(
+        "docs",
+        [
+            {"id": 1, "action": "SEARCH_CANDIDATES", "description": "Find docs", "reason": "r", "artifact_mode": "docs"},
+            {"id": 2, "action": "BUILD_CONTEXT", "description": "Build docs context", "reason": "r", "artifact_mode": "docs"},
+            {"id": 3, "action": "EXPLAIN", "description": "Explain docs", "reason": "r", "artifact_mode": "docs"},
+        ],
+    )
+    state.context["dominant_artifact_mode"] = "docs"
+    failed = {"id": 1, "action": "SEARCH_CANDIDATES", "description": "Find docs", "reason": "r", "artifact_mode": "docs"}
+    mock_response = (
+        '{"steps": ['
+        '{"id": 1, "action": "SEARCH_CANDIDATES", "artifact_mode": "docs", "description": "Retry", "reason": "r", "query": "x"},'
+        '{"id": 2, "action": "BUILD_CONTEXT", "description": "Build", "reason": "r"},'
+        '{"id": 3, "action": "EXPLAIN", "artifact_mode": "docs", "description": "Explain", "reason": "r"}'
+        ']}'
+    )
+    with (
+        patch("agent.orchestrator.replanner.get_model_for_task", return_value=ModelType.REASONING),
+        patch("agent.orchestrator.replanner.call_reasoning_model", return_value=mock_response),
+    ):
+        result = replan(state, failed_step=failed, error="boom")
+    steps = result.get("steps") or []
+    assert [s.get("action") for s in steps] == ["SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN"]
+    assert all(s.get("artifact_mode") == "docs" for s in steps)
+
+
+def test_replanner_dominant_code_rejects_any_docs_step():
+    state = _make_state(
+        "code",
+        [
+            {"id": 1, "action": "SEARCH", "description": "Find", "reason": "r"},
+        ],
+    )
+    state.context["dominant_artifact_mode"] = "code"
+    failed = {"id": 1, "action": "SEARCH", "description": "Find", "reason": "r"}
+    mock_response = (
+        '{"steps": ['
+        '{"id": 1, "action": "EXPLAIN", "artifact_mode": "docs", "description": "Explain from docs", "reason": "r"}'
+        ']}'
+    )
+    with (
+        patch("agent.orchestrator.replanner.get_model_for_task", return_value=ModelType.REASONING),
+        patch("agent.orchestrator.replanner.call_reasoning_model", return_value=mock_response),
+    ):
+        result = replan(state, failed_step=failed, error="boom")
+    # Code-lane fallback is remaining steps (SEARCH) and must not contain docs artifact_mode.
+    steps = result.get("steps") or []
+    assert all(s.get("artifact_mode") != "docs" for s in steps if isinstance(s, dict))

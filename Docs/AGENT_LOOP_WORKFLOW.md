@@ -149,6 +149,21 @@ Step identity is **plan-scoped** to fix the step ID collision bug during replann
 
 ## Step dispatch (action routing)
 
+### Phase 6A — Single-lane per task (`dominant_artifact_mode`)
+
+Phase 6A freezes a single dominant artifact lane per task/attempt.
+
+- **Task-level lock**: `state.context["dominant_artifact_mode"]` ∈ `"code"` \| `"docs"` (immutable for the attempt)
+- **Evidence**: traces include `dominant_artifact_mode` and `step_artifact_mode` on each `step_executed` event
+- **Contract**:
+  - Dominant `"docs"`: only `SEARCH_CANDIDATES` / `BUILD_CONTEXT` / `EXPLAIN` allowed; those steps must explicitly set `artifact_mode="docs"`; `SEARCH`/`EDIT` forbidden
+  - Dominant `"code"`: any `artifact_mode="docs"` step is forbidden
+- **Enforcement**:
+  - planner validation rejects mixed-lane plans
+  - replanner must not switch lane
+  - dispatcher returns `lane_violation` with **FATAL_FAILURE** on contract breach
+  - deterministic goal evaluation refuses success when lane violations occurred
+
 ```mermaid
 flowchart LR
     M["dispatch"] --> T["ToolGraph.get_allowed_tools"]

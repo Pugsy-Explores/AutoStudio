@@ -49,6 +49,8 @@ AutoStudio converts natural-language instructions into executable plans, runs co
 
 Mode 1 (deterministic) uses **run_controller** → **run_attempt_loop** (Phase 5): up to `MAX_AGENT_ATTEMPTS` per task; each attempt runs plan → **execution_loop** (shared step loop) → **GoalEvaluator** → on failure: **Critic** + **RetryPlanner** → next attempt with `retry_context`. Both `run_deterministic` and the deprecated `run_agent` use **execution_loop()** (Phase 3); behavior differs by flags (goal evaluator on/off, step retries on/off). **Phase 4** scopes step identity by `plan_id` so replanned plans do not skip steps when reusing step ids. See [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md), [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md#phase-4--plan-identity), and [Docs/AGENT_CONTROLLER.md](Docs/AGENT_CONTROLLER.md).
 
+**Phase 6A (single-lane per task)** freezes an immutable task-level lane lock: `state.context["dominant_artifact_mode"]` ∈ `"code"` \| `"docs"`. Planner validation rejects mixed-lane plans; replanner cannot switch lanes; dispatcher hard-fails lane violations; deterministic goal evaluation refuses success if lane violations occurred. See [Docs/RETRIEVAL_ARCHITECTURE.md](Docs/RETRIEVAL_ARCHITECTURE.md#phase-6a--single-lane-per-task-option-a) and [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md#phase-6a--single-lane-per-task-dominant_artifact_mode).
+
 ```mermaid
 flowchart TB
     subgraph Entry

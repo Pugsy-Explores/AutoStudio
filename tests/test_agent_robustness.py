@@ -218,7 +218,8 @@ def test_agent_replans_on_edit_failure(tmp_path):
                         {"id": 2, "action": "EDIT", "description": "modify foo", "reason": "r2"},
                     ],
                 }
-                with patch("agent.orchestrator.deterministic_runner.dispatch") as mock_dispatch:
+                # StepExecutor imports dispatch into agent.execution.executor at import time.
+                with patch("agent.execution.executor.dispatch") as mock_dispatch:
                     call_count = 0
 
                     def mock_dispatch_fn(step, state):

@@ -140,6 +140,9 @@ def run_autonomous(
             "ranked_context": [],
             "context_candidates": [],
             "ranking_scores": [],
+            # Phase 6A: autonomous loop is code-lane by default (no planner-derived lane).
+            "dominant_artifact_mode": "code",
+            "lane_violations": [],
         },
     )
 

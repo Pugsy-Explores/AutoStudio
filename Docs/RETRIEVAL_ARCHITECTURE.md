@@ -58,6 +58,62 @@ The retrieval lane remains explicit and is **not inferred** inside retrieval. Wh
 - **Planner fallback shape**: when planner output is invalid, the fallback remains a single `SEARCH` step **unless** there is an explicit docs-lane lineage signal (either the parsed plan contained valid `artifact_mode="docs"` on docs-compatible steps, or `retry_context.previous_attempts` contains a prior docs-lane plan). In that explicit lineage case, the fallback is docs-shaped: `SEARCH_CANDIDATES → BUILD_CONTEXT → EXPLAIN`, all with `artifact_mode="docs"`.
 - **Replanner preservation rule (narrow)**: docs-mode is preserved only when the failed step is explicitly docs-mode, or when the active plan being replanned is explicitly docs-lane **by structure** (all docs-compatible steps are explicitly `artifact_mode="docs"`). This avoids leaking docs mode into unrelated replans.
 
+## Phase 6A — Single-lane per task (Option A)
+
+Phase 6A freezes a **single dominant artifact lane per task/attempt**. The lane is explicit and immutable.
+
+### Task-level lane lock: `dominant_artifact_mode`
+
+Every production-capable execution entrypoint initializes:
+
+- `state.context["dominant_artifact_mode"]`: `"code"` or `"docs"`
+- `state.context["lane_violations"] = []`
+
+**Selection rule (deterministic):**
+
+- Dominant lane is `"docs"` **iff** the resolved plan is explicitly docs-lane **by structure** for docs-compatible actions.
+- Otherwise dominant lane is `"code"`.
+
+Once set, `dominant_artifact_mode` is the **source of truth** for lane enforcement. Per-step `state.context["artifact_mode"]` may still reflect the current step, but it must never override the dominant lane lock.
+
+### Docs-compatible actions
+
+Docs-compatible actions are:
+
+- `SEARCH_CANDIDATES`
+- `BUILD_CONTEXT`
+- `EXPLAIN`
+
+### Dominant docs lane contract
+
+When `dominant_artifact_mode="docs"`:
+
+- **Allowed actions**: `SEARCH_CANDIDATES`, `BUILD_CONTEXT`, `EXPLAIN`
+- **Forbidden actions**: `SEARCH`, `EDIT` (and any other non-docs-compatible action)
+- **Explicitness requirement**: every docs-compatible step executed must explicitly set `artifact_mode="docs"` (no silent defaulting)
+
+### Dominant code lane contract
+
+When `dominant_artifact_mode="code"`:
+
+- Code behavior remains default.
+- **Forbidden**: any step with `artifact_mode="docs"`
+
+### Enforcement points (frozen behavior)
+
+- **Planner-time**: plan validation rejects mixed-lane plans (docs steps mixed with `SEARCH`/`EDIT`, or docs-compatible steps missing explicit `artifact_mode="docs"` when docs lane is indicated).
+- **Replanner-time**: replans must remain in the dominant lane; lane-violating replans are rejected and replaced with a lane-consistent fallback.
+- **Dispatcher runtime gate**: lane violations return a deterministic `lane_violation` error and **FATAL_FAILURE**.
+- **Deterministic success path**: goal evaluation refuses success if any lane violations occurred (even if EXPLAIN otherwise succeeds).
+- **Observability**: traces record `dominant_artifact_mode` and per-step lane fields (`dominant_artifact_mode`, `step_artifact_mode`) in step execution events.
+
+### Production-capable entrypoints that initialize the lane lock
+
+- Deterministic runner path: `run_controller` → `run_attempt_loop` → `run_deterministic`
+- Orchestrator agent loop (deprecated): `agent/orchestrator/agent_loop.py::run_agent`
+- Autonomous mode: `agent/autonomous/agent_loop.py::run_autonomous`
+- Multi-agent workspace state creation: `agent/roles/workspace.py::AgentWorkspace.from_goal`
+
 See also:
 - [CODING_AGENT_ARCHITECTURE_GUIDE.md](CODING_AGENT_ARCHITECTURE_GUIDE.md) — end-to-end agent architecture
 - [REPOSITORY_SYMBOL_GRAPH.md](REPOSITORY_SYMBOL_GRAPH.md) — symbol graph and graph expansion
