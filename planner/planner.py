@@ -40,6 +40,110 @@ def _extract_json(text: str) -> str | None:
     return None
 
 
+_DOCS_LANE_ACTIONS = ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN")
+
+
+def _has_explicit_docs_lane_steps(plan_dict: dict) -> bool:
+    """
+    True when the parsed plan explicitly uses docs lane on docs-compatible actions.
+    This is an explicit signal only (artifact_mode must equal 'docs').
+    """
+    if not isinstance(plan_dict, dict):
+        return False
+    steps = plan_dict.get("steps") or []
+    if not isinstance(steps, list):
+        return False
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        action = (s.get("action") or "").upper()
+        if action in _DOCS_LANE_ACTIONS and s.get("artifact_mode") == "docs":
+            return True
+    return False
+
+
+def _retry_context_has_docs_lane_lineage(retry_context: dict | None) -> bool:
+    """
+    True when retry_context explicitly indicates docs lane from previous attempts.
+    Uses only structured prior plan data; does not infer from instruction text.
+    """
+    if not retry_context or not isinstance(retry_context, dict):
+        return False
+    previous_attempts = retry_context.get("previous_attempts") or []
+    if not isinstance(previous_attempts, list):
+        return False
+    for att in previous_attempts:
+        if not isinstance(att, dict):
+            continue
+        plan_att = att.get("plan") or {}
+        if _has_explicit_docs_lane_steps(plan_att):
+            return True
+    return False
+
+
+def _build_controlled_fallback_plan(
+    instruction: str,
+    *,
+    retry_context: dict | None,
+    parsed_plan: dict | None = None,
+    error: str,
+    reason: str,
+) -> dict:
+    """
+    Planner controlled fallback (Phase 5B.2).
+
+    Fallback is lane-aware only when explicit docs lineage exists:
+    - from valid parsed steps with artifact_mode="docs" on docs-compatible actions, OR
+    - from retry_context.previous_attempts containing a prior docs-lane plan.
+
+    Shapes:
+    - docs lane: SEARCH_CANDIDATES -> BUILD_CONTEXT -> EXPLAIN with artifact_mode='docs'
+    - code lane: single SEARCH
+    """
+    docs_lane = _has_explicit_docs_lane_steps(parsed_plan or {}) or _retry_context_has_docs_lane_lineage(
+        retry_context
+    )
+    if docs_lane:
+        return {
+            "steps": [
+                {
+                    "id": 1,
+                    "action": "SEARCH_CANDIDATES",
+                    "artifact_mode": "docs",
+                    "description": "Find README/docs artifacts",
+                    "query": "readme docs",
+                    "reason": reason,
+                },
+                {
+                    "id": 2,
+                    "action": "BUILD_CONTEXT",
+                    "artifact_mode": "docs",
+                    "description": "Build docs context from candidates",
+                    "reason": "Read top docs files",
+                },
+                {
+                    "id": 3,
+                    "action": "EXPLAIN",
+                    "artifact_mode": "docs",
+                    "description": "Answer using docs context",
+                    "reason": "Complete docs-shaped fallback plan",
+                },
+            ],
+            "error": error,
+        }
+    return {
+        "steps": [
+            {
+                "id": 1,
+                "action": "SEARCH",
+                "description": f"Locate items mentioned in: {instruction[:200]}{'...' if len(instruction) > 200 else ''}",
+                "reason": reason,
+            }
+        ],
+        "error": error,
+    }
+
+
 def plan(instruction: str, retry_context: dict | None = None) -> dict:
     """
     Convert instruction into a structured plan: list of steps with action, description, reason.
@@ -101,46 +205,34 @@ Focus on actions that address the failure reason."""
             prompt_name="planner",
         )
     except Exception as e:
-        return {
-            "steps": [
-                {
-                    "id": 1,
-                    "action": "EXPLAIN",
-                    "description": "Handle instruction (LLM call failed)",
-                    "reason": str(e),
-                }
-            ],
-            "error": str(e),
-        }
+        return _build_controlled_fallback_plan(
+            instruction,
+            retry_context=retry_context,
+            parsed_plan=None,
+            error=str(e),
+            reason="Planner LLM call failed; controlled fallback",
+        )
 
     raw_json = _extract_json(response)
     if not raw_json:
-        return {
-            "steps": [
-                {
-                    "id": 1,
-                    "action": "SEARCH",
-                    "description": f"Locate items mentioned in: {instruction[:200]}{'...' if len(instruction) > 200 else ''}",
-                    "reason": "Parse failed; fallback to search",
-                }
-            ],
-            "error": "No JSON found in response",
-        }
+        return _build_controlled_fallback_plan(
+            instruction,
+            retry_context=retry_context,
+            parsed_plan=None,
+            error="No JSON found in response",
+            reason="Parse failed; controlled fallback",
+        )
 
     try:
         data = json.loads(raw_json)
     except json.JSONDecodeError as e:
-        return {
-            "steps": [
-                {
-                    "id": 1,
-                    "action": "EXPLAIN",
-                    "description": "Handle instruction (invalid JSON)",
-                    "reason": str(e),
-                }
-            ],
-            "error": str(e),
-        }
+        return _build_controlled_fallback_plan(
+            instruction,
+            retry_context=retry_context,
+            parsed_plan=None,
+            error=str(e),
+            reason="Invalid JSON from planner; controlled fallback",
+        )
 
     if not isinstance(data, dict) or "steps" not in data:
         data = {"steps": []}
@@ -164,5 +256,12 @@ Focus on actions that address the failure reason."""
 
     data = normalize_actions(data)
     if not validate_plan(data):
-        data["error"] = "Validation failed: invalid or missing actions"
+        # Controlled fallback: planner produced an invalid plan structure.
+        return _build_controlled_fallback_plan(
+            instruction,
+            retry_context=retry_context,
+            parsed_plan=data,
+            error="Validation failed: invalid plan or invalid step fields",
+            reason="Planner output validation failed; controlled fallback",
+        )
     return data

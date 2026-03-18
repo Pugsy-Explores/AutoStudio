@@ -78,6 +78,17 @@ instructions: |
 
   When the user asks "how does X work" or "how does X route/handle Y", the SEARCH step should target implementation code, not tests. Prefer descriptions like "Locate X implementation in agent/execution" or "Find step_X or X module" over generic "Locate X".
 
+  OPTIONAL FIELD: artifact_mode
+
+  Steps MAY include an optional field:
+    "artifact_mode": "code" | "docs"
+
+  - Default behavior: omit artifact_mode (or use "code") for normal code tasks.
+  - Use artifact_mode="docs" ONLY when the user explicitly asks about documentation/readmes/architecture guides
+    and the correct source of truth is documentation files.
+  - Do NOT infer artifact_mode inside retrieval tools; you must set it explicitly on steps when needed.
+  - When using artifact_mode="docs", set it on SEARCH_CANDIDATES, BUILD_CONTEXT, and EXPLAIN steps.
+
   HALLUCINATION GUARDRAILS
 
   - Never invent file paths.
@@ -103,6 +114,18 @@ instructions: |
   New flow (SEARCH_CANDIDATES → BUILD_CONTEXT → EDIT):
   Instruction: "How does expand_graph work?"
   {"steps": [{"id": 1, "action": "SEARCH_CANDIDATES", "description": "Locate expand_graph implementation", "query": "expand_graph", "reason": "Find candidates"}, {"id": 2, "action": "BUILD_CONTEXT", "description": "Build context from candidates", "reason": "Expand and rank context"}, {"id": 3, "action": "EXPLAIN", "description": "Explain expand_graph behavior", "reason": "Answer user question"}]}
+
+  Docs discovery (explicit docs lane):
+  Instruction: "where are readmes and docs"
+  {"steps": [{"id": 1, "action": "SEARCH_CANDIDATES", "artifact_mode": "docs", "description": "Find README/docs artifacts", "query": "readme docs", "reason": "Need docs artifacts"}, {"id": 2, "action": "BUILD_CONTEXT", "artifact_mode": "docs", "description": "Build docs context from candidates", "reason": "Read top docs files"}, {"id": 3, "action": "EXPLAIN", "artifact_mode": "docs", "description": "List where the README/docs live and what they cover", "reason": "Answer using docs context"}]}
+
+  Docs explain (explicit docs lane):
+  Instruction: "explain what is inside the readme and docs"
+  {"steps": [{"id": 1, "action": "SEARCH_CANDIDATES", "artifact_mode": "docs", "description": "Find README/docs artifacts", "query": "readme docs overview", "reason": "Need docs artifacts"}, {"id": 2, "action": "BUILD_CONTEXT", "artifact_mode": "docs", "description": "Build docs context from candidates", "reason": "Read top docs files"}, {"id": 3, "action": "EXPLAIN", "artifact_mode": "docs", "description": "Explain what the README/docs contain", "reason": "Answer using docs context"}]}
+
+  Normal code query (default code lane):
+  Instruction: "where is StepExecutor implemented"
+  {"steps": [{"id": 1, "action": "SEARCH_CANDIDATES", "description": "Locate StepExecutor implementation", "query": "class StepExecutor", "reason": "Find implementation code"}, {"id": 2, "action": "BUILD_CONTEXT", "description": "Build context for StepExecutor", "reason": "Collect relevant code"}, {"id": 3, "action": "EXPLAIN", "description": "Explain where StepExecutor is implemented", "reason": "Answer question"}]}
 
   OUTPUT FORMAT
 

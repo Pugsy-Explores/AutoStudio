@@ -40,6 +40,15 @@ instructions: |
   6. Return strict JSON only:
   {"steps": [{"id": 1, "action": "SEARCH", "description": "...", "reason": "..."}, ...]}
 
+  OPTIONAL FIELD: artifact_mode
+
+  Steps MAY include an optional field:
+    "artifact_mode": "code" | "docs"
+
+  - If the failed step (or surrounding plan) was using artifact_mode="docs", you should preserve artifact_mode="docs"
+    on subsequent SEARCH_CANDIDATES, BUILD_CONTEXT, and EXPLAIN steps unless you explicitly change strategy.
+  - Do NOT drop artifact_mode accidentally when replanning.
+
   Prefer short responses. Avoid verbose explanations.
 
   Do not include explanations outside the JSON.

@@ -19,6 +19,44 @@ logger = logging.getLogger(__name__)
 
 REPLANNER_SYSTEM_PROMPT = get_registry().get_instructions("replanner")
 
+_DOCS_PRESERVE_ACTIONS = ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN")
+
+
+def _is_explicit_docs_lane_plan_by_structure(plan: dict | None) -> bool:
+    """
+    True when the *active plan being replanned* is explicitly docs-lane by structure.
+
+    Rule (narrow on purpose):
+    - Consider only docs-compatible actions: SEARCH_CANDIDATES, BUILD_CONTEXT, EXPLAIN.
+    - For every step with one of those actions, artifact_mode must be explicitly "docs".
+    - At least one such step must exist.
+
+    This prevents accidental preservation due to unrelated/mixed plans where a single docs step
+    is present but other retrieval/explain steps are code-lane (field missing/default code).
+    """
+    if not plan or not isinstance(plan, dict):
+        return False
+    steps = plan.get("steps") or []
+    if not isinstance(steps, list):
+        return False
+    seen = 0
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        action = (s.get("action") or "").upper()
+        if action in _DOCS_PRESERVE_ACTIONS:
+            seen += 1
+            if s.get("artifact_mode") != "docs":
+                return False
+    return seen > 0
+
+
+def _should_preserve_docs_mode(state: AgentState, failed_step: dict | None) -> bool:
+    """Explicit lineage rule for docs-mode preservation across replans."""
+    if isinstance(failed_step, dict) and failed_step.get("artifact_mode") == "docs":
+        return True
+    return _is_explicit_docs_lane_plan_by_structure(state.current_plan)
+
 
 def _extract_json(text: str) -> str | None:
     """Extract first valid JSON object from LLM output. Handles markdown fences, reasoning-before-JSON."""
@@ -149,6 +187,22 @@ def replan(
     if not validate_plan(data):
         logger.warning("[replanner] Validation failed, using fallback")
         return _fallback_remaining(state)
+
+    # Phase 5B: preserve docs lane across replans unless explicitly changed.
+    # Phase 5B.1: preserve docs mode only under explicit lineage:
+    # - failed_step artifact_mode == "docs", OR
+    # - the active plan being replanned is explicitly docs-lane by structure.
+    try:
+        if _should_preserve_docs_mode(state, failed_step):
+            for s in (data.get("steps") or []):
+                if not isinstance(s, dict):
+                    continue
+                action = (s.get("action") or "").upper()
+                if action in _DOCS_PRESERVE_ACTIONS:
+                    if "artifact_mode" not in s:
+                        s["artifact_mode"] = "docs"
+    except Exception as e:
+        logger.debug("[replanner] artifact_mode preservation skipped: %s", e)
 
     # Phase 4: replanned plan always gets a new plan_id (do not reuse previous).
     data["plan_id"] = new_plan_id()

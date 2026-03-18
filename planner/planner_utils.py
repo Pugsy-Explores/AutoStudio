@@ -5,6 +5,8 @@ Actions match router v2: EDIT, SEARCH, EXPLAIN, INFRA.
 
 ALLOWED_ACTIONS = ("EDIT", "SEARCH", "SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN", "INFRA")
 _ALLOWED_SET = set(ALLOWED_ACTIONS)
+_ALLOWED_ARTIFACT_MODES = ("code", "docs")
+_ALLOWED_ARTIFACT_MODE_SET = set(_ALLOWED_ARTIFACT_MODES)
 
 
 def validate_plan(plan_dict: dict) -> bool:
@@ -23,6 +25,11 @@ def validate_plan(plan_dict: dict) -> bool:
         action = step.get("action")
         if action not in _ALLOWED_SET:
             return False
+        # Phase 5B: optional retrieval lane selector.
+        if "artifact_mode" in step:
+            am = step.get("artifact_mode")
+            if am not in _ALLOWED_ARTIFACT_MODE_SET:
+                return False
     return True
 
 
