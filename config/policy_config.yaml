@@ -1,0 +1,45 @@
+policy_engine:
+  # Per-action retry and mutation policies for ExecutionPolicyEngine.
+  # These were previously hard-coded in agent/execution/policy_engine.py.
+  SEARCH:
+    max_attempts: 10
+    mutation: query_variants
+    retry_on:
+      - empty_results
+  EDIT:
+    max_attempts: 10
+    mutation: symbol_retry
+    retry_on:
+      - symbol_not_found
+  INFRA:
+    max_attempts: 10
+    mutation: retry_same
+    retry_on:
+      - non_zero_exit
+  EXPLAIN:
+    max_attempts: 5
+
+  # Failure type → recovery action dispatch table (used by agent loop).
+  failure_recovery_dispatch:
+    empty_results: rewrite_query_retry
+    invalid_step: replanner
+    patch_rejected: retry_edit
+    tool_error: fallback_tool
+
+  # Max snippet length stored in search_memory for EXPLAIN context.
+  search_memory_snippet_max: 5000
+
+safety_policy:
+  # Default safety policy values used when no explicit SafetyPolicy is provided.
+  allowed_tools:
+    - SEARCH
+    - READ
+    - EDIT
+    - EXPLAIN
+    - INFRA
+    - RUN_TEST
+    - BUILD_CONTEXT
+    - SEARCH_CANDIDATES
+  forbidden_operations: []
+  forbidden_patterns: []
+
