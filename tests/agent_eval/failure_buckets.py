@@ -77,6 +77,14 @@ def classify_failure_bucket(
     if "recursionerror" in text or "reranker inference failed" in text:
         return "infra_or_stub_failure"
 
+    et_early = loop_snapshot.get("edit_telemetry") if isinstance(loop_snapshot, dict) else None
+    if not isinstance(et_early, dict):
+        et_early = {}
+    pr_early = et_early.get("patch_reject_reason")
+    er_early = et_early.get("edit_failure_reason")
+    if pr_early == "validation_tests_failed" or er_early == "test_failure":
+        return "validation_regression"
+
     errs_list = loop_snapshot.get("errors_encountered") or []
     if not structural_success and isinstance(errs_list, list) and errs_list:
         joined = " ".join(str(e).lower() for e in errs_list)
@@ -89,10 +97,6 @@ def classify_failure_bucket(
         return "unknown"
 
     edit_reason = et.get("edit_failure_reason")
-    pr = et.get("patch_reject_reason")
-    if pr == "validation_tests_failed" or edit_reason == "test_failure":
-        # Patch applied in the edit loop but project tests failed (distinct from harness validation below).
-        return "validation_regression"
 
     if isinstance(edit_reason, str) and edit_reason in _EDIT_GROUNDING_CODES:
         return "edit_grounding_failure"
