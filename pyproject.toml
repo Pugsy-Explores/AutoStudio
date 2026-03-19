@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "openai>=1.0.0",
     "PyYAML>=6.0",
+    "rank-bm25>=0.2.2",
     "tree-sitter>=0.20.0",
     "tree-sitter-python>=0.20.0",
 ]
@@ -26,4 +27,15 @@ include = ["agent*", "config*", "editing*", "planner*", "repo_graph*", "repo_ind
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks test as integration test (requires real services, TEST_MODE=integration)",
+]
+# Benchmark fixtures contain pytest files for manual validation; do not collect them as AutoStudio tests.
+norecursedirs = [
+    ".*",
+    "build",
+    "dist",
+    "CVS",
+    "_darcs",
+    "{arch}",
+    "*.egg",
+    "tests/agent_eval/fixtures",
 ]

@@ -2,11 +2,57 @@
 
 import logging
 import os
+import re
 from pathlib import Path
+
+from config.editing_config import MAX_FILES_EDITED
 
 logger = logging.getLogger(__name__)
 
 ENABLE_DIFF_PLANNER = os.environ.get("ENABLE_DIFF_PLANNER", "1").lower() in ("1", "true", "yes")
+
+
+def _ranked_context_file_order(context: dict) -> list[str]:
+    order: list[str] = []
+    for key in ("ranked_context", "context_snippets", "retrieved_symbols"):
+        for item in context.get(key) or []:
+            if isinstance(item, dict):
+                f = (item.get("file") or "").strip()
+                if f and f not in order:
+                    order.append(f)
+    return order
+
+
+def _instruction_path_hints(instruction: str) -> list[str]:
+    if not instruction:
+        return []
+    return re.findall(r"[\w./\\]+\.py\b", instruction)
+
+
+def _file_matches_instruction_hint(file_path: str, hints: list[str]) -> bool:
+    if not hints:
+        return True
+    fn = file_path.replace("\\", "/")
+    for h in hints:
+        hnorm = h.strip().replace("\\", "/")
+        if hnorm in fn or fn.endswith(hnorm) or fn.endswith("/" + hnorm.lstrip("./")):
+            return True
+    return False
+
+
+def _is_valid_py_edit_target(file_path: str, project_root: str) -> bool:
+    if not file_path or not isinstance(file_path, str):
+        return False
+    p = Path(file_path)
+    if not p.is_absolute():
+        p = Path(project_root) / file_path
+    try:
+        p = p.resolve()
+    except OSError:
+        return False
+    if not p.is_file():
+        return False
+    return p.suffix.lower() == ".py"
 
 
 def plan_diff(instruction: str, context: dict) -> dict:
@@ -94,6 +140,27 @@ def plan_diff(instruction: str, context: dict) -> dict:
         if key not in seen:
             seen.add(key)
             deduped.append(c)
+
+    # Stage 13: only existing Python files; prefer ranked_context order; cap breadth
+    preferred = _ranked_context_file_order(context)
+    pref_index = {path: i for i, path in enumerate(preferred)}
+    path_hints = _instruction_path_hints(instruction)
+
+    def _sort_key(c: dict) -> tuple[int, int, int, str]:
+        fp = c.get("file", "") or ""
+        has_sym = 0 if c.get("symbol") else 1
+        pri = pref_index.get(fp, 9999)
+        hint_miss = 0 if _file_matches_instruction_hint(fp, path_hints) else 1
+        return (hint_miss, pri, has_sym, fp)
+
+    filtered = [c for c in deduped if _is_valid_py_edit_target(c.get("file", "") or "", project_root)]
+    filtered.sort(key=_sort_key)
+    if not filtered and deduped:
+        logger.info("[diff_planner] no on-disk .py targets validated; using planned targets (tests/offline)")
+        filtered = deduped[:MAX_FILES_EDITED]
+    else:
+        filtered = filtered[:MAX_FILES_EDITED]
+    deduped = filtered
 
     logger.info("[diff_planner] planned changes=%d", len(deduped))
     return {"changes": deduped}

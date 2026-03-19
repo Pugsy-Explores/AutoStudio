@@ -13,6 +13,7 @@ from agent.retrieval.retrieval_cache import get_candidate_cached, set_candidate_
 from agent.retrieval.retrieval_metrics import RetrievalMetrics
 from agent.retrieval.reranker.symbol_query_detector import is_symbol_query
 from agent.retrieval.anchor_detector import detect_anchors
+from agent.retrieval.search_target_filter import filter_and_rank_search_results
 from agent.retrieval.context_builder import build_context_from_symbols
 from agent.retrieval.context_pruner import prune_context
 from agent.retrieval.retrieval_expander import expand_search_results
@@ -27,6 +28,7 @@ from config.retrieval_config import (
     DEFAULT_MAX_CHARS,
     ENABLE_CONTEXT_RANKING,
     ENABLE_LOCALIZATION_ENGINE,
+    FALLBACK_TOP_N,
     MAX_CONTEXT_SNIPPETS,
     MAX_RERANK_CANDIDATES,
     MAX_SEARCH_RESULTS,
@@ -382,7 +384,19 @@ def run_retrieval_pipeline(
     (daemon-backed inference path). Updates state.context (retrieved_*, context_snippets, ranked_context).
     Returns aggregated result for the SEARCH step.
     """
-    results = (search_results or [])[:MAX_SEARCH_RESULTS]
+    raw_results = (search_results or [])[:MAX_SEARCH_RESULTS]
+    project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    try:
+        import rank_bm25  # noqa: F401
+
+        state.context["bm25_available"] = True
+    except ImportError:
+        state.context["bm25_available"] = False
+    state.context["reranker_failed"] = False
+    state.context["reranker_failed_fallback_used"] = False
+    results = filter_and_rank_search_results(raw_results, query, str(project_root))
+    state.context["search_viable_raw_hits"] = len(raw_results)
+    state.context["search_viable_file_hits"] = len(results)
     if not results:
         return {"results": [], "query": query or "", "anchors": 0}
 
@@ -402,10 +416,11 @@ def run_retrieval_pipeline(
         state.context["retrieval_via_daemon"] = False
 
     anchors = detect_anchors(results, query)
+    if not anchors and results:
+        anchors = list(results[:FALLBACK_TOP_N])
+        logger.info("[retrieval_pipeline] anchor fallback: using top %d filtered hits", len(anchors))
     if not anchors:
         return {"results": results, "query": query or "", "anchors": 0}
-
-    project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
 
     localization_candidates: list[dict] = []
     if ENABLE_LOCALIZATION_ENGINE and anchors:
@@ -522,6 +537,7 @@ def run_retrieval_pipeline(
             t0 = time.monotonic()
             deduped = candidates  # already deduped above
             snippets = [c.get("snippet") or "" for c in deduped]
+            snippets = [(s if isinstance(s, str) else str(s))[:20000] for s in snippets]
             scored = _reranker.rerank(rank_query, snippets)
             rerank_ms = int((time.monotonic() - t0) * 1000)
             pipe_metrics.end("rerank")
@@ -548,6 +564,8 @@ def run_retrieval_pipeline(
                 type(exc).__name__,
                 exc,
             )
+            state.context["reranker_failed"] = True
+            state.context["reranker_failed_fallback_used"] = True
             _skipped_reason = f"inference_error:{type(exc).__name__}"
             _reranker = None  # trigger fallback below
     elif _reranker is None and RERANKER_ENABLED:

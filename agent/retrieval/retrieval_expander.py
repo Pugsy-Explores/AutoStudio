@@ -2,6 +2,7 @@
 
 import logging
 import re
+from pathlib import Path
 
 from config.retrieval_config import MAX_SEARCH_RESULTS, MAX_SYMBOL_EXPANSION
 
@@ -44,6 +45,13 @@ def expand_search_results(results: list[dict]) -> list[dict]:
         raw_path = r.get("file") or r.get("path") or ""
         file_path = normalize_file_path(raw_path)
         if not file_path:
+            continue
+        try:
+            p = Path(file_path)
+            if p.exists() and p.is_dir():
+                logger.debug("[retrieval_expand] skip directory: %s", file_path)
+                continue
+        except OSError:
             continue
         symbol = r.get("symbol") or ""
         action = "read_symbol_body" if symbol else "read_file"

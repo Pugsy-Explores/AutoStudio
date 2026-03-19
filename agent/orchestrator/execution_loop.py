@@ -375,6 +375,7 @@ def execution_loop(
             fm = getattr(sr, "files_modified", None) or []
             if isinstance(fm, list):
                 files_modified.extend(fm)
+        fm_distinct = [x for x in dict.fromkeys(files_modified) if isinstance(x, str)]
         loop_output = {
             "completed_steps": completed_steps,
             "patches_applied": patch_count,
@@ -383,6 +384,20 @@ def execution_loop(
             "tool_calls": tool_call_count,
             "plan_result": state.current_plan,
             "start_time": start_time,
+            "edit_telemetry": {
+                "attempted_target_files": state.context.get("search_target_candidates"),
+                "chosen_target_file": state.context.get("edit_target_file"),
+                "chosen_symbol": state.context.get("edit_target_symbol"),
+                "edit_failure_reason": state.context.get("edit_failure_reason"),
+                "search_viable_file_hits": state.context.get("search_viable_file_hits"),
+                "search_viable_raw_hits": state.context.get("search_viable_raw_hits"),
+                "patches_applied": patch_count,
+                "changed_files_count": len(fm_distinct),
+                **(state.context.get("edit_patch_telemetry") or {}),
+                "bm25_available": state.context.get("bm25_available"),
+                "reranker_failed": state.context.get("reranker_failed"),
+                "reranker_failed_fallback_used": state.context.get("reranker_failed_fallback_used"),
+            },
         }
 
     return LoopResult(state=state, loop_output=loop_output)

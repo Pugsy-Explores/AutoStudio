@@ -16,6 +16,10 @@ import logging
 from uuid import uuid4
 
 from agent.observability.trace_logger import trace_stage
+from config.agent_config import (
+    TWO_PHASE_DOCS_CODE_MAX_PARENT_RETRIES_PHASE_0,
+    TWO_PHASE_DOCS_CODE_MAX_PARENT_RETRIES_PHASE_1,
+)
 from config.router_config import ENABLE_INSTRUCTION_ROUTER, ROUTER_CONFIDENCE_THRESHOLD
 from planner.planner import plan
 
@@ -316,7 +320,21 @@ def _derive_phase_subgoals(instruction: str) -> tuple[str, str]:
     source = (instruction or "").strip()
     phase0 = "Find documentation artifacts relevant to: " + source[:150]
 
-    connectors = (" and explain ", " and describe ", " and show how ", " and summarize ", " and walk through ")
+    connectors = (
+        " and explain ",
+        " and describe ",
+        " and show how ",
+        " and summarize ",
+        " and walk through ",
+        ", then explain ",
+        " then explain ",
+        " and tell me about ",
+        " and tell me how ",
+        " and walk me through ",
+        " and illustrate ",
+        " before explaining ",
+        ", explain ",
+    )
     lower = source.lower()
     for connector in connectors:
         pos = lower.find(connector)
@@ -333,6 +351,109 @@ def _derive_phase_subgoals(instruction: str) -> tuple[str, str]:
     return (phase0, phase1)
 
 
+def _coerce_max_parent_retries(value) -> int:
+    """
+    Sanitize config-driven retry budget for two-phase plans.
+    Non-int, bool, or negative values -> 0 (Stage 7).
+    """
+    if isinstance(value, bool):
+        return 0
+    if not isinstance(value, int):
+        return 0
+    if value < 0:
+        return 0
+    return value
+
+
+def _build_replan_phase(phase_plan: dict, failure_context: dict | None = None) -> dict:
+    """
+    Stage 10: rebuild a single phase plan after a REPLAN parent-policy decision.
+
+    Must not call get_parent_plan() or run_hierarchical(). Returns a new phase_plan dict
+    for the same phase_id / phase_index / lane / validation / retry_policy with fresh steps
+    and a new plan_id where applicable.
+
+    failure_context may include: parent_instruction, failure_class, goal_reason (for logging
+    or deterministic query tweaks).
+    """
+    from agent.orchestrator.goal_evaluator import is_explain_like_instruction
+    from planner.planner_utils import validate_plan
+
+    if not isinstance(phase_plan, dict):
+        raise ValueError("phase_plan_invalid")
+    fc = None
+    parent_instruction = ""
+    if isinstance(failure_context, dict):
+        parent_instruction = str(failure_context.get("parent_instruction") or "")
+        fc = failure_context.get("failure_class")
+
+    lane = str(phase_plan.get("lane") or "code")
+    phase_id = phase_plan.get("phase_id", "")
+    pidx = phase_plan.get("phase_index", 0)
+    if isinstance(pidx, bool) or not isinstance(pidx, int):
+        pidx = 0
+    subgoal = str(phase_plan.get("subgoal") or "")
+    validation = phase_plan.get("validation")
+    if not isinstance(validation, dict):
+        if lane == "docs":
+            validation = {
+                "require_ranked_context": True,
+                "require_explain_success": True,
+                "min_candidates": 1,
+            }
+        else:
+            validation = {
+                "require_ranked_context": True,
+                "require_explain_success": is_explain_like_instruction(subgoal),
+                "min_candidates": 1,
+            }
+    retry_policy = phase_plan.get("retry_policy")
+    if not isinstance(retry_policy, dict):
+        retry_policy = {"max_parent_retries": 0}
+
+    if lane == "docs":
+        seed = _docs_seed_plan(parent_instruction)
+        steps: list = []
+        for s in seed.get("steps", []):
+            if isinstance(s, dict):
+                steps.append(dict(s))
+        if not steps:
+            raise ValueError("replan_docs_empty_steps")
+        if isinstance(steps[0], dict) and steps[0].get("action") == "SEARCH_CANDIDATES":
+            q = str(steps[0].get("query", "readme docs"))
+            if fc in ("phase_validation_failed", "goal_not_satisfied"):
+                q = (q + " readme documentation overview").strip()
+            steps[0]["query"] = q
+        candidate = _ensure_plan_id({"steps": steps})
+        if not validate_plan({"steps": candidate["steps"]}):
+            raise ValueError("replan_docs_validate_plan_failed")
+        return {
+            "phase_id": phase_id,
+            "phase_index": pidx,
+            "subgoal": subgoal,
+            "lane": "docs",
+            "steps": candidate["steps"],
+            "plan_id": candidate["plan_id"],
+            "validation": validation,
+            "retry_policy": retry_policy,
+        }
+
+    code_flat = plan(subgoal)
+    code_flat = _ensure_plan_id(code_flat)
+    if not validate_plan({"steps": code_flat.get("steps", [])}):
+        raise ValueError("replan_code_validate_plan_failed")
+    return {
+        "phase_id": phase_id,
+        "phase_index": pidx,
+        "subgoal": subgoal,
+        "lane": "code",
+        "steps": code_flat["steps"],
+        "plan_id": code_flat["plan_id"],
+        "validation": validation,
+        "retry_policy": retry_policy,
+    }
+
+
 def _build_two_phase_parent_plan(
     instruction: str,
     trace_id: str | None = None,
@@ -347,6 +468,8 @@ def _build_two_phase_parent_plan(
     from agent.orchestrator.parent_plan import new_parent_plan_id, new_phase_id
     from planner.planner_utils import validate_plan
 
+    _budget_phase_0 = _coerce_max_parent_retries(TWO_PHASE_DOCS_CODE_MAX_PARENT_RETRIES_PHASE_0)
+    _budget_phase_1 = _coerce_max_parent_retries(TWO_PHASE_DOCS_CODE_MAX_PARENT_RETRIES_PHASE_1)
     phase_0_subgoal, phase_1_subgoal = _derive_phase_subgoals(instruction)
 
     # Phase 0 — docs lane
@@ -366,7 +489,7 @@ def _build_two_phase_parent_plan(
             "require_explain_success": True,
             "min_candidates": 1,
         },
-        "retry_policy": {"max_parent_retries": 0},
+        "retry_policy": {"max_parent_retries": _budget_phase_0},
     }
 
     # Phase 1 — code lane
@@ -387,7 +510,7 @@ def _build_two_phase_parent_plan(
             "require_explain_success": is_explain_like_instruction(phase_1_subgoal),
             "min_candidates": 1,
         },
-        "retry_policy": {"max_parent_retries": 0},
+        "retry_policy": {"max_parent_retries": _budget_phase_1},
     }
 
     return {
@@ -440,6 +563,24 @@ def get_parent_plan(
                     })
                 except Exception:
                     pass
+
+    # Near-miss observability: docs + discovery markers but two-phase detection did not fire.
+    if log_event_fn and trace_id and not _is_two_phase_docs_code_intent(instruction):
+        il = (instruction or "").strip().lower()
+        has_discovery = any(v in il for v in _DOCS_DISCOVERY_VERBS)
+        has_docs = any(t in il for t in _DOCS_INTENT_TOKENS)
+        if has_discovery and has_docs:
+            try:
+                log_event_fn(
+                    trace_id,
+                    "two_phase_near_miss",
+                    {
+                        "reason": "docs_and_discovery_but_no_code_marker",
+                        "instruction_preview": (instruction or "")[:200],
+                    },
+                )
+            except Exception:
+                pass
 
     flat_plan = get_plan(
         instruction,

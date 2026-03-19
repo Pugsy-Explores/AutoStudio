@@ -202,19 +202,42 @@ def _run_loop(
         snapshot = _snapshot_files(changes, project_root)
         patch_plan = to_structured_patches({"changes": changes}, current_instruction, context)
         patch_result = execute_patch(patch_plan, project_root)
+        context["edit_patch_telemetry"] = {
+            "patch_parse_ok": patch_result.get("patch_parse_ok"),
+            "patch_apply_ok": patch_result.get("patch_apply_ok"),
+            "patch_reject_reason": patch_result.get("patch_reject_reason"),
+            "failure_reason_code": patch_result.get("failure_reason_code"),
+        }
 
         if not patch_result.get("success"):
             err = patch_result.get("error", "patch_failed")
             reason = patch_result.get("reason", "")
+            fr = patch_result.get("failure_reason_code")
+            if fr:
+                context["edit_failure_reason"] = fr
             _rollback_snapshot(snapshot, project_root)
             _record_rollback(project_root)
             last_error, same_error_count = _update_same_error(last_error, same_error_count, err)
             if same_error_count >= MAX_SAME_ERROR_RETRIES:
                 _record_failure(project_root)
-                return {"success": False, "error": err, "reason": reason, "attempt": attempt, "failure_type": err}
+                return {
+                    "success": False,
+                    "error": err,
+                    "reason": reason,
+                    "attempt": attempt,
+                    "failure_type": err,
+                    "failure_reason_code": fr,
+                }
             if not _should_retry_strategy(err, attempt, max_attempts):
                 _record_failure(project_root)
-                return {"success": False, "error": err, "reason": reason, "attempt": attempt, "failure_type": err}
+                return {
+                    "success": False,
+                    "error": err,
+                    "reason": reason,
+                    "attempt": attempt,
+                    "failure_type": err,
+                    "failure_reason_code": fr,
+                }
             diagnosis, hints = _critic_and_retry(current_instruction, context, _Eval(reason=reason, status="FAILURE"))
             _apply_hints(base_instruction, context, hints)
             if attempt >= max_attempts:

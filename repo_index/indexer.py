@@ -7,11 +7,47 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from config.repo_graph_config import REPO_MAP_JSON
 from repo_index.dependency_extractor import extract_edges
 from repo_index.parser import parse_file
 from repo_index.symbol_extractor import extract_symbols
 
 logger = logging.getLogger(__name__)
+
+# Path components to skip when scanning (search-quality + obvious non-source noise)
+_INDEX_SKIP_DIR_PARTS: frozenset[str] = frozenset(
+    {
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        ".eggs",
+        ".venv",
+        "venv",
+        "artifacts",
+        ".tox",
+        ".nox",
+        "htmlcov",
+        "site-packages",
+        ".symbol_graph",
+    }
+)
+
+
+def _relative_path_has_excluded_component(path: Path, root: Path) -> bool:
+    """True if any path segment under root is a known junk or index-output directory."""
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return True
+    for part in rel.parts:
+        if part in _INDEX_SKIP_DIR_PARTS:
+            return True
+    return False
+
 
 SYMBOL_GRAPH_DIR = ".symbol_graph"
 SYMBOLS_JSON = "symbols.json"
@@ -117,6 +153,11 @@ def _scan_repo_with_trees(
         py_files = [p for p in py_files if not _is_ignored(p, root, gitignore_patterns)]
         if verbose and before != len(py_files):
             logger.info("[indexer] .gitignore excluded %d files", before - len(py_files))
+
+    before_skip = len(py_files)
+    py_files = [p for p in py_files if not _relative_path_has_excluded_component(p, root)]
+    if verbose and before_skip != len(py_files):
+        logger.info("[indexer] standard excludes removed %d paths", before_skip - len(py_files))
 
     logger.debug("[indexer] scan_repo found %d Python files in %s", len(py_files), root)
     if not py_files:
@@ -264,6 +305,14 @@ def index_repo(
     build_graph(symbols, edges, str(db_path))
 
     _build_embedding_index(root_dir, symbols, out_path)
+
+    try:
+        from repo_graph.repo_map_builder import build_repo_map
+
+        build_repo_map(str(root), str(out_path / REPO_MAP_JSON))
+        logger.info("[indexer] wrote %s under %s", REPO_MAP_JSON, out_path)
+    except Exception as e:
+        logger.warning("[indexer] repo_map build failed: %s", e)
 
     logger.info(
         "[indexer] wrote %d symbols, %d edges to %s (db=%s)",

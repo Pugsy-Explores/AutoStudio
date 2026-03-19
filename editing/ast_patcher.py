@@ -238,6 +238,16 @@ def apply_patch(ast_tree, source_bytes: bytes, patch: dict) -> bytes:
     if root is None:
         raise ValueError("Invalid AST tree")
 
+    # File-level anchor: append statements at end of module (Stage 13 fallback when symbol lookup fails)
+    if target_node == "module_append":
+        if action != "insert":
+            raise ValueError("module_append supports insert only")
+        if not code or not str(code).strip():
+            raise ValueError("empty_patch")
+        suf = source_bytes.rstrip()
+        block = ("\n\n" + str(code).strip() + "\n").encode("utf-8")
+        return suf + block
+
     node, _ = _find_symbol_node(root, source_bytes, symbol)
     if node is None:
         raise ValueError(f"Symbol not found: {symbol}")

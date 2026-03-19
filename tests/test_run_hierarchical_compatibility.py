@@ -7,6 +7,8 @@ import pytest
 from agent.memory.state import AgentState
 from agent.orchestrator.deterministic_runner import run_hierarchical
 
+from tests.hierarchical_test_locks import assert_compat_loop_output_has_no_hierarchical_keys
+
 
 def _spy_log_fn():
     """Return (log_fn, events) where events collects (trace_id, event_name, payload)."""
@@ -203,3 +205,46 @@ def test_run_hierarchical_notimplemented_on_noncompat(mock_get_parent_plan):
         run_hierarchical("x", "/tmp", trace_id="t", log_event_fn=lambda *a: None)
 
     assert "phases" in str(exc_info.value).lower()
+
+
+class TestStage3CompatibilityInvariants:
+    """Lock: compat path is pure delegation to run_deterministic — same (state, loop_output) as the mock; no hierarchical-only loop_output keys."""
+
+    @patch("agent.orchestrator.deterministic_runner.run_deterministic")
+    @patch("agent.orchestrator.deterministic_runner.get_parent_plan")
+    def test_compat_loop_output_has_no_hierarchical_only_keys(
+        self, mock_get_parent_plan, mock_run_deterministic
+    ):
+        """No phase_validation, parent_retry, phase_results, errors_encountered_merged (top-level), etc."""
+        state = _mock_state()
+        loop_output = _mock_loop_output()
+        mock_get_parent_plan.return_value = {
+            "parent_plan_id": "pplan_1",
+            "compatibility_mode": True,
+            "phases": [{}],
+        }
+        mock_run_deterministic.return_value = (state, loop_output)
+
+        _s, out = run_hierarchical("x", "/tmp", trace_id="t", log_event_fn=lambda *a: None)
+
+        assert_compat_loop_output_has_no_hierarchical_keys(out)
+
+    @patch("agent.orchestrator.deterministic_runner.run_deterministic")
+    @patch("agent.orchestrator.deterministic_runner.get_parent_plan")
+    def test_compat_mode_state_and_loop_output_still_match_run_deterministic_exactly(
+        self, mock_get_parent_plan, mock_run_deterministic
+    ):
+        state = _mock_state()
+        loop_output = _mock_loop_output(completed_steps=3)
+        mock_get_parent_plan.return_value = {
+            "parent_plan_id": "pplan_1",
+            "compatibility_mode": True,
+            "phases": [{}],
+        }
+        mock_run_deterministic.return_value = (state, loop_output)
+
+        result_state, result_output = run_hierarchical("x", "/tmp", trace_id="t", log_event_fn=lambda *a: None)
+
+        assert result_state is state
+        assert result_output == loop_output
+        assert result_output is loop_output

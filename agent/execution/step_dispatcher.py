@@ -255,6 +255,15 @@ def _search_fn(query: str, state: AgentState):
         if retrieval_fallback_used:
             state.context["retrieval_fallback_used"] = retrieval_fallback_used
 
+        reslist = result.get("results") or []
+        if reslist:
+            from agent.retrieval.search_target_filter import filter_and_rank_search_results
+
+            result = {
+                **result,
+                "results": filter_and_rank_search_results(reslist, query, str(project_root)),
+            }
+
         if cache_size > 0 and result:
             try:
                 from agent.retrieval.retrieval_cache import set_cached
@@ -307,8 +316,59 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
 
     diff_plan = plan_diff(instruction, context)
     changes = diff_plan.get("changes", [])
+    context["edit_target_file"] = changes[0].get("file") if changes else None
+    context["edit_target_symbol"] = changes[0].get("symbol") if changes else None
+    context["edit_failure_reason"] = None
+
+    if changes:
+        root = Path(project_root).resolve()
+        for c in changes[:2]:
+            fp = (c.get("file") or "").strip()
+            if not fp:
+                continue
+            p = Path(fp)
+            if not p.is_absolute():
+                p = root / fp
+            try:
+                p = p.resolve()
+            except OSError:
+                context["edit_failure_reason"] = "patch_anchor_not_found"
+                return {
+                    "success": False,
+                    "output": {"failure_reason_code": "patch_anchor_not_found", "planned_changes": changes},
+                    "error": "edit target path invalid",
+                }
+            try:
+                p.relative_to(root)
+            except ValueError:
+                context["edit_failure_reason"] = "patch_anchor_not_found"
+                return {
+                    "success": False,
+                    "output": {"failure_reason_code": "patch_anchor_not_found", "planned_changes": changes},
+                    "error": "edit target outside project root",
+                }
+            if not p.exists():
+                context["edit_failure_reason"] = "patch_anchor_not_found"
+                return {
+                    "success": False,
+                    "output": {"failure_reason_code": "patch_anchor_not_found", "planned_changes": changes},
+                    "error": f"edit target not found: {p}",
+                }
+            if p.is_dir():
+                context["edit_failure_reason"] = "target_is_directory"
+                return {
+                    "success": False,
+                    "output": {"failure_reason_code": "target_is_directory", "planned_changes": changes},
+                    "error": f"edit target is a directory: {p}",
+                }
+
     if not changes:
-        return {"success": True, "output": {"planned_changes": changes}}
+        context["edit_failure_reason"] = "empty_patch"
+        return {
+            "success": False,
+            "output": {"planned_changes": [], "failure_reason_code": "empty_patch"},
+            "error": "no_changes_planned",
+        }
 
     # Safety limits
     if len(changes) > MAX_FILES_EDITED:
@@ -350,17 +410,21 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
             instruction, context, project_root, max_attempts=MAX_EDIT_ATTEMPTS
         )
         if not loop_result.get("success"):
+            fr = loop_result.get("failure_reason_code") or loop_result.get("failure_type")
+            context["edit_failure_reason"] = fr
             return {
                 "success": False,
                 "output": {
                     "error": loop_result.get("error"),
                     "reason": loop_result.get("reason"),
+                    "failure_reason_code": fr,
                 },
                 "error": loop_result.get("reason", loop_result.get("error")),
             }
         all_modified.extend(loop_result.get("files_modified", []))
         all_patches += loop_result.get("patches_applied", 0)
 
+    context["edit_failure_reason"] = None
     for file_path in all_modified:
         update_index_for_file(file_path, project_root)
         try:
@@ -629,6 +693,13 @@ def dispatch(step: dict, state: AgentState) -> dict:
             out = raw["output"]
             if isinstance(out, dict) and (out.get("results") or []):
                 run_retrieval_pipeline(out.get("results", []), state, out.get("query"))
+            cand: list[str] = []
+            for item in state.context.get("ranked_context") or []:
+                if isinstance(item, dict):
+                    f = (item.get("file") or "").strip()
+                    if f and f not in cand:
+                        cand.append(f)
+            state.context["search_target_candidates"] = cand[:40]
         return raw
 
     if action == "EDIT":
