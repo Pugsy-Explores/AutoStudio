@@ -2,9 +2,14 @@
 
 import logging
 import os
+import re
 from pathlib import Path
 
-from agent.execution.explain_gate import ensure_context_before_explain
+from agent.execution.explain_gate import (
+    REASON_CODE_INSUFFICIENT_GROUNDING,
+    code_explain_grounding_ready,
+    ensure_context_before_explain,
+)
 from agent.prompt_system import get_registry
 from config.agent_config import MAX_CONTEXT_CHARS
 from agent.execution.policy_engine import ExecutionPolicyEngine, InvalidStepError, ResultClassification, _is_valid_search_result, classify_result, validate_step_input
@@ -17,6 +22,10 @@ from agent.models.model_types import ModelType
 from agent.observability.trace_logger import log_event, trace_stage
 from agent.retrieval import rewrite_query_with_context
 from agent.retrieval.context_builder_v2 import assemble_reasoning_context
+from agent.retrieval.result_contract import (
+    RETRIEVAL_RESULT_TYPE_SYMBOL_BODY,
+    normalize_result,
+)
 from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline
 from agent.tools import build_context, list_files, read_file, run_command, search_candidates, search_code
 from config.retrieval_config import (
@@ -56,6 +65,7 @@ def _lane_violation(state: AgentState, *, message: str, step: dict | None = None
         "success": False,
         "output": {},
         "error": f"lane_violation: {message}",
+        "reason_code": "lane_violation",
         "classification": ResultClassification.FATAL_FAILURE.value,
     }
 
@@ -228,7 +238,10 @@ def _search_fn(query: str, state: AgentState):
                 if entries:
                     result = {
                         "results": [
-                            {"file": str(root / e), "symbol": "", "line": 0, "snippet": e}
+                            normalize_result(
+                                {"file": str(root / e), "symbol": "", "line": 0, "snippet": e},
+                                source_hint="file_search",
+                            )
                             for e in entries[:10]
                         ],
                         "query": query or "",
@@ -381,6 +394,48 @@ def _infra_fn(step: dict, state: AgentState) -> dict:
         return {"success": False, "output": {"returncode": -1}, "error": str(e)}
 
 
+def _shape_query_for_explain_retrieval(instruction: str) -> str | None:
+    """
+    Extract focused code-explanation target from compound requests.
+    Used only on first EXPLAIN retrieval (code lane) to avoid mixed-context from broad queries.
+    Returns None when no extraction; caller falls back to original instruction.
+    Deterministic heuristics only.
+    """
+    if not instruction or not isinstance(instruction, str):
+        return None
+    t = instruction.strip()
+    if not t:
+        return None
+    generic = {"flow", "architecture", "docs", "documentation", "work", "works", "the", "a", "an", "how"}
+
+    # "explain how X ..." -> extract X (e.g. "explain how replanner preserves dominant lane" -> "replanner")
+    m = re.search(r"\bexplain\s+how\s+([a-zA-Z_][a-zA-Z0-9_]*)", t, re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    # "explain X" or "explain X flow" or "explain X ..."
+    m = re.search(r"\bexplain\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)*)", t, re.IGNORECASE)
+    if m:
+        raw = m.group(1).strip()
+        tokens = raw.split()
+        for tok in tokens:
+            if tok.lower() not in generic and len(tok) >= 2:
+                return tok
+        return tokens[0] if tokens else None
+
+    # "how X works"
+    m = re.search(r"\bhow\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+works", t, re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    # "X flow" (standalone phrase)
+    m = re.search(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s+flow\b", t, re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    return None
+
+
 def _rewrite_for_search(
     description: str, user_request: str, attempt_history: list, state: AgentState | None = None
 ) -> str | list[str]:
@@ -407,18 +462,45 @@ def _get_explain_system_prompt() -> str:
     return get_registry().get_instructions("explain_system")
 
 
+_STUB_PLACEHOLDER_PREFIX = "Symbol from graph:"
+
+
+def _filter_stub_placeholders_when_impl_exists(ranked_context: list[dict]) -> list[dict]:
+    """
+    When impl-body snippets exist, filter out stub-only placeholders so they
+    do not crowd out real code in the 8000-char budget.
+    Preserves original order. Does not reorder.
+    """
+    has_impl = any(
+        c.get("implementation_body_present")
+        or c.get("retrieval_result_type") == RETRIEVAL_RESULT_TYPE_SYMBOL_BODY
+        for c in ranked_context
+        if isinstance(c, dict)
+    )
+    if not has_impl:
+        return ranked_context
+    return [
+        c
+        for c in ranked_context
+        if not isinstance(c, dict)
+        or not (c.get("snippet") or "").strip().startswith(_STUB_PLACEHOLDER_PREFIX)
+    ]
+
+
 def _format_explain_context(state: AgentState) -> str:
     """Format structured context for EXPLAIN prompt. Prefer ranked_context; fallback to search_memory.
-    Uses anchored blocks (FILE/SYMBOL/LINES/SNIPPET) for clear file associations."""
+    Uses anchored blocks (FILE/SYMBOL/LINES/SNIPPET) for clear file associations.
+    When impl-body exists, filters out stub placeholders to avoid crowding (fixes Replan 1 bug)."""
     parts = []
     ranked_context = state.context.get("ranked_context") or []
     if ranked_context:
-        assembled = assemble_reasoning_context(ranked_context, max_chars=8000)
+        filtered = _filter_stub_placeholders_when_impl_exists(ranked_context)
+        assembled = assemble_reasoning_context(filtered, max_chars=8000)
         if assembled:
             parts.append("--- BEGIN CONTEXT ---")
             parts.append(assembled.strip())
             parts.append("--- END CONTEXT ---")
-            logger.info("[context_anchor] using %d anchored snippets", len(ranked_context))
+            logger.info("[context_anchor] using %d anchored snippets", len(filtered))
     else:
         search_memory = state.context.get("search_memory")
         if search_memory and isinstance(search_memory, dict):
@@ -538,6 +620,7 @@ def dispatch(step: dict, state: AgentState) -> dict:
                 "output": {},
                 "error": "SEARCH with artifact_mode='docs' is intentionally deferred in Phase 5A. "
                 "Use SEARCH_CANDIDATES + BUILD_CONTEXT with artifact_mode='docs' (or EXPLAIN with artifact_mode='docs').",
+                "reason_code": "lane_violation",
                 "classification": ResultClassification.RETRYABLE_FAILURE.value,
             }
         raw = _policy_engine.execute_with_policy(step, state)
@@ -609,6 +692,12 @@ def dispatch(step: dict, state: AgentState) -> dict:
                 state.context["query"] = query
             build_context(candidates=None, state=state, artifact_mode="docs")
         else:
+            # Query shaping: use focused code-explanation target for first EXPLAIN retrieval
+            # to avoid mixed context from broad compound instructions (replan_count 2->1).
+            if artifact_mode == "code":
+                shaped = _shape_query_for_explain_retrieval(query)
+                if shaped:
+                    query = shaped
             search_output = _search_fn(query, state)
             results = (search_output or {}).get("results") or []
             if not _is_valid_search_result(results):
@@ -628,6 +717,31 @@ def dispatch(step: dict, state: AgentState) -> dict:
     trace_id = state.context.get("trace_id")
     step_id = state.context.get("current_step_id")
     try:
+        # Phase 7B.3: grounding readiness gate (code lane only) — avoid wasting an EXPLAIN attempt.
+        ready, signals = code_explain_grounding_ready(step, state)
+        if trace_id:
+            log_event(
+                trace_id,
+                "explain_grounding_check",
+                {
+                    "step_id": step_id,
+                    "ready": bool(ready),
+                    "reason_code": (signals or {}).get("reason_code"),
+                    "signals": signals,
+                },
+            )
+        if not ready:
+            # Return a "successful execution" so the validator can treat this as a semantic/contract failure
+            # and route to replanning without same-step retries in AGENT mode.
+            reason_code = (signals or {}).get("reason_code") or REASON_CODE_INSUFFICIENT_GROUNDING
+            return {
+                "success": True,
+                "output": "",
+                "error": "EXPLAIN blocked: insufficient grounding evidence (improve SEARCH/BUILD_CONTEXT first).",
+                "reason_code": reason_code,
+                "classification": ResultClassification.SUCCESS.value,
+            }
+
         model_type = get_model_for_task("EXPLAIN")
         model_name = model_type.value if model_type else "REASONING"
         print("  [EXPLAIN] model from config:", model_name)
