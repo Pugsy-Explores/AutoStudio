@@ -399,5 +399,10 @@ def execution_loop(
                 "reranker_failed_fallback_used": state.context.get("reranker_failed_fallback_used"),
             },
         }
+        # Prefer last patch attempt count when step-level patch_count is zero (EDIT telemetry gap).
+        et = loop_output["edit_telemetry"]
+        pa_alt = et.get("patches_applied_this_attempt")
+        if isinstance(pa_alt, int) and pa_alt > 0 and (not et.get("patches_applied")):
+            et["patches_applied"] = pa_alt
 
     return LoopResult(state=state, loop_output=loop_output)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_INDEX_PATH_MARKERS = (".symbol_graph", "__pycache__", ".git/", "/.git", "\\.git")
+_INDEX_PATH_MARKERS = (".symbol_graph", "__pycache__", ".git/", "/.git", "\\.git", "repo_map.json", "/symbols.json", "index.sqlite")
 
 
 def _is_blocked_path(rel_lower: str) -> bool:

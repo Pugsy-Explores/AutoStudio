@@ -155,6 +155,13 @@ def _synthetic_repair(
     return None
 
 
+def _hint_sort_key(c: dict, hints: list[str]) -> tuple[int, int, str]:
+    fp = (c.get("file") or "").replace("\\", "/")
+    miss = 0 if _file_matches_instruction_hints(fp, hints) else 1 if hints else 0
+    has_sym = 0 if c.get("symbol") else 1
+    return (miss, has_sym, fp)
+
+
 def to_structured_patches(plan: dict, instruction: str, context: dict) -> dict:
     """
     Convert diff_planner output to patch_executor format.
@@ -163,10 +170,11 @@ def to_structured_patches(plan: dict, instruction: str, context: dict) -> dict:
     """
     project_root = context.get("project_root") or ""
     raw_changes = plan.get("changes", [])
-    changes: list[dict] = []
     hints = _instruction_py_hints(instruction)
+    raw_sorted = sorted(raw_changes, key=lambda c: _hint_sort_key(c, hints) if isinstance(c, dict) else (99, 99, ""))
+    changes: list[dict] = []
 
-    for c in raw_changes:
+    for c in raw_sorted:
         if not isinstance(c, dict):
             continue
         file_path = c.get("file", "")
@@ -206,6 +214,19 @@ def to_structured_patches(plan: dict, instruction: str, context: dict) -> dict:
         }
 
         changes.append({"file": file_path, "patch": structured_patch})
+
+    # If everything was skipped (e.g. hint filter) but planner listed files, retry synthetic on all raw changes.
+    if not changes and raw_changes:
+        for c in raw_sorted:
+            if not isinstance(c, dict):
+                continue
+            fp = c.get("file", "")
+            sym = c.get("symbol", "")
+            syn = _synthetic_repair(instruction, fp, sym, project_root)
+            if syn:
+                changes.append({"file": fp, "patch": syn})
+                logger.info("[patch_generator] recovered empty plan via synthetic on %s", fp)
+                break
 
     return {"changes": changes}
 

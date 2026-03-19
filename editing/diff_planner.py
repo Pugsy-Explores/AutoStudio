@@ -52,7 +52,55 @@ def _is_valid_py_edit_target(file_path: str, project_root: str) -> bool:
         return False
     if not p.is_file():
         return False
-    return p.suffix.lower() == ".py"
+    if p.suffix.lower() not in (".py", ".pyi"):
+        return False
+    return not _is_blocked_edit_path(p)
+
+
+def _is_blocked_edit_path(resolved: Path) -> bool:
+    """Match patch_executor: no index artifacts, DBs, or .symbol_graph."""
+    try:
+        parts_lower = {x.lower() for x in resolved.parts}
+    except (ValueError, OSError):
+        return True
+    if ".symbol_graph" in parts_lower:
+        return True
+    name = resolved.name.lower()
+    if name in ("index.sqlite", "repo_map.json", "symbols.json"):
+        return True
+    if name.endswith((".sqlite", ".db")):
+        return True
+    return False
+
+
+def _instruction_hint_file_targets(instruction: str, project_root: str) -> list[tuple[str, str]]:
+    """
+    Resolve path literals in the instruction (e.g. src/calc/ops.py) to absolute files.
+    Stage 13.1: retrieval may rank tests above the real fix location; hints anchor the edit plan.
+    """
+    root = Path(project_root).resolve()
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for hint in _instruction_path_hints(instruction):
+        h = hint.strip()
+        if not h.endswith((".py", ".pyi")):
+            continue
+        p = Path(h)
+        if not p.is_absolute():
+            p = (root / h).resolve()
+        else:
+            p = p.resolve()
+        try:
+            p.relative_to(root)
+        except ValueError:
+            continue
+        if not p.is_file() or _is_blocked_edit_path(p):
+            continue
+        sp = str(p)
+        if sp not in seen:
+            seen.add(sp)
+            out.append((sp, ""))
+    return out
 
 
 def plan_diff(instruction: str, context: dict) -> dict:
@@ -66,8 +114,13 @@ def plan_diff(instruction: str, context: dict) -> dict:
     retrieved_symbols = context.get("retrieved_symbols") or []
     retrieved_files = context.get("retrieved_files") or []
 
+    project_root = context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+
     # Collect affected symbols from context
     affected_symbols: set[tuple[str, str]] = set()
+    # Prefer explicit paths mentioned in the instruction (benchmark + repair tasks name files).
+    for fp, sym in _instruction_hint_file_targets(instruction, project_root):
+        affected_symbols.add((fp, sym))
     for s in retrieved_symbols:
         if isinstance(s, dict):
             f = s.get("file") or ""
@@ -82,7 +135,6 @@ def plan_diff(instruction: str, context: dict) -> dict:
                 affected_symbols.add((f, sym))
 
     # Query graph for callers when index exists
-    project_root = context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
     index_path = Path(project_root) / ".symbol_graph" / "index.sqlite"
     impacted_files: set[str] = set(retrieved_files)
 
@@ -105,8 +157,16 @@ def plan_diff(instruction: str, context: dict) -> dict:
                             neighbors = storage.get_neighbors(symbol_id, direction="in")
                             for n in neighbors:
                                 f = n.get("file", "")
-                                if f:
-                                    impacted_files.add(f)
+                                if not f:
+                                    continue
+                                try:
+                                    pf = Path(f if Path(f).is_absolute() else str(Path(project_root) / f))
+                                    pf = pf.resolve()
+                                    if _is_blocked_edit_path(pf):
+                                        continue
+                                except OSError:
+                                    continue
+                                impacted_files.add(f)
             finally:
                 storage.close()
         except ImportError:
@@ -114,6 +174,15 @@ def plan_diff(instruction: str, context: dict) -> dict:
 
     # Build changes from instruction and impacted context
     for file_path, symbol in affected_symbols:
+        try:
+            rp = Path(file_path)
+            if not rp.is_absolute():
+                rp = Path(project_root) / file_path
+            rp = rp.resolve()
+            if _is_blocked_edit_path(rp):
+                continue
+        except OSError:
+            continue
         changes.append({
             "file": file_path,
             "symbol": symbol,
@@ -124,6 +193,13 @@ def plan_diff(instruction: str, context: dict) -> dict:
 
     for f in impacted_files:
         if not any(c.get("file") == f for c in changes):
+            try:
+                pf = Path(f if Path(f).is_absolute() else str(Path(project_root) / f))
+                pf = pf.resolve()
+                if _is_blocked_edit_path(pf):
+                    continue
+            except OSError:
+                continue
             changes.append({
                 "file": f,
                 "symbol": "",

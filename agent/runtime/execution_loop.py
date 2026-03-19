@@ -202,12 +202,19 @@ def _run_loop(
         snapshot = _snapshot_files(changes, project_root)
         patch_plan = to_structured_patches({"changes": changes}, current_instruction, context)
         patch_result = execute_patch(patch_plan, project_root)
-        context["edit_patch_telemetry"] = {
-            "patch_parse_ok": patch_result.get("patch_parse_ok"),
-            "patch_apply_ok": patch_result.get("patch_apply_ok"),
-            "patch_reject_reason": patch_result.get("patch_reject_reason"),
-            "failure_reason_code": patch_result.get("failure_reason_code"),
-        }
+        def _merge_patch_telemetry(extra: dict | None = None) -> None:
+            base = {
+                "patch_parse_ok": patch_result.get("patch_parse_ok"),
+                "patch_apply_ok": patch_result.get("patch_apply_ok"),
+                "patch_reject_reason": patch_result.get("patch_reject_reason"),
+                "failure_reason_code": patch_result.get("failure_reason_code"),
+                "patches_applied_this_attempt": patch_result.get("patches_applied"),
+            }
+            if extra:
+                base.update(extra)
+            context["edit_patch_telemetry"] = base
+
+        _merge_patch_telemetry()
 
         if not patch_result.get("success"):
             err = patch_result.get("error", "patch_failed")
@@ -260,12 +267,15 @@ def _run_loop(
             except Exception:
                 pass
             _record_failure(project_root)
+            context["edit_failure_reason"] = "syntax_error"
+            _merge_patch_telemetry({"patch_reject_reason": "project_syntax_invalid_after_patch"})
             return {
                 "success": False,
                 "error": "syntax_error",
                 "reason": syntax_result.get("error", "syntax validation failed"),
                 "attempt": attempt,
                 "failure_type": "syntax_error",
+                "failure_reason_code": "syntax_error",
             }
 
         test_result = run_tests(project_root, timeout=timeout)
@@ -293,15 +303,31 @@ def _run_loop(
         stdout = test_result.get("stdout", "")
         stderr = test_result.get("stderr", "")
         reason = (stdout + "\n" + stderr).strip() or "tests failed"
+        context["edit_failure_reason"] = "test_failure"
+        _merge_patch_telemetry({"patch_reject_reason": "validation_tests_failed"})
         _rollback_snapshot(snapshot, project_root)
         _record_rollback(project_root)
         last_error, same_error_count = _update_same_error(last_error, same_error_count, err)
         if same_error_count >= MAX_SAME_ERROR_RETRIES:
             _record_failure(project_root)
-            return {"success": False, "error": err, "reason": reason[:500], "attempt": attempt, "failure_type": err}
+            return {
+                "success": False,
+                "error": err,
+                "reason": reason[:500],
+                "attempt": attempt,
+                "failure_type": err,
+                "failure_reason_code": "test_failure",
+            }
         if not _should_retry_strategy(err, attempt, max_attempts):
             _record_failure(project_root)
-            return {"success": False, "error": err, "reason": reason[:500], "attempt": attempt, "failure_type": err}
+            return {
+                "success": False,
+                "error": err,
+                "reason": reason[:500],
+                "attempt": attempt,
+                "failure_type": err,
+                "failure_reason_code": "test_failure",
+            }
         evaluation = _Eval(reason=reason, status="FAILURE")
         diagnosis, hints = _critic_and_retry(current_instruction, context, evaluation)
         _apply_hints(base_instruction, context, hints)

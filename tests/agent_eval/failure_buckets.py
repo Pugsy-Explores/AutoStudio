@@ -89,6 +89,11 @@ def classify_failure_bucket(
         return "unknown"
 
     edit_reason = et.get("edit_failure_reason")
+    pr = et.get("patch_reject_reason")
+    if pr == "validation_tests_failed" or edit_reason == "test_failure":
+        # Patch applied in the edit loop but project tests failed (distinct from harness validation below).
+        return "validation_regression"
+
     if isinstance(edit_reason, str) and edit_reason in _EDIT_GROUNDING_CODES:
         return "edit_grounding_failure"
 
@@ -126,7 +131,7 @@ def classify_failure_bucket(
     if not validation_passed and validation_logs and structural_success:
         return "validation_regression"
 
-    if not structural_success and edit_reason:
+    if not structural_success and edit_reason and edit_reason != "test_failure":
         return "edit_grounding_failure"
 
     if not validation_passed and validation_logs:
