@@ -2,9 +2,18 @@
 
 import logging
 
+from agent.contracts.error_codes import REASON_CODE_INSUFFICIENT_GROUNDING
 from agent.memory.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+# Re-export for step_dispatcher
+__all__ = ["REASON_CODE_INSUFFICIENT_GROUNDING", "code_explain_grounding_ready", "ensure_context_before_explain"]
+
+
+def code_explain_grounding_ready(step: dict, state: AgentState) -> tuple[bool, dict]:
+    """Check grounding signals. Returns (ready, signals). Minimal stub for Stage 2 isolation."""
+    return True, {"reason_code": REASON_CODE_INSUFFICIENT_GROUNDING}
 
 
 def ensure_context_before_explain(step: dict, state: AgentState) -> tuple[bool, dict | None]:
