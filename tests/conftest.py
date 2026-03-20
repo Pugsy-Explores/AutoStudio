@@ -1,10 +1,43 @@
 """Pytest configuration."""
 
+# Pre-import numpy before mocks/threads to avoid RecursionError in Python 3.12
+# (numpy + nested import loader; see Docs/RCA_AUDIT12_RECURSION_AND_STUBS.md)
+import numpy  # noqa: F401
+
+import importlib
 import logging
+import os
 
 import pytest
 
 logger = logging.getLogger(__name__)
+
+# Modules required for the default test suite. Install: pip install -e ".[test]" or bash scripts/install_test_deps.sh
+_REQUIRED_IMPORTS = ("tree_sitter_python", "rank_bm25")
+
+
+def pytest_sessionstart(session):
+    if os.environ.get("AUTOSTUDIO_SKIP_IMPORT_CHECK") == "1":
+        return
+    failed: list[str] = []
+    for name in _REQUIRED_IMPORTS:
+        try:
+            importlib.import_module(name)
+        except ImportError as e:
+            failed.append(f"{name} (ImportError: {e})")
+        except RecursionError as e:
+            failed.append(
+                f"{name} (RecursionError: installed but unusable). "
+                "Try: pip install numpy --upgrade && pip install rank-bm25 --force-reinstall"
+            )
+    if failed:
+        pytest.exit(
+            "Required packages for tests failed to import:\n  - "
+            + "\n  - ".join(failed)
+            + "\n\nInstall with: pip install -e \".[test]\" or bash scripts/install_test_deps.sh\n"
+            "(Set AUTOSTUDIO_SKIP_IMPORT_CHECK=1 only to bypass in emergencies.)",
+            returncode=2,
+        )
 
 
 def pytest_addoption(parser):

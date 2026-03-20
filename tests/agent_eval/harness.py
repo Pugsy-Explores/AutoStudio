@@ -7,6 +7,9 @@ fixture roots under `tests/agent_eval/fixtures/`.
 
 from __future__ import annotations
 
+# Pre-import numpy before mocks/threads to avoid RecursionError in rank_bm25 and reranker
+import numpy  # noqa: F401
+
 import json
 import subprocess
 import uuid
@@ -54,9 +57,13 @@ def _serialize_loop_output(loop_output: dict | None) -> dict[str, Any]:
     if loop_output is None:
         return {}
     try:
-        return json.loads(json.dumps(loop_output, default=str))
-    except Exception:
-        return {"_serialization_error": True, "repr": repr(loop_output)}
+        from agent.observability.json_sanitize import json_safe_tree
+
+        safe = json_safe_tree(loop_output)
+        return json.loads(json.dumps(safe, default=str))
+    except Exception as e:
+        # Never call repr() on raw loop_output — cyclic graphs can RecursionError.
+        return {"_serialization_error": True, "error": str(e)[:2000]}
 
 
 def make_loop_result(state: AgentState, loop_output: dict) -> MagicMock:
@@ -107,8 +114,26 @@ def _compat_parent_plan(parent_plan_id: str = "pplan_compat_bench") -> dict:
     }
 
 
-def _two_phase_parent_plan(instruction: str, parent_plan_id: str = "pplan_hier_bench") -> dict:
+def _is_docs_consistency_task(spec: TaskSpec) -> bool:
+    """True when task requires doc/code alignment + validation (generic task semantics)."""
+    tags = getattr(spec, "tags", ()) or ()
+    return "docs" in tags and "consistency" in tags
+
+
+def _is_explain_artifact_task(spec: TaskSpec) -> bool:
+    """True when task requires writing an artifact file (generic task semantics)."""
+    return getattr(spec, "grading_mode", "") == "explain_artifact"
+
+
+def _two_phase_parent_plan(
+    instruction: str,
+    parent_plan_id: str = "pplan_hier_bench",
+    spec: TaskSpec | None = None,
+) -> dict:
     sg0, sg1 = _derive_phase_subgoals(instruction)
+    # Stage 15: pass subgoal as query/description so SEARCH_CANDIDATES and EXPLAIN get usable context.
+    # Stage 16: phase 1 shape varies by task class — docs-consistency needs EDIT, explain-artifact needs WRITE_ARTIFACT.
+    phase_1_steps = _build_phase_1_steps(sg1, spec)
     return {
         "parent_plan_id": parent_plan_id,
         "instruction": instruction,
@@ -121,8 +146,25 @@ def _two_phase_parent_plan(instruction: str, parent_plan_id: str = "pplan_hier_b
                 "subgoal": sg0,
                 "lane": "docs",
                 "steps": [
-                    {"id": 1, "action": "SEARCH_CANDIDATES", "artifact_mode": "docs"},
-                    {"id": 2, "action": "EXPLAIN", "artifact_mode": "docs"},
+                    {
+                        "id": 1,
+                        "action": "SEARCH_CANDIDATES",
+                        "artifact_mode": "docs",
+                        "description": sg0,
+                        "query": sg0,
+                    },
+                    {
+                        "id": 2,
+                        "action": "BUILD_CONTEXT",
+                        "artifact_mode": "docs",
+                        "description": "Build docs context from candidates",
+                    },
+                    {
+                        "id": 3,
+                        "action": "EXPLAIN",
+                        "artifact_mode": "docs",
+                        "description": sg0,
+                    },
                 ],
                 "plan_id": "plan_p0_bench",
                 "retry_policy": {"max_parent_retries": 0},
@@ -132,7 +174,7 @@ def _two_phase_parent_plan(instruction: str, parent_plan_id: str = "pplan_hier_b
                 "phase_index": 1,
                 "subgoal": sg1,
                 "lane": "code",
-                "steps": [{"id": 1, "action": "EXPLAIN", "description": sg1}],
+                "steps": phase_1_steps,
                 "plan_id": "plan_p1_bench",
                 "retry_policy": {"max_parent_retries": 0},
             },
@@ -140,10 +182,30 @@ def _two_phase_parent_plan(instruction: str, parent_plan_id: str = "pplan_hier_b
     }
 
 
+def _build_phase_1_steps(subgoal: str, spec: TaskSpec | None) -> list[dict]:
+    """Build phase 1 steps from task semantics. Docs-consistency: SEARCH+EDIT; explain-artifact: SEARCH+EXPLAIN+WRITE_ARTIFACT."""
+    if spec and _is_docs_consistency_task(spec):
+        # Deterministic: docs-consistency requires SEARCH (grounding) + EDIT (align files) + validation via loop.
+        return [
+            {"id": 1, "action": "SEARCH", "description": subgoal, "reason": "Locate docs and code to align"},
+            {"id": 2, "action": "EDIT", "description": subgoal, "reason": "Align docs with code per instruction"},
+        ]
+    if spec and _is_explain_artifact_task(spec):
+        artifacts = getattr(spec, "expected_artifacts", ()) or ()
+        path = artifacts[0] if artifacts else ""
+        if path:
+            return [
+                {"id": 1, "action": "SEARCH", "description": subgoal, "reason": "Locate code/docs for explain artifact"},
+                {"id": 2, "action": "EXPLAIN", "description": subgoal, "reason": "Produce explanation for artifact"},
+                {"id": 3, "action": "WRITE_ARTIFACT", "artifact_path": path, "description": subgoal},
+            ]
+    return [{"id": 1, "action": "EXPLAIN", "description": subgoal}]
+
+
 def _parent_plan_for_spec(spec: TaskSpec) -> dict:
     if spec.orchestration_path == "compat":
         return _compat_parent_plan(f"pplan_{spec.task_id}")
-    return _two_phase_parent_plan(spec.instruction, parent_plan_id=f"pplan_{spec.task_id}")
+    return _two_phase_parent_plan(spec.instruction, parent_plan_id=f"pplan_{spec.task_id}", spec=spec)
 
 
 def _task_success(loop_output: dict, path_mode: str, exc: BaseException | None) -> bool:
@@ -246,12 +308,61 @@ def run_shell_command(cmd: str, *, cwd: Path, timeout: int) -> tuple[int, str, s
     return p.returncode, p.stdout or "", p.stderr or ""
 
 
+# Stdlib module names that shadow local packages in adversarial repos.
+# When workspace has logging/ and we run pytest from workspace, pytest loads
+# workspace logging before stdlib, causing ImportError. Run from parent with
+# no PYTHONPATH so pytest loads stdlib first; test file adds workspace via sys.path.
+# Note: io/ cannot be fixed—Python's frozen io module always wins.
+_STDLIB_SHADOW_DIRS = frozenset({"logging", "config", "parser", "ast", "types"})
+
+
+def _workspace_has_stdlib_shadowing(workspace: Path) -> bool:
+    """True if workspace has a top-level dir that shadows a stdlib module."""
+    if not workspace or not workspace.is_dir():
+        return False
+    for name in _STDLIB_SHADOW_DIRS:
+        if (workspace / name).is_dir():
+            return True
+    return False
+
+
+def _transform_pytest_cmd_for_shadowing(cmd: str, workspace: Path) -> tuple[str, Path] | None:
+    """
+    When workspace has stdlib-shadowing packages and cmd uses pytest with PYTHONPATH=.,
+    return (transformed_cmd, parent_cwd) so pytest loads stdlib first.
+    Test files add workspace via sys.path.insert, so they find the local package.
+    Returns None if no transformation needed.
+    """
+    if not _workspace_has_stdlib_shadowing(workspace):
+        return None
+    if "pytest" not in cmd.lower():
+        return None
+    # Strip PYTHONPATH=... from start so pytest loads stdlib
+    import re
+
+    transformed = re.sub(r"^PYTHONPATH=[^\s]+\s+", "", cmd.strip())
+    if transformed == cmd:
+        return None
+    # Rewrite tests/X.py -> workspace_name/tests/X.py for cwd=workspace.parent
+    ws_name = workspace.name
+    transformed = re.sub(r"\btests/([\w/]+\.py)", rf"{ws_name}/tests/\1", transformed)
+    parent = workspace.parent
+    return (transformed, parent)
+
+
 def run_validation_commands(spec: TaskSpec, cwd: Path) -> tuple[bool, list[dict[str, Any]]]:
     """Run each validation command in order; all must exit 0."""
     logs: list[dict[str, Any]] = []
     for cmd in spec.validation_commands:
-        code, out, err = run_shell_command(cmd, cwd=cwd, timeout=spec.timeout_seconds)
-        logs.append({"command": cmd, "exit_code": code, "stdout": out, "stderr": err})
+        run_cwd = cwd
+        run_cmd = cmd
+        transformed = _transform_pytest_cmd_for_shadowing(cmd, cwd)
+        if transformed is not None:
+            run_cmd, run_cwd = transformed
+        code, out, err = run_shell_command(run_cmd, cwd=run_cwd, timeout=spec.timeout_seconds)
+        logs.append(
+            {"command": run_cmd, "original_command": cmd, "exit_code": code, "stdout": out, "stderr": err}
+        )
         if code != 0:
             return False, logs
     return True, logs
@@ -438,7 +549,7 @@ def run_single_task(
     if spec.grading_mode == "explain_artifact" and explain_ok is False:
         fc = fc or "explain_artifact_failed"
 
-    from tests.agent_eval.failure_buckets import classify_failure_bucket
+    from tests.agent_eval.failure_buckets import classify_failure_bucket, infer_first_failing_stage
 
     fb = None
     if not success:
@@ -452,6 +563,13 @@ def run_single_task(
             notes="; ".join(notes_parts) if notes_parts else "",
             index_ok=index_meta.get("ok") if isinstance(index_meta, dict) else None,
         )
+
+    first_failing_stage = infer_first_failing_stage(
+        success=success,
+        structural_success=struct_ok,
+        validation_passed=validation_passed_flag,
+        loop_snapshot=loop_snap,
+    )
 
     return TaskOutcome(
         task_id=spec.task_id,
@@ -477,6 +595,7 @@ def run_single_task(
             "git_baseline": git_meta,
             "execution_mode": execution_mode,
             "failure_bucket": fb,
+            "first_failing_stage": first_failing_stage,
             "diff_unified": diff_text[:200000] if diff_text else "",
             "edit_telemetry": (loop_snap.get("edit_telemetry") if isinstance(loop_snap, dict) else None)
             or {},

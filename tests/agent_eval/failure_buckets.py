@@ -18,6 +18,22 @@ FailureBucket = Literal[
     "unknown",
 ]
 
+def _merge_edit_telemetry_from_phases(loop_snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Hierarchical runs store edit_telemetry on the last phase's loop_output; merge for classification."""
+    et = loop_snapshot.get("edit_telemetry") if isinstance(loop_snapshot, dict) else None
+    if isinstance(et, dict) and et:
+        return et
+    for pr in reversed(loop_snapshot.get("phase_results") or []):
+        if not isinstance(pr, dict):
+            continue
+        lo = pr.get("loop_output")
+        if isinstance(lo, dict):
+            e2 = lo.get("edit_telemetry")
+            if isinstance(e2, dict) and e2:
+                return e2
+    return et if isinstance(et, dict) else {}
+
+
 _EDIT_GROUNDING_CODES = frozenset(
     {
         "symbol_not_found",
@@ -54,9 +70,7 @@ def classify_failure_bucket(
     if success:
         return "unknown"
 
-    et = loop_snapshot.get("edit_telemetry") if isinstance(loop_snapshot, dict) else None
-    if not isinstance(et, dict):
-        et = {}
+    et = _merge_edit_telemetry_from_phases(loop_snapshot)
 
     text = " ".join(
         [
@@ -74,12 +88,15 @@ def classify_failure_bucket(
     if index_ok is False or "index_failed" in (notes or ""):
         return "infra_or_stub_failure"
 
-    if "recursionerror" in text or "reranker inference failed" in text:
+    if (
+        "recursionerror" in text
+        or "reranker inference failed" in text
+        or "maximum recursion" in text
+        or "recursion depth" in text
+    ):
         return "infra_or_stub_failure"
 
-    et_early = loop_snapshot.get("edit_telemetry") if isinstance(loop_snapshot, dict) else None
-    if not isinstance(et_early, dict):
-        et_early = {}
+    et_early = _merge_edit_telemetry_from_phases(loop_snapshot)
     pr_early = et_early.get("patch_reject_reason")
     er_early = et_early.get("edit_failure_reason")
     if pr_early == "validation_tests_failed" or er_early == "test_failure":
@@ -138,7 +155,43 @@ def classify_failure_bucket(
     if not structural_success and edit_reason and edit_reason != "test_failure":
         return "edit_grounding_failure"
 
-    if not validation_passed and validation_logs:
-        return "validation_regression"
-
     return "unknown"
+
+
+FirstFailingStage = Literal["SEARCH", "EDIT", "VALIDATE"]
+
+
+def infer_first_failing_stage(
+    *,
+    success: bool,
+    structural_success: bool,
+    validation_passed: bool,
+    loop_snapshot: dict[str, Any],
+) -> FirstFailingStage | None:
+    """
+    Infer which stage (SEARCH, EDIT, VALIDATE) failed first. Returns None if success.
+    Stage 14 benchmark accounting.
+    """
+    if success:
+        return None
+    et = _merge_edit_telemetry_from_phases(loop_snapshot)
+
+    if structural_success and not validation_passed:
+        return "VALIDATE"
+
+    if not structural_success:
+        patches = et.get("patches_applied") or 0
+        pr = et.get("patch_reject_reason")
+        ef = et.get("edit_failure_reason")
+        attempted = et.get("attempted_target_files") or []
+        viable = et.get("search_viable_file_hits")
+
+        if pr or ef or (isinstance(attempted, list) and len(attempted) > 0):
+            return "EDIT"
+        if isinstance(viable, int) and viable == 0:
+            return "SEARCH"
+        if isinstance(attempted, list) and len(attempted) == 0:
+            return "SEARCH"
+        return "EDIT"
+
+    return None

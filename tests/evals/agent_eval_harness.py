@@ -8,6 +8,9 @@ return deterministic successful step results so GoalEvaluator succeeds.
 
 from __future__ import annotations
 
+# Pre-import numpy before mocks/threads to avoid RecursionError in rank_bm25 and reranker
+import numpy  # noqa: F401
+
 import json
 import time
 import uuid

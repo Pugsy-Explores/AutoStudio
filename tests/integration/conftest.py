@@ -12,6 +12,9 @@ Requires:
 
 import os
 
+# Pre-import numpy before retrieval/reranker to avoid RecursionError in Python 3.12
+import numpy  # noqa: F401
+
 import pytest
 
 
