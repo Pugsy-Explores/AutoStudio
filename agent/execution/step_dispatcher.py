@@ -261,7 +261,12 @@ def _search_fn(query: str, state: AgentState):
 
             result = {
                 **result,
-                "results": filter_and_rank_search_results(reslist, query, str(project_root)),
+                "results": filter_and_rank_search_results(
+                    reslist,
+                    query,
+                    str(project_root),
+                    parent_instruction=(state.context or {}).get("parent_instruction"),
+                ),
             }
 
         if cache_size > 0 and result:
@@ -312,13 +317,47 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
     instruction = step.get("description") or ""
     context = state.context
     project_root = context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    context["project_root"] = project_root
     context["instruction"] = instruction
+    # Symbol-retry hints (from mutation_strategies.symbol_retry)
+    if step.get("edit_target_file_override"):
+        context["edit_target_file_override"] = step["edit_target_file_override"]
+    if step.get("edit_target_level"):
+        context["edit_target_level"] = step["edit_target_level"]
+    if step.get("edit_target_symbol_short"):
+        context["edit_target_symbol_short"] = step["edit_target_symbol_short"]
 
     diff_plan = plan_diff(instruction, context)
     changes = diff_plan.get("changes", [])
     context["edit_target_file"] = changes[0].get("file") if changes else None
     context["edit_target_symbol"] = changes[0].get("symbol") if changes else None
     context["edit_failure_reason"] = None
+
+    prc = context.get("prior_phase_ranked_context")
+    prc_n = len(prc) if isinstance(prc, list) else 0
+    rc = context.get("ranked_context")
+    rc_n = len(rc) if isinstance(rc, list) else 0
+    stc = context.get("search_target_candidates")
+    stc_n = len(stc) if isinstance(stc, list) else 0
+    rs = context.get("retrieved_symbols")
+    rs_n = len(rs) if isinstance(rs, list) else 0
+    rm = context.get("retrieval_metrics") or {}
+    _samples: list[str] = []
+    for key in ("ranked_context", "prior_phase_ranked_context"):
+        for item in (context.get(key) or [])[:12]:
+            if isinstance(item, dict) and item.get("file"):
+                fp = str(item.get("file", "")).strip()
+                if fp and fp not in _samples:
+                    _samples.append(fp)
+    context["edit_grounding_telemetry"] = {
+        "ranked_context_items": rc_n,
+        "prior_phase_ranked_items": prc_n,
+        "search_target_candidates": stc_n,
+        "retrieved_symbols_items": rs_n,
+        "plan_diff_changes": len(changes),
+        "instruction_path_injects": rm.get("instruction_path_injects"),
+        "context_file_sample": _samples[:6],
+    }
 
     if changes:
         root = Path(project_root).resolve()
@@ -456,6 +495,49 @@ def _infra_fn(step: dict, state: AgentState) -> dict:
         return {"success": True, "output": out}
     except Exception as e:
         return {"success": False, "output": {"returncode": -1}, "error": str(e)}
+
+
+def _write_artifact_fn(step: dict, state: AgentState) -> dict:
+    """Write previous EXPLAIN output to artifact_path. Stage 16: explain-artifact tasks."""
+    path = step.get("artifact_path") or ""
+    if not path or not isinstance(path, str):
+        return {
+            "success": False,
+            "output": {},
+            "error": "WRITE_ARTIFACT requires artifact_path",
+            "classification": ResultClassification.FATAL_FAILURE.value,
+        }
+    project_root = (state.context or {}).get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    content = ""
+    for sr in reversed(state.step_results or []):
+        if getattr(sr, "action", "").upper() == "EXPLAIN" and getattr(sr, "success", False):
+            out = getattr(sr, "output", "")
+            content = out if isinstance(out, str) else str(out or "")
+            break
+    if not content:
+        return {
+            "success": False,
+            "output": {},
+            "error": "WRITE_ARTIFACT: no prior EXPLAIN output to write",
+            "classification": ResultClassification.RETRYABLE_FAILURE.value,
+        }
+    full_path = Path(project_root) / path
+    try:
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content, encoding="utf-8")
+        rel_path = str(path)
+        return {
+            "success": True,
+            "output": {"files_modified": [rel_path], "path": rel_path},
+            "classification": ResultClassification.SUCCESS.value,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "output": {},
+            "error": f"WRITE_ARTIFACT failed: {e}",
+            "classification": ResultClassification.RETRYABLE_FAILURE.value,
+        }
 
 
 def _shape_query_for_explain_retrieval(instruction: str) -> str | None:
@@ -691,8 +773,10 @@ def dispatch(step: dict, state: AgentState) -> dict:
         state.context["tool_node"] = chosen_tool
         if raw.get("success") and raw.get("output"):
             out = raw["output"]
-            if isinstance(out, dict) and (out.get("results") or []):
-                run_retrieval_pipeline(out.get("results", []), state, out.get("query"))
+            # Always run pipeline (including empty results) so docs-alignment instruction-path
+            # injection and empty-search recovery can populate ranked_context / search_target_candidates.
+            if isinstance(out, dict):
+                run_retrieval_pipeline(out.get("results") or [], state, out.get("query"))
             cand: list[str] = []
             for item in state.context.get("ranked_context") or []:
                 if isinstance(item, dict):
@@ -733,6 +817,9 @@ def dispatch(step: dict, state: AgentState) -> dict:
         raw = _policy_engine.execute_with_policy(step, state)
         state.context["tool_node"] = chosen_tool
         return raw
+
+    if action == "WRITE_ARTIFACT":
+        return _write_artifact_fn(step, state)
 
     # EXPLAIN or unknown: use config task_models["EXPLAIN"] then call chosen model
     state.context["tool_node"] = chosen_tool

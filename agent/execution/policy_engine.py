@@ -45,13 +45,17 @@ def validate_step_input(step: dict) -> None:
 
 
 def _is_valid_search_result(results: list | None) -> bool:
-    """True only if the first result has a non-empty file and a real snippet."""
+    """True if the first result has a file path; snippet may be empty for graph/BM25 hits."""
     if not results:
         return False
     r = results[0]
     if not r.get("file"):
         return False
-    if r.get("snippet") in ("", "[]", None):
+    snip = r.get("snippet")
+    if snip in ("", "[]", None):
+        f = (r.get("file") or "").lower()
+        if f.endswith((".py", ".pyi")):
+            return True
         return False
     return True
 
@@ -422,7 +426,7 @@ class ExecutionPolicyEngine:
         mutation: str | None,
         attempt_history: list[dict[str, Any]],
     ) -> dict:
-        steps_to_try = symbol_retry(step)[:max_attempts]
+        steps_to_try = symbol_retry(step, state)[:max_attempts]
         for attempt_num, st in enumerate(steps_to_try, start=1):
             logger.info("[policy] EDIT attempt %s", attempt_num)
             try:
