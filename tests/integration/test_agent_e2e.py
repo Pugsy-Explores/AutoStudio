@@ -29,10 +29,6 @@ logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.integration
 
 
-def _requires_tree_sitter():
-    pytest.importorskip("tree_sitter_python")
-
-
 _EXECUTORS_MULTI_FILE = [
     ("executor_a", "class ExecutorA:\n    def run(self):\n        return 1"),
     ("executor_b", "class ExecutorB:\n    def run(self):\n        return 2"),
@@ -42,7 +38,6 @@ _EXECUTORS_MULTI_FILE = [
 
 def _setup_indexed_executor_repo(tmp_path: Path) -> str:
     """Create repo with executor classes, indexed for graph retrieval."""
-    _requires_tree_sitter()
     exec_dir = tmp_path / "executors"
     exec_dir.mkdir(parents=True, exist_ok=True)
     (exec_dir / "__init__.py").write_text("")

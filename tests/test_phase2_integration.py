@@ -30,10 +30,6 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures" / "repo"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _requires_tree_sitter():
-    pytest.importorskip("tree_sitter_python")
-
-
 # --- Stage 1: Repository indexing ---
 
 
@@ -41,7 +37,6 @@ class TestStage1RepoIndexing:
     """Test index_repo(path) produces symbols.json, repo_map.json, index.sqlite."""
 
     def test_index_repo_creates_artifacts(self, tmp_path):
-        _requires_tree_sitter()
         out_dir = tmp_path / ".symbol_graph"
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -61,7 +56,6 @@ class TestStage2SymbolGraph:
     """Test get_symbol_dependencies: find callers, imports, inheritance."""
 
     def test_get_symbol_dependencies_returns_structured_results(self, tmp_path):
-        _requires_tree_sitter()
         out_dir = tmp_path / ".symbol_graph"
         out_dir.mkdir(parents=True, exist_ok=True)
         index_repo(str(FIXTURES_DIR), output_dir=str(out_dir))
@@ -76,7 +70,6 @@ class TestStage2SymbolGraph:
             assert d["type"] in ("calls", "referenced_by")
 
     def test_get_symbol_dependencies_missing_symbol_returns_empty(self, tmp_path):
-        _requires_tree_sitter()
         out_dir = tmp_path / ".symbol_graph"
         out_dir.mkdir(parents=True, exist_ok=True)
         index_repo(str(FIXTURES_DIR), output_dir=str(out_dir))
@@ -178,7 +171,6 @@ class TestStage7EditingPipeline:
     """Test patching on toy repo: diff planner -> patch generator -> AST patcher -> validator -> executor. Rollback must work."""
 
     def test_full_editing_pipeline_applies_patch(self, tmp_path):
-        _requires_tree_sitter()
         foo_src = FIXTURES_DIR / "foo.py"
         foo_dst = tmp_path / "foo.py"
         shutil.copy(foo_src, foo_dst)
@@ -305,7 +297,9 @@ class TestStep5Observability:
 
         traces_dir = tmp_path / ".agent_memory" / "traces"
         if not traces_dir.exists():
-            pytest.skip("No traces dir created")
+            pytest.fail(
+                "Expected .agent_memory/traces after run_agent; trace logging may be disabled or run_agent failed silently"
+            )
         trace_files = list(traces_dir.glob("*.json"))
         assert len(trace_files) > 0, "At least one trace file should exist"
 

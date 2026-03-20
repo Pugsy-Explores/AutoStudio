@@ -33,22 +33,8 @@ def test_run_single_task_mocked_smoke(tmp_path):
     assert (ws / ".symbol_graph" / "symbols.json").is_file()
 
 
-def test_runner_writes_summary(tmp_path, monkeypatch):
-    import shutil
-
-    import tests.agent_eval.runner as rmod
-
-    fx_src = Path(__file__).resolve().parent / "fixtures"
-    fx_dst = tmp_path / "tests" / "agent_eval" / "fixtures"
-    fx_dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(fx_src, fx_dst)
-    monkeypatch.chdir(tmp_path)
-
-    run_dir, results, summary = rmod.run_suite(
-        "core12",
-        Path("artifacts/agent_eval_runs/latest"),
-        repo_root=tmp_path,
-    )
+def test_runner_writes_summary(run_suite_core12_mocked):
+    run_dir, results, summary = run_suite_core12_mocked
     assert summary["total_tasks"] == 12
     assert len(results) == 12
     assert (Path(run_dir) / "summary.json").exists()

@@ -27,10 +27,6 @@ from repo_index.indexer import index_repo
 logger = logging.getLogger(__name__)
 
 
-def _requires_tree_sitter():
-    """Skip test if tree-sitter is not installed (needed for indexing and AST patching)."""
-    pytest.importorskip("tree_sitter_python")
-
 # Minimal StepExecutor-like module for fixtures
 _EXECUTOR_PY = '''"""StepExecutor: execute planner steps via dispatcher."""
 
@@ -118,14 +114,12 @@ def _e2e_env(monkeypatch):
 @pytest.fixture
 def indexed_executor_repo(tmp_path):
     """Repo with StepExecutor, indexed for graph retrieval."""
-    _requires_tree_sitter()
     return _setup_indexed_repo(tmp_path, _EXECUTOR_PY)
 
 
 @pytest.fixture
 def indexed_multi_executor_repo(tmp_path):
     """Repo with ExecutorA and ExecutorB in separate files."""
-    _requires_tree_sitter()
     exec_dir = tmp_path / "executors"
     exec_dir.mkdir(parents=True, exist_ok=True)
     (exec_dir / "__init__.py").write_text("")

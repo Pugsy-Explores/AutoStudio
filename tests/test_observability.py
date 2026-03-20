@@ -138,8 +138,7 @@ def test_trace_includes_query_when_provided(tmp_path):
 def test_replay_script_loads_trace(tmp_path):
     """replay_trace.py loads fixture trace and exits 0."""
     fixture = ROOT / "tests" / "fixtures" / "trace_sample.json"
-    if not fixture.exists():
-        pytest.skip("fixture trace_sample.json not found")
+    assert fixture.is_file(), f"fixture missing: {fixture}"
     result = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "replay_trace.py"), str(fixture), "--mode", "print"],
         cwd=str(ROOT),

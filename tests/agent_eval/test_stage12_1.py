@@ -105,24 +105,9 @@ def test_outcome_public_schema_keys():
     assert "task_id" in pub and "diff_stat" in pub
 
 
-def test_run_suite_mocked_backward_compat(tmp_path, monkeypatch):
+def test_run_suite_mocked_backward_compat(run_suite_core12_mocked):
     """Mocked mode still runs 12 tasks and does not invoke real execution_loop."""
-    import shutil
-
-    import tests.agent_eval.runner as rmod
-
-    fx_src = Path(__file__).resolve().parent / "fixtures"
-    fx_dst = tmp_path / "tests" / "agent_eval" / "fixtures"
-    fx_dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(fx_src, fx_dst)
-    monkeypatch.chdir(tmp_path)
-
-    run_dir, results, summary = rmod.run_suite(
-        "core12",
-        Path("artifacts/agent_eval_runs/latest"),
-        repo_root=tmp_path,
-        execution_mode="mocked",
-    )
+    run_dir, results, summary = run_suite_core12_mocked
     assert summary["total_tasks"] == 12
     assert summary["execution_mode"] == "mocked"
     assert all((r.extra or {}).get("execution_mode") == "mocked" for r in results)

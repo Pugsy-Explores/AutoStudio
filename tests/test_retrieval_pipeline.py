@@ -32,15 +32,9 @@ def _setup_indexed_subset(tmp_path: Path, project_root: Path, subdirs: tuple[str
     return str(tmp_path), str(project_root)
 
 
-def _requires_tree_sitter():
-    """Skip test if tree-sitter is not installed (needed for indexing)."""
-    pytest.importorskip("tree_sitter_python")
-
-
 @pytest.fixture(scope="session")
 def indexed_autostudio(tmp_path_factory):
     """Index agent/ and editing/ once per session; shared by all slow tests."""
-    _requires_tree_sitter()
     tmp_path = tmp_path_factory.mktemp("retrieval_index")
     project_root = Path(__file__).resolve().parent.parent
     return _setup_indexed_subset(tmp_path, project_root, _INDEX_SUBDIRS)
@@ -49,7 +43,6 @@ def indexed_autostudio(tmp_path_factory):
 @pytest.fixture
 def indexed_fixtures(tmp_path):
     """Index test fixtures into tmp_path."""
-    _requires_tree_sitter()
     fixtures_dir = Path(__file__).parent / "fixtures" / "repo"
     return _setup_indexed_repo(tmp_path, fixtures_dir)
 

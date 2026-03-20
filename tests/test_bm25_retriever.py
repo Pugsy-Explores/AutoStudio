@@ -2,8 +2,6 @@
 
 import pytest
 
-pytest.importorskip("rank_bm25")
-
 
 def test_build_index_from_repo_map(tmp_path, monkeypatch):
     """BM25 index builds from repo_map when graph absent."""
@@ -49,3 +47,29 @@ def test_search_without_index_returns_empty(tmp_path, monkeypatch):
     # No .symbol_graph -> no index
     results = search_bm25("foo", str(tmp_path), top_k=10)
     assert results == []
+
+
+def test_build_index_recursion_error_returns_false(tmp_path, monkeypatch):
+    """When rank_bm25 import raises RecursionError (installed but unusable), build_bm25_index returns False."""
+    import builtins
+    import json
+
+    from agent.retrieval.bm25_retriever import _reset_for_testing, build_bm25_index
+
+    _reset_for_testing()
+    (tmp_path / ".symbol_graph").mkdir()
+    (tmp_path / ".symbol_graph" / "repo_map.json").write_text(
+        json.dumps({"symbols": {"foo": {"file": "a.py"}}})
+    )
+    monkeypatch.setenv("SERENA_PROJECT_DIR", str(tmp_path))
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "rank_bm25":
+            raise RecursionError("simulated numpy/import loader recursion")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    ok = build_bm25_index(str(tmp_path))
+    assert ok is False
