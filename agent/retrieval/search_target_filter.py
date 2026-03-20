@@ -2,6 +2,9 @@
 Stage 13: filter and rank raw search hits so EDIT sees files, not index roots or directories.
 
 Applied inside ``run_retrieval_pipeline`` before anchor detection.
+
+Stage 18: when the query (plus optional parent instruction) suggests docs/code alignment,
+keep markdown and Python hits — Stage 13 previously dropped all ``.md`` whenever any ``.py`` existed.
 """
 
 from __future__ import annotations
@@ -10,9 +13,11 @@ import logging
 import re
 from pathlib import Path
 
+from agent.retrieval.task_semantics import instruction_suggests_docs_consistency
+
 logger = logging.getLogger(__name__)
 
-_INDEX_PATH_MARKERS = (".symbol_graph", "__pycache__", ".git/", "/.git", "\\.git", "repo_map.json", "/symbols.json", "index.sqlite")
+_INDEX_PATH_MARKERS = (".symbol_graph", "__pycache__", ".git/", "/.git", "\\.git")
 
 
 def _is_blocked_path(rel_lower: str) -> bool:
@@ -26,7 +31,7 @@ def _is_blocked_path(rel_lower: str) -> bool:
     return False
 
 
-def _score_result(r: dict, query_lower: str) -> float:
+def _score_result(r: dict, query_lower: str, *, docs_alignment: bool = False) -> float:
     f = (r.get("file") or r.get("path") or "").lower()
     s = float(r.get("score", 0) or 0)
     if f.endswith(".py"):
@@ -50,15 +55,36 @@ def _score_result(r: dict, query_lower: str) -> float:
         s -= 6.0
     if "benchmark_local/" in f or "benchmark_local\\" in f:
         s += 2.0
-    if f.endswith((".md", ".toml", ".json", ".txt", ".yml", ".yaml")):
-        s -= 25.0
+    if docs_alignment:
+        if f.endswith(".md"):
+            s += 22.0
+            if "readme" in f or "readme" in query_lower:
+                s += 10.0
+        elif f.endswith((".toml", ".json", ".txt", ".yml", ".yaml")):
+            s -= 6.0
+    else:
+        if f.endswith((".md", ".toml", ".json", ".txt", ".yml", ".yaml")):
+            s -= 25.0
     return s
+
+
+def _merged_semantic_text(query: str | None, parent_instruction: str | None) -> str:
+    parts = []
+    if query and query.strip():
+        parts.append(query.strip())
+    if parent_instruction and str(parent_instruction).strip():
+        pi = str(parent_instruction).strip()
+        if pi not in " ".join(parts):
+            parts.append(pi)
+    return " ".join(parts).strip()
 
 
 def filter_and_rank_search_results(
     results: list[dict],
     query: str | None,
     project_root: str,
+    *,
+    parent_instruction: str | None = None,
 ) -> list[dict]:
     """
     Drop directories, index metadata paths, and paths outside project_root.
@@ -68,7 +94,11 @@ def filter_and_rank_search_results(
         return []
 
     root = Path(project_root).resolve()
+    merged = _merged_semantic_text(query, parent_instruction)
+    docs_alignment = instruction_suggests_docs_consistency(merged)
     query_lower = (query or "").lower()
+    if docs_alignment and merged:
+        query_lower = merged.lower()
     normalized: list[dict] = []
 
     for r in results:
@@ -99,7 +129,13 @@ def filter_and_rank_search_results(
         nr["file"] = str(p)
         if "path" in nr:
             nr["path"] = str(p)
-        nr["_target_filter_score"] = _score_result(nr, query_lower)
+        _need_snip = str(p).lower().endswith((".py", ".pyi"))
+        if docs_alignment:
+            _need_snip = _need_snip or str(p).lower().endswith((".md", ".mdx"))
+        if not (nr.get("snippet") or "").strip() and _need_snip:
+            # SEARCH policy requires a non-empty snippet; graph/BM25 sometimes omit it.
+            nr["snippet"] = "(no snippet)"
+        nr["_target_filter_score"] = _score_result(nr, query_lower, docs_alignment=docs_alignment)
         normalized.append(nr)
 
     normalized.sort(key=lambda x: float(x.get("_target_filter_score", 0)), reverse=True)
@@ -110,8 +146,17 @@ def filter_and_rank_search_results(
 
     has_py = any(str(x.get("file") or "").lower().endswith(".py") for x in normalized)
     if normalized and not has_py:
-        logger.debug("[search_target_filter] discarding non-.py hits to allow directory expansion")
-        normalized = []
+        if docs_alignment:
+            has_doc = any(
+                str(x.get("file") or "").lower().endswith((".md", ".mdx"))
+                for x in normalized
+            )
+            if not has_doc:
+                logger.debug("[search_target_filter] docs_alignment: no .py or .md; clearing")
+                normalized = []
+        else:
+            logger.debug("[search_target_filter] discarding non-.py hits to allow directory expansion")
+            normalized = []
 
     if not normalized and results:
         # Salvage: any result that resolves to a .py file under root
@@ -176,17 +221,27 @@ def filter_and_rank_search_results(
             except OSError:
                 continue
         for nr in normalized:
-            nr["_target_filter_score"] = _score_result(nr, query_lower)
+            nr["_target_filter_score"] = _score_result(nr, query_lower, docs_alignment=docs_alignment)
         normalized.sort(key=lambda x: float(x.get("_target_filter_score", 0)), reverse=True)
         for nr in normalized:
             nr.pop("_target_filter_score", None)
 
-    py_only = [
-        x
-        for x in normalized
-        if str(x.get("file") or "").lower().endswith((".py", ".pyi"))
-    ]
-    if py_only:
-        normalized = py_only
+    if docs_alignment:
+        keep_ext = (".py", ".pyi", ".md", ".mdx")
+        paired = [
+            x
+            for x in normalized
+            if str(x.get("file") or "").lower().endswith(keep_ext)
+        ]
+        if paired:
+            normalized = paired
+    else:
+        py_only = [
+            x
+            for x in normalized
+            if str(x.get("file") or "").lower().endswith((".py", ".pyi"))
+        ]
+        if py_only:
+            normalized = py_only
 
     return normalized

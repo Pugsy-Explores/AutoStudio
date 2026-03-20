@@ -65,7 +65,7 @@ def build_call_chain_context(symbol: str, project_root: str) -> dict:
             }
         finally:
             storage.close()
-    except ImportError:
+    except (ImportError, RecursionError):
         logger.debug("[context_builder] build_call_chain_context: repo_graph not available")
         return {"symbol": symbol, "call_chain": [], "dependencies": [], "references": []}
 

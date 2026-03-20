@@ -30,10 +30,16 @@ def _check_vector_available() -> bool:
     if _VECTOR_AVAILABLE is not None:
         return _VECTOR_AVAILABLE
     try:
-        import chromadb
-        from sentence_transformers import SentenceTransformer
+        import chromadb  # noqa: F401
+        from sentence_transformers import SentenceTransformer  # noqa: F401
         _VECTOR_AVAILABLE = True
     except ImportError:
+        _VECTOR_AVAILABLE = False
+    except RecursionError:
+        logger.warning(
+            "[vector_retriever] chromadb/sentence_transformers import failed with RecursionError; "
+            "vector search unavailable"
+        )
         _VECTOR_AVAILABLE = False
     return _VECTOR_AVAILABLE
 

@@ -77,7 +77,7 @@ def retrieve_symbol_context(query: str, project_root: str | None = None) -> dict
     try:
         from repo_graph.graph_query import expand_neighbors, find_symbol
         from repo_graph.graph_storage import GraphStorage
-    except ImportError:
+    except (ImportError, RecursionError):
         logger.debug("[graph_retriever] repo_graph not available")
         return None
 

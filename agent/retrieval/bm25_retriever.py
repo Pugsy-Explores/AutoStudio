@@ -114,7 +114,14 @@ def build_bm25_index(project_root: str | None = None) -> bool:
         logger.info("[bm25] indexed %d symbols", len(symbols))
         return True
     except ImportError:
-        logger.warning("[bm25] rank_bm25 not installed; pip install rank_bm25")
+        logger.warning("[bm25] rank_bm25 not installed; pip install rank-bm25")
+        return False
+    except RecursionError:
+        # rank_bm25->numpy can raise RecursionError in some import loader contexts (installed but unusable)
+        logger.warning(
+            "[bm25] rank_bm25 import failed with RecursionError (numpy/loader); bm25 unavailable. "
+            "Try: pip install numpy --upgrade && pip install rank-bm25 --force-reinstall"
+        )
         return False
 
 
@@ -137,7 +144,7 @@ def search_bm25(query: str, project_root: str | None = None, top_k: int = 30) ->
 
     try:
         from rank_bm25 import BM25Okapi  # noqa: PLC0415
-    except ImportError:
+    except (ImportError, RecursionError):
         return []
 
     tokenized_query = _tokenize(query)

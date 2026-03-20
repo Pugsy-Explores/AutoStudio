@@ -20,6 +20,8 @@ from agent.retrieval.retrieval_expander import expand_search_results
 from agent.retrieval.reranker.cache import cache_stats
 from agent.retrieval.reranker.deduplicator import deduplicate_candidates
 from agent.retrieval.reranker.reranker_factory import create_reranker
+from agent.retrieval.snippet_text import coerce_snippet_text
+from agent.retrieval.task_semantics import instruction_path_hints, instruction_suggests_docs_consistency
 from agent.retrieval.symbol_expander import expand_from_anchors
 from agent.tools import find_referencing_symbols, read_file, read_symbol_body
 from config.agent_config import MAX_RETRIEVAL_RESULTS
@@ -48,6 +50,80 @@ from config.retrieval_config import (
 logger = logging.getLogger(__name__)
 
 SEARCH_CANDIDATES_TOP_K = 20
+
+
+def _maybe_seed_ranked_context_when_search_empty(
+    state: AgentState,
+    project_root: str,
+    query: str | None,
+) -> None:
+    """When SEARCH yields no usable filtered hits or anchors, still load instruction path files."""
+    merged_ctx, inject_n = _inject_instruction_path_snippets([], state, project_root, query)
+    if inject_n:
+        state.context["ranked_context"] = merged_ctx
+        rm = state.context.get("retrieval_metrics") or {}
+        rm["instruction_path_injects"] = inject_n
+        rm["search_recovered_via_instruction_paths"] = True
+        state.context["retrieval_metrics"] = rm
+
+
+def _inject_instruction_path_snippets(
+    final_context: list[dict],
+    state: AgentState,
+    project_root: str,
+    query: str | None,
+) -> tuple[list[dict], int]:
+    """
+    Prepend full-file snippets for paths extracted from the merged instruction when docs/code
+    alignment is suggested. Ensures README.md / benchmark_local notes reach ranked_context even
+    when the search index ranked them out.
+    """
+    ctx = state.context or {}
+    merged = " ".join(
+        x for x in [query, ctx.get("parent_instruction"), state.instruction]
+        if x
+    ).strip()
+    if not instruction_suggests_docs_consistency(merged):
+        return final_context, 0
+    hints = instruction_path_hints(merged)
+    root = Path(project_root).resolve()
+    existing: set[str] = set()
+    for c in final_context:
+        if isinstance(c, dict) and c.get("file"):
+            try:
+                existing.add(str(Path(c["file"]).resolve()))
+            except (OSError, ValueError):
+                pass
+    injected: list[dict] = []
+    for h in hints:
+        h = h.strip()
+        if not h.endswith((".py", ".pyi", ".md", ".mdx")):
+            continue
+        p = (root / h).resolve()
+        try:
+            p.relative_to(root)
+        except ValueError:
+            continue
+        if not p.is_file():
+            continue
+        sp = str(p)
+        if sp in existing:
+            continue
+        try:
+            body = read_file(sp)
+        except Exception:
+            continue
+        snip = (body or "")[:12000]
+        injected.append({
+            "file": sp,
+            "symbol": "",
+            "snippet": snip,
+            "retrieval_result_type": "instruction_path_inject",
+        })
+        existing.add(sp)
+    if not injected:
+        return final_context, 0
+    return injected + final_context, len(injected)
 
 
 def search_candidates(query: str, project_root: str | None = None, state: AgentState | None = None) -> list[dict]:
@@ -386,18 +462,36 @@ def run_retrieval_pipeline(
     """
     raw_results = (search_results or [])[:MAX_SEARCH_RESULTS]
     project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    # Probe BM25 without crashing the pipeline: rank_bm25 pulls numpy; some numpy builds
+    # recurse on import in nested loader contexts (RecursionError, not ImportError).
     try:
         import rank_bm25  # noqa: F401
 
         state.context["bm25_available"] = True
     except ImportError:
         state.context["bm25_available"] = False
+    except RecursionError:
+        logger.warning(
+            "[retrieval_pipeline] rank_bm25 import failed with RecursionError "
+            "(numpy/import loader); bm25 marked unavailable"
+        )
+        state.context["bm25_available"] = False
     state.context["reranker_failed"] = False
     state.context["reranker_failed_fallback_used"] = False
-    results = filter_and_rank_search_results(raw_results, query, str(project_root))
+    ctx = state.context or {}
+    results = filter_and_rank_search_results(
+        raw_results,
+        query,
+        str(project_root),
+        parent_instruction=ctx.get("parent_instruction"),
+    )
+    for _r in results:
+        if isinstance(_r, dict):
+            _r["snippet"] = coerce_snippet_text(_r.get("snippet"))
     state.context["search_viable_raw_hits"] = len(raw_results)
     state.context["search_viable_file_hits"] = len(results)
     if not results:
+        _maybe_seed_ranked_context_when_search_empty(state, project_root, query)
         return {"results": [], "query": query or "", "anchors": 0}
 
     # Explicitly detect daemon availability; when active, route embedding + rerank through daemon only
@@ -420,6 +514,7 @@ def run_retrieval_pipeline(
         anchors = list(results[:FALLBACK_TOP_N])
         logger.info("[retrieval_pipeline] anchor fallback: using top %d filtered hits", len(anchors))
     if not anchors:
+        _maybe_seed_ranked_context_when_search_empty(state, project_root, query)
         return {"results": results, "query": query or "", "anchors": 0}
 
     localization_candidates: list[dict] = []
@@ -504,6 +599,9 @@ def run_retrieval_pipeline(
         candidates = symbol_snippets + candidates
     candidates = localization_candidates + candidates
     candidates = candidates[:MAX_RETRIEVAL_RESULTS]
+    for _c in candidates:
+        if isinstance(_c, dict):
+            _c["snippet"] = coerce_snippet_text(_c.get("snippet"))
     state.context["context_candidates"] = candidates
 
     # Step 5: Unconditional deduplication before reranker
@@ -536,8 +634,7 @@ def run_retrieval_pipeline(
             pipe_metrics.start("rerank")
             t0 = time.monotonic()
             deduped = candidates  # already deduped above
-            snippets = [c.get("snippet") or "" for c in deduped]
-            snippets = [(s if isinstance(s, str) else str(s))[:20000] for s in snippets]
+            snippets = [coerce_snippet_text(c.get("snippet")) for c in deduped]
             scored = _reranker.rerank(rank_query, snippets)
             rerank_ms = int((time.monotonic() - t0) * 1000)
             pipe_metrics.end("rerank")
@@ -614,6 +711,14 @@ def run_retrieval_pipeline(
         )
         state.context["context_compression_ratio"] = compression_ratio
 
+    final_context, inject_n = _inject_instruction_path_snippets(
+        final_context, state, project_root, query
+    )
+    if inject_n:
+        rm = state.context.get("retrieval_metrics") or {}
+        rm["instruction_path_injects"] = inject_n
+        state.context["retrieval_metrics"] = rm
+
     state.context["ranked_context"] = final_context
     state.context["ranking_scores"] = []
     pipe_metrics.log()
@@ -623,7 +728,7 @@ def run_retrieval_pipeline(
         search_memory = dict(search_memory)
         existing = search_memory.get("results") or []
         for s in built.get("snippets", [])[:5]:
-            snip = s.get("snippet", "") if isinstance(s, dict) else str(s)
+            snip = coerce_snippet_text(s.get("snippet", "") if isinstance(s, dict) else s)
             existing.append({"file": "", "snippet": snip[:500]})
         search_memory["results"] = existing
         state.context["search_memory"] = search_memory
