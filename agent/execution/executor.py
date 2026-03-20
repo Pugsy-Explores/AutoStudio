@@ -30,6 +30,8 @@ class StepExecutor:
             if action == "EDIT" and isinstance(output, dict):
                 files_modified = output.get("files_modified")
                 patch_size = output.get("patches_applied")
+            elif action == "WRITE_ARTIFACT" and isinstance(output, dict):
+                files_modified = output.get("files_modified")
             return StepResult(
                 step_id=step_id,
                 action=action,
@@ -71,8 +73,15 @@ def _print_step_result(r: StepResult, max_output_len: int = 500) -> None:
     out = r.output
     if out is not None and out != "":
         if isinstance(out, dict):
-            out_str = json.dumps(out, default=str)[:max_output_len]
-            if len(json.dumps(out, default=str)) > max_output_len:
+            try:
+                from agent.observability.json_sanitize import json_safe_tree
+
+                safe = json_safe_tree(out, max_depth=24, max_list_len=64, max_str_len=2000)
+                full = json.dumps(safe, default=str)
+            except Exception:
+                full = "{}"
+            out_str = full[:max_output_len]
+            if len(full) > max_output_len:
                 out_str += "..."
             print(f"  output: {out_str}")
         else:

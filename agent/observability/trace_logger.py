@@ -51,8 +51,10 @@ STAGES = [
 ]
 
 
-def summarize(value, max_chars: int = 200) -> str | dict:
+def summarize(value, max_chars: int = 200, _depth: int = 0, _max_depth: int = 32) -> str | dict:
     """Reduce LLM responses, retrieval results, code snippets to compact summaries."""
+    if _depth > _max_depth:
+        return "<max_depth>"
     if value is None:
         return {}
     if isinstance(value, dict):
@@ -68,10 +70,10 @@ def summarize(value, max_chars: int = 200) -> str | dict:
             elif isinstance(v, (int, float, bool)):
                 out[k] = v
             else:
-                out[k] = summarize(v, max_chars)
+                out[k] = summarize(v, max_chars, _depth + 1, _max_depth)
         return out
     if isinstance(value, (list, tuple)):
-        return [summarize(x, max_chars) for x in list(value)[:10]]
+        return [summarize(x, max_chars, _depth + 1, _max_depth) for x in list(value)[:10]]
     s = str(value)
     if len(s) > max_chars:
         return s[:max_chars] + "..."
