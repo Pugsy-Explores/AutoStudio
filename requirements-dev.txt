@@ -1,0 +1,7 @@
+# Install before running tests: pip install -r requirements-dev.txt
+# Or: pip install -e ".[test]"
+-r requirements.txt
+pytest>=7.0
+numpy>=1.24
+# Optional: pytest-xdist for parallel runs (pytest -n auto)
+pytest-xdist>=3.0

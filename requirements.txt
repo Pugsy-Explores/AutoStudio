@@ -1,6 +1,7 @@
 # Core
 openai>=1.0.0
 PyYAML>=6.0
+numpy>=1.24
 
 # Repository indexing (tree-sitter)
 tree-sitter>=0.20.0

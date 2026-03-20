@@ -14,6 +14,12 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "tree-sitter>=0.20.0",
     "tree-sitter-python>=0.20.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
 ]
 
 [project.scripts]
@@ -38,4 +44,5 @@ norecursedirs = [
     "{arch}",
     "*.egg",
     "tests/agent_eval/fixtures",
+    "tests/evals/fixtures",
 ]

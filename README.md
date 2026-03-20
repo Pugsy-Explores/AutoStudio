@@ -1006,6 +1006,8 @@ Creates `.symbol_graph/index.sqlite`, `symbols.json`, and `repo_map.json`. By de
 
 ## Testing
 
+Install dependencies first (includes pytest, numpy, tree-sitter, BM25): `pip install -r requirements-dev.txt` or `bash scripts/install_test_deps.sh`. The test session aborts early if core imports are missing (override only for emergencies: `AUTOSTUDIO_SKIP_IMPORT_CHECK=1`).
+
 ```bash
 # From workspace root (parent of AutoStudio)
 python -m pytest AutoStudio/tests/ -v
