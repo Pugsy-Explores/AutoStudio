@@ -397,6 +397,7 @@ def execution_loop(
                 "bm25_available": state.context.get("bm25_available"),
                 "reranker_failed": state.context.get("reranker_failed"),
                 "reranker_failed_fallback_used": state.context.get("reranker_failed_fallback_used"),
+                "grounding": state.context.get("edit_grounding_telemetry"),
             },
         }
         # Prefer last patch attempt count when step-level patch_count is zero (EDIT telemetry gap).

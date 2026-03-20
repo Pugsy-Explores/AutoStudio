@@ -312,13 +312,18 @@ def _extract_phase_context_output(phase_state: AgentState) -> dict:
         elif isinstance(pm, int) and not isinstance(pm, bool) and pm > 0:
             patches_applied_count += pm
 
-    return {
+    out = {
         "ranked_context": ranked,
         "retrieved_symbols": symbols,
         "retrieved_files": files,
         "files_modified": _dedupe_preserve_order(files_modified),
         "patches_applied": patches_applied_count,
     }
+    # Stage 15: additive retrieval telemetry for hierarchical explain/docs
+    rt = ctx.get("retrieval_telemetry")
+    if isinstance(rt, dict):
+        out["retrieval_telemetry"] = rt
+    return out
 
 
 def _build_phase_context_handoff(phase_result: dict) -> tuple[dict, bool]:
@@ -592,6 +597,18 @@ def _build_hierarchical_loop_output(
         retries_used += ac - 1
     out["attempts_total"] = attempts_total
     out["retries_used"] = retries_used
+
+    # Surface last phase edit_telemetry so harness/benchmarks match run_deterministic shape (Stage 18).
+    for pr in reversed(phase_results):
+        if not isinstance(pr, dict):
+            continue
+        lo = pr.get("loop_output")
+        if isinstance(lo, dict):
+            et = lo.get("edit_telemetry")
+            if isinstance(et, dict) and et:
+                out["edit_telemetry"] = et
+                break
+
     return out
 
 
