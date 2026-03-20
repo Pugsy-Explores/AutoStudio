@@ -19,7 +19,7 @@ def _get_parser():
 
             _PY_LANGUAGE = Language(tspython.language())
             _PARSER = Parser(_PY_LANGUAGE)
-        except ImportError as e:
+        except (ImportError, RecursionError) as e:
             logger.warning("[parser] tree-sitter not available: %s", e)
             return None, None
     return _PARSER, _PY_LANGUAGE
