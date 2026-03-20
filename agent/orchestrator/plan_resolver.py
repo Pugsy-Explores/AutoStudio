@@ -23,94 +23,84 @@ from config.agent_config import (
 from config.router_config import ENABLE_INSTRUCTION_ROUTER, ROUTER_CONFIDENCE_THRESHOLD
 from planner.planner import plan
 
+from agent.routing.docs_intent import DOCS_DISCOVERY_VERBS, DOCS_INTENT_TOKENS, is_two_phase_docs_code_intent
+from agent.routing.intent import (
+    INTENT_COMPOUND,
+    INTENT_DOC,
+    INTENT_EDIT,
+    INTENT_EXPLAIN,
+    INTENT_INFRA,
+    INTENT_SEARCH,
+    INTENT_VALIDATE,
+    PLAN_SHAPE_DOCS_SEED_LANE,
+    PLAN_SHAPE_TWO_PHASE_DOCS_CODE,
+    RoutedIntent,
+)
+
 logger = logging.getLogger(__name__)
 
-# Router categories that may short-circuit to a single step without calling plan().
-_SHORT_CIRCUIT_ROUTER_CATEGORIES = frozenset({"CODE_SEARCH", "CODE_EXPLAIN", "INFRA"})
+# ---------------------------------------------------------------------------
+# Resolver consumption matrix (Stage 39, Stage 40)
+# get_plan branches: DOC+docs_seed_lane -> _docs_seed_plan; SEARCH/EXPLAIN/INFRA ->
+# single-step; EDIT/VALIDATE/AMBIGUOUS/COMPOUND-flat -> plan(). get_parent_plan:
+# COMPOUND+two_phase_docs_code -> _build_two_phase_parent_plan or fallback.
+# resolver_consumption telemetry: docs_seed | short_search | short_explain |
+# short_infra | planner. planner_handoff_reason in telemetry when AMBIGUOUS.
+# ---------------------------------------------------------------------------
+
+# Stage 28 / Stage 38: plan resolution telemetry (router short-circuit, docs seed, planner, RoutedIntent)
+_plan_resolution_telemetry: dict = {}
 
 
-def _confidence_allows_router_short_circuit(confidence) -> bool:
-    """
-    True only when confidence is a usable numeric value at or above ROUTER_CONFIDENCE_THRESHOLD.
-    None, non-numeric, or below threshold → False (conservative: defer to planner).
-    """
-    if confidence is None:
-        return False
-    try:
-        value = float(confidence)
-    except (TypeError, ValueError):
-        return False
-    return value >= float(ROUTER_CONFIDENCE_THRESHOLD)
-
-_DOCS_INTENT_TOKENS = (
-    "readme",
-    "docs",
-    "documentation",
-    "documented",
-    "architecture docs",
-    "setup docs",
-    "install",
-    "installation",
-    "usage",
-    "guide",
-)
-
-_DOCS_DISCOVERY_VERBS = (
-    # High-precision markers that the user is asking to locate docs artifacts.
-    "where",
-    "locate",
-    "find",
-    "list",
-    "show",
-)
-
-_NON_DOCS_TOKENS = (
-    # Generic code-intent markers; keep bounded and domain-neutral.
-    "implemented",
-    "implementation",
-    "class ",
-    "function ",
-    "method ",
-    "refactor",
-    "edit ",
-    "change ",
-    "patch",
-    "bug",
-    "stack trace",
-    "exception",
-    # Phase 7B.1: mixed-intent markers (keep small; high precision).
-    "explain",
-    "flow",
-    # Negation of docs: "documented" substring in "undocumented" would false-positive.
-    "undocumented",
-)
+def get_plan_resolution_telemetry() -> dict:
+    """Return copy of last plan resolution telemetry. For run artifacts."""
+    return dict(_plan_resolution_telemetry)
 
 
-def _is_docs_artifact_intent(instruction: str) -> bool:
-    """
-    Phase 6D.2: bounded, deterministic docs-artifact intent detector.
-    Narrow purpose: detect instructions asking to locate/read documentation artifacts
-    (README/docs/documentation) so we can enter docs lane early.
+def reset_plan_resolution_telemetry() -> None:
+    """Reset before each task for clean audit."""
+    _plan_resolution_telemetry.clear()
 
-    Guardrails:
-    - deterministic string checks only
-    - bounded generic token list (no repo-specific phrases)
-    - do not try to be a broad semantic classifier
-    """
-    if not instruction:
-        return False
-    i = instruction.strip().lower()
-    if not i:
-        return False
-    # Conservative: only override when user is explicitly asking to locate docs artifacts.
-    has_discovery_verb = any(v in i for v in _DOCS_DISCOVERY_VERBS)
-    if not has_discovery_verb:
-        return False
-    has_docs = any(t in i for t in _DOCS_INTENT_TOKENS)
-    if not has_docs:
-        return False
-    has_non_docs = any(t in i for t in _NON_DOCS_TOKENS)
-    return not has_non_docs
+
+def _legacy_router_category_label(ri: RoutedIntent) -> str:
+    """Backward-compatible label for logs (pre–RoutedIntent era)."""
+    if ri.primary_intent == INTENT_SEARCH:
+        return "CODE_SEARCH"
+    if ri.primary_intent == INTENT_EDIT:
+        return "CODE_EDIT"
+    if ri.primary_intent == INTENT_EXPLAIN:
+        return "CODE_EXPLAIN"
+    if ri.primary_intent == INTENT_INFRA:
+        return "INFRA"
+    if ri.primary_intent == INTENT_DOC:
+        return "DOC"
+    if ri.primary_intent == INTENT_VALIDATE:
+        return "VALIDATE"
+    if ri.primary_intent == INTENT_COMPOUND:
+        return "COMPOUND"
+    return "GENERAL"
+
+
+def _merge_routing_telemetry(
+    ri: RoutedIntent,
+    *,
+    routing_overridden_downstream: bool = False,
+    routing_override_reason: str | None = None,
+) -> None:
+    """Stage 38: unified RoutedIntent observability into plan resolution telemetry.
+    Stage 40: planner_handoff_reason when primary is AMBIGUOUS."""
+    _plan_resolution_telemetry.update(
+        {
+            "routed_intent_primary": ri.primary_intent,
+            "routed_intent_secondary": list(ri.secondary_intents),
+            "routed_intent_confidence": ri.confidence,
+            "routed_intent_matched_signals": list(ri.matched_signals),
+            "routed_intent_suggested_plan_shape": ri.suggested_plan_shape,
+            "routed_intent_planner_handoff_reason": ri.planner_handoff_reason,
+            "routing_overridden_downstream": routing_overridden_downstream,
+            "routing_override_reason": routing_override_reason,
+        }
+    )
 
 
 def _docs_seed_plan(instruction: str) -> dict:
@@ -170,25 +160,57 @@ def get_plan(
     trace_id: str | None = None,
     log_event_fn=None,
     retry_context: dict | None = None,
+    routed_intent: RoutedIntent | None = None,
+    ignore_two_phase: bool = False,
 ) -> dict:
     """
-    Resolve plan: use instruction router when enabled, else planner.
+    Resolve plan using Stage 38 unified production routing (RoutedIntent).
 
     When ENABLE_INSTRUCTION_ROUTER=1:
-    - CODE_SEARCH → single SEARCH step (skip planner)
-    - CODE_EXPLAIN → single EXPLAIN step (skip planner)
-    - INFRA → single INFRA step (skip planner)
-    - CODE_EDIT / GENERAL → planner
+    - RoutedIntent from route_production_instruction() drives branches.
+    - DOC + docs_seed_lane → docs seed plan (same as pre–Stage 38).
+    - SEARCH / EXPLAIN / INFRA → single-step plan (legacy short-circuit).
+    - Otherwise → planner.
 
-    When disabled: always use planner.
+    routed_intent: if provided, skip a second call to route_production_instruction()
+    (used when get_parent_plan already classified the instruction).
 
-    Phase 5: retry_context (previous_attempts, critic_feedback) is passed to planner when provided.
-
-    Router confidence: CODE_SEARCH / CODE_EXPLAIN / INFRA short-circuits apply only when
-    decision.confidence is numeric and >= ROUTER_CONFIDENCE_THRESHOLD; otherwise those
-    categories are treated as GENERAL for planning (plan() is called).
+    ignore_two_phase: passed to route_production_instruction when building ri
+    (two-phase parent fallback to flat plan).
     """
+    from agent.routing.production_routing import route_production_instruction
+
+    ri = (
+        routed_intent
+        if routed_intent is not None
+        else route_production_instruction(instruction, ignore_two_phase=ignore_two_phase)
+    )
+
+    routing_override = False
+    routing_reason: str | None = None
+    if ENABLE_INSTRUCTION_ROUTER and ri.primary_intent == INTENT_COMPOUND:
+        # Flat plan cannot execute parent-level two-phase decomposition; defer to planner.
+        routing_override = True
+        routing_reason = "compound_intent_flat_plan_defers_to_planner"
+
+    _merge_routing_telemetry(
+        ri,
+        routing_overridden_downstream=routing_override,
+        routing_override_reason=routing_reason,
+    )
+
+    legacy_cat = _legacy_router_category_label(ri)
+
     if not ENABLE_INSTRUCTION_ROUTER:
+        _plan_resolution_telemetry.update(
+            {
+                "planner_used": True,
+                "router_short_circuit_used": False,
+                "docs_seed_plan_used": False,
+                "router_category": legacy_cat,
+                "resolver_consumption": "planner",
+            }
+        )
         if trace_id:
             with trace_stage(trace_id, "planner") as summary:
                 plan_result = plan(instruction, retry_context=retry_context)
@@ -198,14 +220,24 @@ def get_plan(
             return _ensure_plan_id(plan_result)
         return _ensure_plan_id(plan(instruction, retry_context=retry_context))
 
-    from agent.routing.instruction_router import route_instruction
-
-    # Phase 6D.2: docs-artifact intent bypasses router short-circuit plans.
-    # This avoids misrouting docs questions into INFRA/EXPLAIN without docs lane.
-    if _is_docs_artifact_intent(instruction):
+    # Docs-artifact lane (deterministic, from unified router)
+    if ri.primary_intent == INTENT_DOC and ri.suggested_plan_shape == PLAN_SHAPE_DOCS_SEED_LANE:
+        _plan_resolution_telemetry.update(
+            {
+                "docs_seed_plan_used": True,
+                "router_short_circuit_used": False,
+                "planner_used": False,
+                "router_category": legacy_cat,
+                "resolver_consumption": "docs_seed",
+            }
+        )
         if log_event_fn and trace_id:
             try:
-                log_event_fn(trace_id, "docs_intent_override", {"detected": True})
+                log_event_fn(
+                    trace_id,
+                    "docs_intent_override",
+                    {"detected": True, "routed_intent": ri.to_dict()},
+                )
             except Exception:
                 pass
         plan_result = _docs_seed_plan(instruction)
@@ -216,61 +248,98 @@ def get_plan(
                 summary["actions"] = [s.get("action") for s in plan_result.get("steps", [])]
         return plan_result
 
-    decision = route_instruction(instruction)
-    router_category = decision.category
-    raw_confidence = getattr(decision, "confidence", None)
-    trust_short_circuit = _confidence_allows_router_short_circuit(raw_confidence)
-    confidence_fallback_applied = (
-        router_category in _SHORT_CIRCUIT_ROUTER_CATEGORIES and not trust_short_circuit
-    )
-    category = "GENERAL" if confidence_fallback_applied else router_category
-
     if log_event_fn and trace_id:
         try:
             log_event_fn(
                 trace_id,
                 "instruction_router",
                 {
-                    "category": router_category,
-                    "confidence": raw_confidence,
-                    "confidence_fallback_applied": confidence_fallback_applied,
+                    "routed_intent": ri.to_dict(),
+                    "legacy_router_category": legacy_cat,
                     "router_confidence_threshold": float(ROUTER_CONFIDENCE_THRESHOLD),
-                    "plan_branch_category": category,
                 },
             )
         except Exception as e:
             logger.debug("[plan_resolver] log_event skipped: %s", e)
 
-    if category == "CODE_SEARCH":
-        plan_result = _ensure_plan_id({
-            "steps": [
-                {"id": 1, "action": "SEARCH", "description": instruction, "reason": "Routed by instruction router"}
-            ],
-        })
+    if ri.primary_intent == INTENT_SEARCH:
+        _plan_resolution_telemetry.update(
+            {
+                "router_short_circuit_used": True,
+                "router_category": legacy_cat,
+                "docs_seed_plan_used": False,
+                "planner_used": False,
+                "resolver_consumption": "short_search",
+            }
+        )
+        plan_result = _ensure_plan_id(
+            {
+                "steps": [
+                    {
+                        "id": 1,
+                        "action": "SEARCH",
+                        "description": instruction,
+                        "reason": "Routed by unified production router",
+                    }
+                ],
+            }
+        )
         if trace_id:
             with trace_stage(trace_id, "planner") as summary:
                 summary["instruction"] = (instruction or "")[:200]
                 summary["number_of_steps"] = 1
                 summary["actions"] = ["SEARCH"]
         return plan_result
-    if category == "CODE_EXPLAIN":
-        plan_result = _ensure_plan_id({
-            "steps": [
-                {"id": 1, "action": "EXPLAIN", "description": instruction, "reason": "Routed by instruction router"}
-            ],
-        })
+    if ri.primary_intent == INTENT_EXPLAIN:
+        _plan_resolution_telemetry.update(
+            {
+                "router_short_circuit_used": True,
+                "router_category": legacy_cat,
+                "docs_seed_plan_used": False,
+                "planner_used": False,
+                "resolver_consumption": "short_explain",
+            }
+        )
+        plan_result = _ensure_plan_id(
+            {
+                "steps": [
+                    {
+                        "id": 1,
+                        "action": "EXPLAIN",
+                        "description": instruction,
+                        "reason": "Routed by unified production router",
+                    }
+                ],
+            }
+        )
         if trace_id:
             with trace_stage(trace_id, "planner") as summary:
                 summary["instruction"] = (instruction or "")[:200]
                 summary["number_of_steps"] = 1
                 summary["actions"] = ["EXPLAIN"]
         return plan_result
-    if category == "INFRA":
-        plan_result = _ensure_plan_id({
-            "steps": [
-                {"id": 1, "action": "INFRA", "description": instruction, "reason": "Routed by instruction router"}
-            ],
-        })
+    if ri.primary_intent == INTENT_INFRA:
+        _plan_resolution_telemetry.update(
+            {
+                "router_short_circuit_used": True,
+                "router_category": legacy_cat,
+                "docs_seed_plan_used": False,
+                "planner_used": False,
+                "resolver_consumption": "short_infra",
+            }
+        )
+        plan_result = _ensure_plan_id(
+            {
+                "steps": [
+                    {
+                        "id": 1,
+                        "action": "INFRA",
+                        "description": instruction,
+                        "reason": "Routed by unified production router",
+                    }
+                ],
+            }
+        )
         if trace_id:
             with trace_stage(trace_id, "planner") as summary:
                 summary["instruction"] = (instruction or "")[:200]
@@ -278,7 +347,16 @@ def get_plan(
                 summary["actions"] = ["INFRA"]
         return plan_result
 
-    # CODE_EDIT or GENERAL: use planner
+    # EDIT, VALIDATE, AMBIGUOUS, COMPOUND, etc. → planner
+    _plan_resolution_telemetry.update(
+        {
+            "planner_used": True,
+            "router_short_circuit_used": False,
+            "docs_seed_plan_used": False,
+            "router_category": legacy_cat,
+            "resolver_consumption": "planner",
+        }
+    )
     if trace_id:
         with trace_stage(trace_id, "planner") as summary:
             plan_result = plan(instruction, retry_context=retry_context)
@@ -287,29 +365,6 @@ def get_plan(
             summary["actions"] = [s.get("action") for s in plan_result.get("steps", [])]
         return _ensure_plan_id(plan_result)
     return _ensure_plan_id(plan(instruction, retry_context=retry_context))
-
-
-def _is_two_phase_docs_code_intent(instruction: str) -> bool:
-    """
-    True when instruction mixes docs-discovery intent with code-intent (e.g. find docs + explain).
-    Must return False if _is_docs_artifact_intent(instruction) is True.
-    Reuses _DOCS_DISCOVERY_VERBS, _DOCS_INTENT_TOKENS; code-intent markers from _NON_DOCS_TOKENS subset.
-    """
-    if not instruction or not instruction.strip():
-        return False
-    if _is_docs_artifact_intent(instruction):
-        return False
-    lower = instruction.strip().lower()
-    has_discovery = any(v in lower for v in _DOCS_DISCOVERY_VERBS)
-    if not has_discovery:
-        return False
-    has_docs = any(t in lower for t in _DOCS_INTENT_TOKENS)
-    if not has_docs:
-        return False
-    # Narrow: exclude "implemented"/"implementation" (ambiguous—can describe docs subject).
-    code_markers = ("explain", "flow", "function ", "method ", "class ")
-    has_code_intent = any(m in lower for m in code_markers)
-    return has_code_intent
 
 
 def _derive_phase_subgoals(instruction: str) -> tuple[str, str]:
@@ -531,11 +586,19 @@ def get_parent_plan(
     """
     Stage 1: wraps get_plan() in a single-phase compatibility ParentPlan.
     Stage 2: adds mixed-intent detection before the compatibility fallback.
+    Stage 38: two-phase detection uses the same RoutedIntent as flat routing (unified entrypoint).
     Never raises; propagates get_plan() behavior on failure.
     """
     from agent.orchestrator.parent_plan import make_compatibility_parent_plan
+    from agent.routing.production_routing import route_production_instruction
 
-    if _is_two_phase_docs_code_intent(instruction):
+    ri = route_production_instruction(instruction)
+    _merge_routing_telemetry(ri)
+
+    if (
+        ri.primary_intent == INTENT_COMPOUND
+        and ri.suggested_plan_shape == PLAN_SHAPE_TWO_PHASE_DOCS_CODE
+    ):
         try:
             parent_plan = _build_two_phase_parent_plan(
                 instruction,
@@ -550,6 +613,7 @@ def get_parent_plan(
                         "compatibility_mode": parent_plan["compatibility_mode"],
                         "phase_count": len(parent_plan["phases"]),
                         "instruction_preview": (instruction or "")[:200],
+                        "routed_intent": ri.to_dict(),
                     })
                 except Exception:
                     pass
@@ -563,12 +627,33 @@ def get_parent_plan(
                     })
                 except Exception:
                     pass
+            # Fall back to flat plan: re-resolve without two-phase branch (model + docs lane only).
+            flat_plan = get_plan(
+                instruction,
+                trace_id=trace_id,
+                log_event_fn=log_event_fn,
+                retry_context=retry_context,
+                ignore_two_phase=True,
+            )
+            parent_plan = make_compatibility_parent_plan(flat_plan, instruction)
+            if log_event_fn and trace_id:
+                try:
+                    log_event_fn(trace_id, "parent_plan_created", {
+                        "parent_plan_id": parent_plan["parent_plan_id"],
+                        "decomposition_type": parent_plan["decomposition_type"],
+                        "compatibility_mode": parent_plan["compatibility_mode"],
+                        "phase_count": len(parent_plan["phases"]),
+                        "instruction_preview": (instruction or "")[:200],
+                    })
+                except Exception:
+                    pass
+            return parent_plan
 
     # Near-miss observability: docs + discovery markers but two-phase detection did not fire.
-    if log_event_fn and trace_id and not _is_two_phase_docs_code_intent(instruction):
+    if log_event_fn and trace_id and not is_two_phase_docs_code_intent(instruction):
         il = (instruction or "").strip().lower()
-        has_discovery = any(v in il for v in _DOCS_DISCOVERY_VERBS)
-        has_docs = any(t in il for t in _DOCS_INTENT_TOKENS)
+        has_discovery = any(v in il for v in DOCS_DISCOVERY_VERBS)
+        has_docs = any(t in il for t in DOCS_INTENT_TOKENS)
         if has_discovery and has_docs:
             try:
                 log_event_fn(
@@ -587,6 +672,7 @@ def get_parent_plan(
         trace_id=trace_id,
         log_event_fn=log_event_fn,
         retry_context=retry_context,
+        routed_intent=ri,
     )
     parent_plan = make_compatibility_parent_plan(flat_plan, instruction)
     if log_event_fn and trace_id:
