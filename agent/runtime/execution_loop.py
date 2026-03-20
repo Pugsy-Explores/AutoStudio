@@ -24,6 +24,8 @@ from editing.patch_generator import to_structured_patches
 from agent.runtime.retry_guard import should_retry_strategy as _should_retry_strategy
 from agent.runtime.syntax_validator import validate_project
 from agent.tools.run_tests import run_tests
+from agent.tools.validation_scope import resolve_inner_loop_validation
+from agent.retrieval.target_resolution import detect_likely_import_shadowing
 
 try:
     from agent.memory.execution_trajectory_store import append_trajectory as _append_trajectory
@@ -77,6 +79,44 @@ def _rollback_snapshot(snapshot: dict[Path, str | None], project_root: str) -> N
                 path.write_text(content, encoding="utf-8")
         except OSError as e:
             logger.warning("[execution_loop] rollback failed for %s: %s", path, e)
+
+
+def _infer_patch_type(patch: dict) -> str:
+    """Infer patch text type from patch dict: text_sub, module_append, replace, structured."""
+    if not patch or not isinstance(patch, dict):
+        return "unknown"
+    action = patch.get("action")
+    target = patch.get("target_node", "")
+    if action == "text_sub":
+        return "text_sub"
+    if action == "insert" and target == "module_append":
+        return "module_append"
+    if action in ("replace", "insert", "delete"):
+        return "structured"
+    return "unknown"
+
+
+def _extract_validation_path_from_cmd(cmd: str | None) -> str | None:
+    """Extract first .py path from validation command (e.g. pytest tests/x.py -> tests/x.py)."""
+    if not cmd or not isinstance(cmd, str):
+        return None
+    import re
+    m = re.search(r"[\w./\\]+\.py", cmd)
+    return m.group(0).replace("\\", "/") if m else None
+
+
+def _patch_touched_validation_path(files_modified: list[str], validation_path: str | None) -> bool:
+    """True if any modified file matches or is the validation path (heuristic)."""
+    if not validation_path or not files_modified:
+        return False
+    vnorm = validation_path.replace("\\", "/").strip()
+    for f in files_modified:
+        if not isinstance(f, str):
+            continue
+        fnorm = f.replace("\\", "/").strip()
+        if fnorm == vnorm or fnorm.endswith("/" + vnorm) or vnorm.endswith("/" + fnorm):
+            return True
+    return False
 
 
 def _total_patch_lines(changes: list[dict]) -> int:
@@ -175,6 +215,12 @@ def _run_loop(
 
         current_instruction = context.get("instruction", base_instruction)
 
+        # Stage 25: resolve validation command early so plan_diff can use it for target resolution
+        val_scope = resolve_inner_loop_validation(project_root, context)
+        for k, v in val_scope.items():
+            if v is not None and k not in context:
+                context[k] = v
+
         diff_plan = plan_diff(current_instruction, context)
         changes = diff_plan.get("changes", [])
         if not changes:
@@ -201,15 +247,89 @@ def _run_loop(
 
         snapshot = _snapshot_files(changes, project_root)
         patch_plan = to_structured_patches({"changes": changes}, current_instruction, context)
-        patch_result = execute_patch(patch_plan, project_root)
+        if patch_plan.get("patch_generation_reject") == "weakly_grounded_patch":
+            _gen_reject_reason = patch_plan.get("generation_rejected_reason")
+            patch_result = {
+                "success": False,
+                "error": "patch_failed",
+                "reason": "No grounded patch could be produced from the planner output",
+                "patch_parse_ok": True,
+                "patch_apply_ok": False,
+                "patch_reject_reason": "weakly_grounded_patch",
+                "failure_reason_code": "weakly_grounded_patch",
+                "patches_applied": 0,
+                # Stage 24: pass through generation rejection details
+                "generation_rejected_reason": _gen_reject_reason,
+            }
+        else:
+            patch_result = execute_patch(patch_plan, project_root)
         def _merge_patch_telemetry(extra: dict | None = None) -> None:
+            strategies = [c.get("patch_strategy") for c in (patch_plan.get("changes") or []) if c.get("patch_strategy")]
+            pp_changes = patch_plan.get("changes") or []
+            patch_plan_summary = []
+            # Stage 24 + Stage 26: aggregate grounded generation and semantic telemetry
+            _s24_fields = (
+                "grounded_candidate_count",
+                "selected_candidate_rank",
+                "patch_candidate_strategy",
+                "patch_candidate_evidence_type",
+                "patch_candidate_evidence_excerpt",
+                "generation_rejected_reason",
+                "candidate_rejected_semantic_reason",
+                "selected_candidate_out_of_n",
+                "candidate_semantic_match_score",
+                "requested_symbol_name",
+                "requested_return_value",
+                "semantic_expectation_type",
+            )
+            s24_telem: dict = {}
+            for c in pp_changes:
+                patch = c.get("patch") if isinstance(c.get("patch"), dict) else {}
+                patch_plan_summary.append({
+                    "file": c.get("file"),
+                    "symbol": c.get("symbol"),
+                    "patch_strategy": c.get("patch_strategy"),
+                    "patch_type": _infer_patch_type(patch),
+                })
+                for fk in _s24_fields:
+                    if fk in c and fk not in s24_telem:
+                        s24_telem[fk] = c[fk]
+            chosen_file = ""
+            for c in pp_changes:
+                if c.get("file"):
+                    chosen_file = c.get("file", "")
+                    break
             base = {
                 "patch_parse_ok": patch_result.get("patch_parse_ok"),
                 "patch_apply_ok": patch_result.get("patch_apply_ok"),
                 "patch_reject_reason": patch_result.get("patch_reject_reason"),
                 "failure_reason_code": patch_result.get("failure_reason_code"),
                 "patches_applied_this_attempt": patch_result.get("patches_applied"),
+                "patch_strategies": strategies,
+                "patch_plan_summary": patch_plan_summary,
+                "attempted_target_files": context.get("search_target_candidates") or context.get("attempted_target_files"),
+                "chosen_target_file": chosen_file,
+                "target_resolution": context.get("target_resolution"),
             }
+            base.update(s24_telem)
+            # Also pull generation_rejected_reason from patch_result when set there
+            if "generation_rejected_reason" not in base:
+                _pgr = patch_result.get("generation_rejected_reason")
+                if _pgr:
+                    base["generation_rejected_reason"] = _pgr
+            pe = patch_result.get("patch_effectiveness")
+            if isinstance(pe, dict):
+                base["patch_effectiveness"] = pe
+            prev = context.get("edit_patch_telemetry")
+            if isinstance(prev, dict):
+                for k in (
+                    "requested_validation_target",
+                    "resolved_validation_command",
+                    "resolved_validation_cwd",
+                    "validation_scope_kind",
+                ):
+                    if k in prev:
+                        base[k] = prev[k]
             if extra:
                 base.update(extra)
             context["edit_patch_telemetry"] = base
@@ -278,7 +398,17 @@ def _run_loop(
                 "failure_reason_code": "syntax_error",
             }
 
-        test_result = run_tests(project_root, timeout=timeout)
+        val_scope = resolve_inner_loop_validation(project_root, context)
+        test_cmd = val_scope.get("test_cmd")
+        _merge_patch_telemetry(
+            {
+                "requested_validation_target": val_scope.get("requested_validation_target"),
+                "resolved_validation_command": val_scope.get("resolved_validation_command"),
+                "resolved_validation_cwd": val_scope.get("resolved_validation_cwd"),
+                "validation_scope_kind": val_scope.get("validation_scope_kind"),
+            }
+        )
+        test_result = run_tests(project_root, timeout=timeout, test_cmd=test_cmd)
         if test_result.get("passed"):
             if _append_trajectory:
                 _append_trajectory(
@@ -304,7 +434,39 @@ def _run_loop(
         stderr = test_result.get("stderr", "")
         reason = (stdout + "\n" + stderr).strip() or "tests failed"
         context["edit_failure_reason"] = "test_failure"
-        _merge_patch_telemetry({"patch_reject_reason": "validation_tests_failed"})
+        # RCA telemetry: capture before/after snippets before rollback (Stage 22)
+        before_snippets = {}
+        after_snippets = {}
+        for path, content in snapshot.items():
+            try:
+                rel = str(path.relative_to(Path(project_root).resolve())).replace("\\", "/")
+            except ValueError:
+                rel = str(path)
+            before_snippets[rel] = (content[:400] + "..." if content and len(content) > 400 else (content or ""))
+            if path.exists():
+                try:
+                    after_content = path.read_text(encoding="utf-8", errors="replace")
+                    after_snippets[rel] = (after_content[:400] + "..." if len(after_content) > 400 else after_content)
+                except (OSError, UnicodeDecodeError):
+                    after_snippets[rel] = "(read failed)"
+        val_path = _extract_validation_path_from_cmd(test_cmd)
+        touched_val = _patch_touched_validation_path(files_modified, val_path)
+        # Stage 25: import/env telemetry for validation failures
+        import_telem = detect_likely_import_shadowing(reason)
+        chosen_target = (changes[0].get("file") if changes else None) or ""
+        _merge_patch_telemetry({
+            "patch_reject_reason": "validation_tests_failed",
+            "validation_command": test_cmd,
+            "validation_failure_summary": reason[:500] if reason else None,
+            "rollback_happened": True,
+            "edit_rca_before_snippets": before_snippets,
+            "edit_rca_after_snippets": after_snippets,
+            "patch_touched_validation_path": touched_val,
+            "chosen_target_file": chosen_target,
+            "validation_cwd": val_scope.get("resolved_validation_cwd"),
+            "likely_stdlib_shadowing": import_telem.get("likely_stdlib_shadowing"),
+            "module_names_in_validation_error": import_telem.get("module_names_in_error", [])[:5],
+        })
         _rollback_snapshot(snapshot, project_root)
         _record_rollback(project_root)
         last_error, same_error_count = _update_same_error(last_error, same_error_count, err)

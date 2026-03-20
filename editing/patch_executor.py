@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from editing.ast_patcher import apply_patch, generate_code, load_ast, load_ast_from_source
+from editing.patch_effectiveness import MAX_SNIPPET_LEN, assess_after_content_change, assess_text_sub
 from editing.patch_validator import validate_patch
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,67 @@ def _is_forbidden_path(file_path: str) -> bool:
     return False
 
 
+def _preflight_validate_patch(patch: dict, file_path: str, abs_path: Path) -> tuple[bool, str | None]:
+    """
+    Validate patch schema and basic sanity before apply.
+    Returns (valid, reject_reason). reject_reason is None when valid.
+    """
+    if not patch or not isinstance(patch, dict):
+        return False, "empty_patch"
+    action = patch.get("action")
+    if not action:
+        return False, "invalid_patch_syntax"
+    if action == "text_sub":
+        old = patch.get("old", "")
+        new = patch.get("new", "")
+        if not str(old).strip():
+            return False, "empty_patch"
+        return True, None
+    if action in ("insert", "replace", "delete"):
+        if action != "delete" and not str(patch.get("code", "")).strip():
+            return False, "empty_patch"
+        target_node = patch.get("target_node", "")
+        if target_node == "module_append":
+            return True, None
+        if target_node not in (
+            "function_body_start", "function_body", "class_body_start", "class_body",
+            "statement", "statement_after", "if_block", "try_block", "with_block", "for_block",
+        ):
+            return False, "invalid_patch_syntax"
+        return True, None
+    return False, "invalid_patch_syntax"
+
+
+def _merge_effectiveness_telemetry(steps: list[dict], last: dict | None = None) -> dict:
+    """Aggregate per-step effectiveness for JSON telemetry (bounded)."""
+    all_s = list(steps)
+    if last:
+        all_s.append(last)
+    if not all_s:
+        return {
+            "patch_effective_change": True,
+            "patch_effective_reason": None,
+            "changed_region_detected": False,
+            "target_region_before": None,
+            "target_region_after": None,
+            "meaningful_diff_line_count": 0,
+            "rejected_for_noop_or_unchanged": False,
+            "patch_effectiveness_steps": [],
+        }
+    total_lines = sum(int(s.get("meaningful_diff_line_count") or 0) for s in all_s)
+    tail = all_s[-1]
+    return {
+        "patch_effective_change": all(s.get("patch_effective_change") for s in all_s),
+        "patch_effective_reason": tail.get("patch_effective_reason"),
+        "changed_region_detected": any(s.get("changed_region_detected") for s in all_s),
+        "target_region_before": (tail.get("target_region_before") or "")[:MAX_SNIPPET_LEN] if tail else None,
+        "target_region_after": (tail.get("target_region_after") or "")[:MAX_SNIPPET_LEN] if tail else None,
+        "meaningful_diff_line_count": total_lines,
+        "rejected_for_noop_or_unchanged": any(s.get("rejected_for_noop_or_unchanged") for s in all_s),
+        "patch_effectiveness_steps": all_s[:20],
+    }
+
+
 def _classify_patch_failure(reason: str) -> str:
     r = (reason or "").lower()
     if "symbol not found" in r:
@@ -97,6 +159,7 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
             "patch_apply_ok": True,
             "patch_reject_reason": None,
             "failure_reason_code": None,
+            "patch_effectiveness": _merge_effectiveness_telemetry([]),
         }
 
     # Safeguard: count unique files (multiple patches per file allowed)
@@ -139,6 +202,7 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
     originals: dict[str, str] = {}
     patched_content: dict[str, str] = {}
     applied_step_count = 0
+    effectiveness_steps: list[dict] = []
 
     for change in changes:
         file_path = change.get("file", "")
@@ -171,6 +235,19 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
             }
         abs_path_str = str(abs_path)
         logger.info("[patch_executor] applying patch file=%s", abs_path)
+
+        preflight_ok, preflight_reason = _preflight_validate_patch(patch, file_path, abs_path)
+        if not preflight_ok:
+            return {
+                "success": False,
+                "error": "patch_failed",
+                "reason": f"preflight rejected: {preflight_reason}",
+                "file": abs_path_str,
+                "failure_reason_code": preflight_reason or "invalid_patch_syntax",
+                "patch_parse_ok": False,
+                "patch_apply_ok": False,
+                "patch_reject_reason": preflight_reason or "invalid_patch_syntax",
+            }
 
         try:
             if not abs_path.exists():
@@ -208,6 +285,9 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                     "patch_reject_reason": "non_source_target",
                 }
 
+            # Non-Python files only support text_sub; skip AST path
+            if abs_path.suffix.lower() not in (".py", ".pyi") and patch.get("action") != "text_sub":
+                continue
             if patch.get("action") == "text_sub":
                 old = patch.get("old", "")
                 new = patch.get("new", "")
@@ -225,6 +305,22 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                 if abs_path_str not in originals:
                     originals[abs_path_str] = abs_path.read_text(encoding="utf-8")
                 src = patched_content.get(abs_path_str) or originals[abs_path_str]
+                ok_eff, eff_reason, new_src_eff, eff_extra = assess_text_sub(
+                    source_before=src, old=old, new=new
+                )
+                if not ok_eff and eff_reason is not None:
+                    rpt = (eff_extra or {}).get("patch_effectiveness_step") or {}
+                    return {
+                        "success": False,
+                        "error": "patch_failed",
+                        "reason": f"patch effectiveness rejected: {eff_reason}",
+                        "file": abs_path_str,
+                        "failure_reason_code": eff_reason,
+                        "patch_parse_ok": True,
+                        "patch_apply_ok": False,
+                        "patch_reject_reason": eff_reason,
+                        "patch_effectiveness": _merge_effectiveness_telemetry(effectiveness_steps, rpt),
+                    }
                 if old not in src:
                     return {
                         "success": False,
@@ -236,7 +332,10 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                         "patch_apply_ok": False,
                         "patch_reject_reason": "target_not_found",
                     }
-                new_src = src.replace(old, new, 1)
+                new_src = new_src_eff if new_src_eff is not None else src.replace(old, new, 1)
+                step_rpt = (eff_extra or {}).get("patch_effectiveness_step")
+                if step_rpt:
+                    effectiveness_steps.append(step_rpt)
                 if abs_path.suffix.lower() == ".py" and new_src.strip():
                     try:
                         ast.parse(new_src)
@@ -277,6 +376,12 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                     "patch_reject_reason": "invalid_patch_syntax",
                 }
 
+            if abs_path_str in patched_content:
+                ast_source_before = patched_content[abs_path_str]
+            else:
+                ast_source_before = originals[abs_path_str]
+
+            eff_module_append_code = patch.get("code") if patch.get("target_node") == "module_append" else None
             tree, source_bytes = loaded
             try:
                 new_bytes = apply_patch(tree, source_bytes, patch)
@@ -297,11 +402,36 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                         "target_node": "module_append",
                         "code": patch.get("code", ""),
                     }
+                    eff_module_append_code = fb_patch.get("code")
                     logger.info("[patch_executor] symbol miss; retry file-anchored module_append")
                     new_bytes = apply_patch(t2, sb2, fb_patch)
                 else:
                     raise
             new_code = generate_code(tree, new_bytes)
+
+            ok_ast, ast_reason, ast_extra = assess_after_content_change(
+                source_before=ast_source_before,
+                source_after=new_code,
+                patch_kind="structured",
+                old_text=None,
+                module_append_code=eff_module_append_code,
+            )
+            if not ok_ast:
+                rpt = (ast_extra or {}).get("patch_effectiveness_step") or {}
+                return {
+                    "success": False,
+                    "error": "patch_failed",
+                    "reason": f"patch effectiveness rejected: {ast_reason}",
+                    "file": abs_path_str,
+                    "failure_reason_code": ast_reason,
+                    "patch_parse_ok": True,
+                    "patch_apply_ok": False,
+                    "patch_reject_reason": ast_reason,
+                    "patch_effectiveness": _merge_effectiveness_telemetry(effectiveness_steps, rpt),
+                }
+            ast_step = (ast_extra or {}).get("patch_effectiveness_step")
+            if ast_step:
+                effectiveness_steps.append(ast_step)
 
             # Phase 4: ast.parse pre-check for Python files before validation
             if abs_path.suffix.lower() == ".py" and new_code:
@@ -320,7 +450,11 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
                         "patch_reject_reason": "invalid_patch_syntax",
                     }
 
-            result = validate_patch(abs_path_str, new_code)
+            # validate_patch uses compile() — Python only; skip for .md and other non-Python
+            if abs_path.suffix.lower() in (".py", ".pyi"):
+                result = validate_patch(abs_path_str, new_code)
+            else:
+                result = {"valid": True, "errors": []}
             if not result.get("valid", True):
                 logger.warning("[patch_executor] validation failed for %s: %s", abs_path, result.get("errors"))
                 logger.info("[patch_executor] rollback triggered")
@@ -401,4 +535,5 @@ def execute_patch(patch_plan: dict, project_root: str | None = None) -> dict:
         "patch_apply_ok": True,
         "patch_reject_reason": None,
         "failure_reason_code": None,
+        "patch_effectiveness": _merge_effectiveness_telemetry(effectiveness_steps),
     }
