@@ -153,10 +153,20 @@ def _classify_failure_reason(reason: str | None) -> tuple[str, str]:
     if not reason:
         return ("unknown", "no reason captured")
     r = reason.lower()
+    # LOOP_PROTECTION / PLANNING_LOOP (from failure attribution layer)
+    if "loop_protection" in r or r == "planning_loop":
+        return ("planning_loop", "LOOP_PROTECTION / repeated planning failures")
+    # NO_SIGNAL_FAILURE
+    if r == "no_signal_failure":
+        return ("no_signal", "retrieval worked but pool has no useful signal")
     if "empty" in r or "retrieval" in r or "0 results" in r:
         return ("retrieval_empty", "query rewrite / repo_map / symbol expansion")
-    if "context" in r or "explain" in r:
+    if "selection" in r or "context" in r or "explain" in r:
         return ("context_explosion", "context pruning / ranking weights")
+    if "exploration" in r:
+        return ("exploration_failure", "graph expansion / exploration")
+    if "grounding" in r:
+        return ("grounding_failure", "edit grounding / anchor")
     if "invalid" in r or "step" in r or "planner" in r:
         return ("planner_hallucination", "prompt constraints / few-shot / step validation")
     if "patch" in r or "validation" in r or "reject" in r:
@@ -275,6 +285,7 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
     Returns report dict for eval_report.json.
     """
     from agent.memory.task_memory import load_task
+    from agent.meta.failure_attribution import ensure_failure_reason
     from agent.orchestrator.agent_controller import run_controller
 
     with open(scenarios_path, encoding="utf-8") as f:
@@ -299,6 +310,10 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
         failure_reason = None
         replan_count = None
         tool_calls = None
+        termination_reason = None
+        edit_failure_reason = None
+        errors = []
+        result = {}
 
         try:
             start = time.perf_counter()
@@ -313,6 +328,7 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
                 tool_calls = counts.get("tool_calls")
                 completed_steps = len(state.completed_steps)
                 errors = [] if all(r.success for r in state.step_results) else [r.error or "step failed" for r in state.step_results if not r.success]
+                termination_reason = state.context.get("termination_reason")
                 # For expect_edit: check EDIT step outputs for files_modified
                 files_modified = []
                 for step, res in zip(state.completed_steps, state.step_results):
@@ -324,6 +340,10 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
                 latency_sec = time.perf_counter() - start
                 completed_steps = result.get("completed_steps", 0)
                 errors = result.get("errors", [])
+                termination_reason = result.get("termination_reason")
+                lo = result.get("loop_output") or {}
+                et = lo.get("edit_telemetry") or {}
+                edit_failure_reason = et.get("edit_failure_reason")
 
             task_success = len(errors) == 0 and completed_steps >= expected_min_steps
 
@@ -346,20 +366,27 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
             print(f"  task_success={task_success} retrieval={retrieval_success} edit={edit_success} latency={latency_sec:.2f}s")
         except Exception as e:
             failure_reason = str(e)
+            errors = [str(e)]
             print(f"  ERROR: {e}")
 
-        results.append({
+        record = {
             "id": sid,
+            "task_id": result.get("task_id"),
             "instruction": instruction,
             "task_success": task_success,
             "retrieval_success": retrieval_success,
             "edit_success": edit_success,
             "latency_sec": round(latency_sec, 2),
             "failure_reason": failure_reason,
+            "errors": errors,
+            "termination_reason": termination_reason,
+            "edit_failure_reason": edit_failure_reason,
             "expect_edit": expect_edit,
             "replan_count": replan_count,
             "tool_calls": tool_calls,
-        })
+        }
+        ensure_failure_reason(record, task_id=record.get("task_id") or sid)
+        results.append(record)
 
     task_ok = sum(1 for r in results if r["task_success"])
     retrieval_ok = sum(1 for r in results if r["retrieval_success"] is True)

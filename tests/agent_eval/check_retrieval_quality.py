@@ -22,6 +22,17 @@ from agent.retrieval.result_contract import (
     RETRIEVAL_RESULT_TYPE_SYMBOL_BODY,
 )
 
+FAILURE_WEIGHTS = {
+    "SUCCESS": 0.0,
+    "RETRIEVAL_FAILURE": 0.3,
+    "NO_SIGNAL_FAILURE": 0.4,
+    "SELECTION_FAILURE": 0.6,
+    "EXPLORATION_FAILURE": 0.5,
+    "GROUNDING_FAILURE": 0.8,
+    "PLANNING_FAILURE": 0.5,
+    "PLANNING_LOOP": 1.0,
+}
+
 _TEST_PATH_RE = re.compile(r"(/tests/|/test/|(^|/)test_[^/]+\.py$)", re.I)
 _log = logging.getLogger(__name__)
 
@@ -367,6 +378,8 @@ def build_retrieval_quality_record(spec: Any, state: Any, loop_out: dict[str, An
         out["exploration_helped"] = bool(ctx.get("exploration_helped"))
         out["exploration_improved_structure"] = bool(ctx.get("exploration_improved_structure"))
         out["exploration_linked_gain"] = int(ctx.get("exploration_linked_gain") or 0)
+        expl_debug = ctx.get("exploration_debug") or {}
+        out["exploration_used_new_token_count"] = int(expl_debug.get("used_new_token_count") or 0)
     else:
         out["exploration_used"] = False
         out["exploration_added_count"] = 0
@@ -375,6 +388,7 @@ def build_retrieval_quality_record(spec: Any, state: Any, loop_out: dict[str, An
         out["exploration_helped"] = False
         out["exploration_improved_structure"] = False
         out["exploration_linked_gain"] = 0
+        out["exploration_used_new_token_count"] = 0
     if selector_used or (skip_reason or "").strip():
         from agent.retrieval.bundle_selector import build_bundle_selector_observability_summary
 
@@ -455,6 +469,38 @@ def build_retrieval_quality_record(spec: Any, state: Any, loop_out: dict[str, An
     search_debug_records = ctx.get("search_debug_records")
     if search_debug_records is not None:
         out["search_debug_records"] = search_debug_records
+        # For failure attribution: retrieval_empty, pool_has_signal from last record
+        sdr = [r for r in search_debug_records if isinstance(r, dict)]
+        if sdr:
+            last_rec = sdr[-1]
+            out["retrieval_empty"] = last_rec.get("retrieval_empty")
+            out["pool_has_signal"] = last_rec.get("pool_has_signal")
+        else:
+            out["retrieval_empty"] = None
+            out["pool_has_signal"] = None
+    else:
+        out["retrieval_empty"] = None
+        out["pool_has_signal"] = None
+
+    # Attribution signals from loop_out and state
+    if loop_out is not None and isinstance(loop_out, dict):
+        errors = loop_out.get("errors_encountered") or []
+        out["errors"] = list(errors) if isinstance(errors, list) else [str(errors)]
+        out["task_success"] = len(out["errors"]) == 0
+        out["terminal"] = loop_out.get("terminal")
+        et = loop_out.get("edit_telemetry") or {}
+        out["edit_failure_reason"] = et.get("edit_failure_reason")
+    else:
+        out["errors"] = []
+        out["task_success"] = True
+        out["terminal"] = None
+        out["edit_failure_reason"] = None
+    out["termination_reason"] = ctx.get("termination_reason") or out.get("terminal")
+
+    # Failure attribution (always present, runner-independent)
+    from agent.meta.failure_attribution import ensure_failure_reason
+
+    ensure_failure_reason(out, task_id=str(tid) if tid else None)
 
     # NOTE:
     # overlap_score is a lexical diagnostic signal only.
@@ -617,6 +663,19 @@ def aggregate_retrieval_metrics(records: list[dict[str, Any]]) -> dict[str, Any]
             "unsupported_without_signal_rate": None,
             "weak_support_rate": None,
             "timeout_count": timeout_count,
+            "agent_health": {
+                "overall_score": None,
+                "weighted_failure": None,
+                "subscores": {
+                    "exploration": None,
+                    "grounding": None,
+                    "planning": None,
+                    "retrieval": None,
+                    "selection": None,
+                },
+                "unknown_failure_reasons": [],
+                "attribution_coverage": None,
+            },
         }
 
     n = len(rows)
@@ -628,6 +687,57 @@ def aggregate_retrieval_metrics(records: list[dict[str, Any]]) -> dict[str, Any]
 
     prune_vals = [r["prune_loss_proxy"] for r in rows if r.get("prune_loss_proxy") is not None]
     avg_prune = sum(prune_vals) / len(prune_vals) if prune_vals else None
+
+    # Agent health score: attribution-driven, no fallbacks, no corrections
+    from collections import Counter
+
+    total = len(rows)
+    valid_rows = [
+        r for r in rows
+        if r.get("failure_reason") in FAILURE_WEIGHTS
+    ]
+    valid_total = len(valid_rows)
+    counts = Counter(r.get("failure_reason") for r in valid_rows)
+
+    unknown_reasons = sorted(
+        set(r.get("failure_reason") for r in rows if r.get("failure_reason"))
+        - set(FAILURE_WEIGHTS)
+    )
+    missing_count = sum(1 for r in rows if not r.get("failure_reason"))
+    coverage = (total - missing_count) / total if total else None
+
+    weighted_failure = (
+        sum(counts[k] * FAILURE_WEIGHTS[k] for k in counts) / valid_total
+    ) if valid_total else None
+    overall_score = (
+        1.0 - weighted_failure
+    ) if weighted_failure is not None else None
+
+    retrieval_failures = ["RETRIEVAL_FAILURE", "NO_SIGNAL_FAILURE"]
+    selection_failures = ["SELECTION_FAILURE"]
+    exploration_failures = ["EXPLORATION_FAILURE"]
+    grounding_failures = ["GROUNDING_FAILURE"]
+    planning_failures = ["PLANNING_FAILURE", "PLANNING_LOOP"]
+
+    def _rate(keys):
+        return sum(counts.get(k, 0) for k in keys) / valid_total if valid_total else None
+
+    subscores = {
+        "retrieval": 1 - _rate(retrieval_failures) if valid_total else None,
+        "selection": 1 - _rate(selection_failures) if valid_total else None,
+        "exploration": 1 - _rate(exploration_failures) if valid_total else None,
+        "grounding": 1 - _rate(grounding_failures) if valid_total else None,
+        "planning": 1 - _rate(planning_failures) if valid_total else None,
+    }
+    subscores = dict(sorted(subscores.items()))
+
+    agent_health = {
+        "overall_score": overall_score,
+        "weighted_failure": weighted_failure,
+        "subscores": subscores,
+        "unknown_failure_reasons": unknown_reasons,
+        "attribution_coverage": coverage,
+    }
 
     result: dict[str, Any] = {
         "task_count": n,
@@ -749,6 +859,7 @@ def aggregate_retrieval_metrics(records: list[dict[str, Any]]) -> dict[str, Any]
             / len(rows)
             if rows else None
         ),
+        "agent_health": agent_health,
     }
     sfm = aggregate_search_failure_modes(rows)
     if sfm.get("search_debug_record_count", 0) > 0:
