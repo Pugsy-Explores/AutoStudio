@@ -11,8 +11,14 @@ Planner actions: SEARCH, EDIT, EXPLAIN, INFRA
 
 Phase 4: Every plan has a unique plan_id so step identity is (plan_id, step_id).
 """
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import logging
+
+if TYPE_CHECKING:
+    from agent.memory.state import AgentState
 from uuid import uuid4
 
 from agent.observability.trace_logger import trace_stage
@@ -21,6 +27,7 @@ from config.agent_config import (
     TWO_PHASE_DOCS_CODE_MAX_PARENT_RETRIES_PHASE_1,
 )
 from config.router_config import ENABLE_INSTRUCTION_ROUTER, ROUTER_CONFIDENCE_THRESHOLD
+from agent.core.actions import Action
 from planner.planner import plan
 
 from agent.retrieval.query_rewriter import heuristic_condense_for_retrieval
@@ -118,7 +125,7 @@ def _docs_seed_plan(instruction: str) -> dict:
             "steps": [
                 {
                     "id": 1,
-                    "action": "SEARCH_CANDIDATES",
+                    "action": Action.SEARCH_CANDIDATES.value,
                     "artifact_mode": "docs",
                     "description": "Locate README/docs artifacts",
                     "query": q,
@@ -126,14 +133,14 @@ def _docs_seed_plan(instruction: str) -> dict:
                 },
                 {
                     "id": 2,
-                    "action": "BUILD_CONTEXT",
+                    "action": Action.BUILD_CONTEXT.value,
                     "artifact_mode": "docs",
                     "description": "Build docs context from candidates",
                     "reason": "Read and rank docs context",
                 },
                 {
                     "id": 3,
-                    "action": "EXPLAIN",
+                    "action": Action.EXPLAIN.value,
                     "artifact_mode": "docs",
                     "description": i or "Explain documentation content",
                     "reason": "Answer using docs context",
@@ -163,6 +170,7 @@ def get_plan(
     retry_context: dict | None = None,
     routed_intent: RoutedIntent | None = None,
     ignore_two_phase: bool = False,
+    state: AgentState | None = None,
 ) -> dict:
     """
     Resolve plan using Stage 38 unified production routing (RoutedIntent).
@@ -178,14 +186,20 @@ def get_plan(
 
     ignore_two_phase: passed to route_production_instruction when building ri
     (two-phase parent fallback to flat plan).
+
+    state: if provided, use state.context for intent_classification memoization.
     """
     from agent.routing.production_routing import route_production_instruction
 
-    ri = (
-        routed_intent
-        if routed_intent is not None
-        else route_production_instruction(instruction, ignore_two_phase=ignore_two_phase)
-    )
+    ctx = (state.context or {}) if state else {}
+    if state and "intent_classification" in ctx:
+        ri = ctx["intent_classification"]
+    elif routed_intent is not None:
+        ri = routed_intent
+    else:
+        ri = route_production_instruction(instruction, ignore_two_phase=ignore_two_phase)
+        if state and isinstance(state.context, dict):
+            state.context["intent_classification"] = ri
 
     routing_override = False
     routing_reason: str | None = None
@@ -214,12 +228,22 @@ def get_plan(
         )
         if trace_id:
             with trace_stage(trace_id, "planner") as summary:
-                plan_result = plan(instruction, retry_context=retry_context)
+                plan_result = plan(
+                    instruction,
+                    retry_context=retry_context,
+                    primary_intent=ri.primary_intent if ri else None,
+                )
                 summary["instruction"] = (instruction or "")[:200]
                 summary["number_of_steps"] = len(plan_result.get("steps", []))
                 summary["actions"] = [s.get("action") for s in plan_result.get("steps", [])]
             return _ensure_plan_id(plan_result)
-        return _ensure_plan_id(plan(instruction, retry_context=retry_context))
+        return _ensure_plan_id(
+            plan(
+                instruction,
+                retry_context=retry_context,
+                primary_intent=ri.primary_intent if ri else None,
+            )
+        )
 
     # Docs-artifact lane (deterministic, from unified router)
     if ri.primary_intent == INTENT_DOC and ri.suggested_plan_shape == PLAN_SHAPE_DOCS_SEED_LANE:
@@ -280,7 +304,7 @@ def get_plan(
                 "steps": [
                     {
                         "id": 1,
-                        "action": "SEARCH",
+                        "action": Action.SEARCH.value,
                         "description": instruction,
                         "query": query,
                         "reason": "Routed by unified production router",
@@ -309,7 +333,7 @@ def get_plan(
                 "steps": [
                     {
                         "id": 1,
-                        "action": "EXPLAIN",
+                        "action": Action.EXPLAIN.value,
                         "description": instruction,
                         "reason": "Routed by unified production router",
                     }
@@ -337,7 +361,7 @@ def get_plan(
                 "steps": [
                     {
                         "id": 1,
-                        "action": "INFRA",
+                        "action": Action.INFRA.value,
                         "description": instruction,
                         "reason": "Routed by unified production router",
                     }
@@ -363,12 +387,22 @@ def get_plan(
     )
     if trace_id:
         with trace_stage(trace_id, "planner") as summary:
-            plan_result = plan(instruction, retry_context=retry_context)
+            plan_result = plan(
+                instruction,
+                retry_context=retry_context,
+                primary_intent=ri.primary_intent,
+            )
             summary["instruction"] = (instruction or "")[:200]
             summary["number_of_steps"] = len(plan_result.get("steps", []))
             summary["actions"] = [s.get("action") for s in plan_result.get("steps", [])]
         return _ensure_plan_id(plan_result)
-    return _ensure_plan_id(plan(instruction, retry_context=retry_context))
+    return _ensure_plan_id(
+        plan(
+            instruction,
+            retry_context=retry_context,
+            primary_intent=ri.primary_intent,
+        )
+    )
 
 
 def _derive_phase_subgoals(instruction: str) -> tuple[str, str]:

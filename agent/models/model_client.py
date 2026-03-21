@@ -24,6 +24,11 @@ from typing import Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
 
+
+class GuardrailError(RuntimeError):
+    """Raised when guardrail validation fails after retries. Catch for structured handling."""
+
+
 # ---------------------------------------------------------------------------
 # Stage 28: Model call audit (thread-safe, process-local)
 # ---------------------------------------------------------------------------
@@ -498,18 +503,28 @@ def _run_guardrails_pre(user_content: str) -> None:
         pass  # guardrails not available
 
 
-def _run_guardrails_post(prompt_name: Optional[str], response: str, user_content: Optional[str]) -> None:
-    """Run constraint validation on response after LLM call. Logs on failure."""
+_GUARDRAIL_MAX_ATTEMPTS = 3
+
+
+def _run_guardrails_post(
+    prompt_name: Optional[str],
+    response: str,
+    user_content: Optional[str],
+    *,
+    relax_actions: bool = False,
+) -> tuple[bool, str]:
+    """Run constraint validation on response after LLM call. Returns (valid, msg)."""
     if not _ENABLE_GUARDRAILS or not prompt_name:
-        return
+        return (True, "")
     try:
         from agent.prompt_system import get_registry
 
-        valid, msg = get_registry().validate_response(prompt_name, response, user_content)
-        if not valid:
-            logger.warning("[model_client] guardrail validation failed for %s: %s", prompt_name, msg)
+        valid, msg = get_registry().validate_response(
+            prompt_name, response, user_content, relax_actions=relax_actions
+        )
+        return (valid, msg or "")
     except ImportError:
-        pass
+        return (True, "")
 
 
 def call_small_model(
@@ -562,17 +577,38 @@ def call_small_model(
     model_name = get_model_name(model_key)
     base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
     _record_model_call("small", callsite=task_name or "call_small_model", model_name=model_name, base_url=base_url)
-    response = _call_chat(
-        endpoint,
-        messages,
-        max_tokens=limit,
-        temperature=params.get("temperature"),
-        request_timeout=params.get("request_timeout_seconds"),
-        frequency_penalty=params.get("frequency_penalty"),
-        presence_penalty=params.get("presence_penalty"),
-    )
-    _run_guardrails_post(prompt_name, response, prompt)
-    return response
+    last_msg = ""
+    for attempt in range(_GUARDRAIL_MAX_ATTEMPTS):
+        temperature = 0 if attempt > 0 else params.get("temperature")
+        response = _call_chat(
+            endpoint,
+            messages,
+            max_tokens=limit,
+            temperature=temperature,
+            request_timeout=params.get("request_timeout_seconds"),
+            frequency_penalty=params.get("frequency_penalty"),
+            presence_penalty=params.get("presence_penalty"),
+        )
+        valid, msg = _run_guardrails_post(prompt_name, response, prompt)
+        if valid:
+            return response
+        last_msg = msg or "unknown"
+        logger.warning(
+            "[guardrail] failure: prompt=%s attempt=%d reason=%s",
+            prompt_name,
+            attempt + 1,
+            last_msg,
+        )
+        if attempt == 1 and prompt_name == "planner":
+            valid, _ = _run_guardrails_post(prompt_name, response, prompt, relax_actions=True)
+            if valid:
+                logger.info("[guardrail] recovered via relaxed policy: prompt=%s", prompt_name)
+                return response
+        if attempt >= _GUARDRAIL_MAX_ATTEMPTS - 1:
+            logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
+            raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
+    logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
+    raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
 
 
 def call_reasoning_model(
@@ -627,14 +663,35 @@ def call_reasoning_model(
     model_name = get_model_name(model_key)
     base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
     _record_model_call("reasoning", callsite=task_name or "call_reasoning_model", model_name=model_name, base_url=base_url)
-    response = _call_chat(
-        endpoint,
-        messages,
-        max_tokens=limit,
-        temperature=params.get("temperature"),
-        request_timeout=params.get("request_timeout_seconds"),
-        frequency_penalty=params.get("frequency_penalty"),
-        presence_penalty=params.get("presence_penalty"),
-    )
-    _run_guardrails_post(prompt_name, response, prompt)
-    return response
+    last_msg = ""
+    for attempt in range(_GUARDRAIL_MAX_ATTEMPTS):
+        temperature = 0 if attempt > 0 else params.get("temperature")
+        response = _call_chat(
+            endpoint,
+            messages,
+            max_tokens=limit,
+            temperature=temperature,
+            request_timeout=params.get("request_timeout_seconds"),
+            frequency_penalty=params.get("frequency_penalty"),
+            presence_penalty=params.get("presence_penalty"),
+        )
+        valid, msg = _run_guardrails_post(prompt_name, response, prompt)
+        if valid:
+            return response
+        last_msg = msg or "unknown"
+        logger.warning(
+            "[guardrail] failure: prompt=%s attempt=%d reason=%s",
+            prompt_name,
+            attempt + 1,
+            last_msg,
+        )
+        if attempt == 1 and prompt_name == "planner":
+            valid, _ = _run_guardrails_post(prompt_name, response, prompt, relax_actions=True)
+            if valid:
+                logger.info("[guardrail] recovered via relaxed policy: prompt=%s", prompt_name)
+                return response
+        if attempt >= _GUARDRAIL_MAX_ATTEMPTS - 1:
+            logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
+            raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
+    logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
+    raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
