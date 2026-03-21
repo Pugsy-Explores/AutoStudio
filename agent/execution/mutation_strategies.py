@@ -50,6 +50,32 @@ def generate_query_variants(query: str) -> list[str]:
     return out
 
 
+def get_initial_search_variants(base_query: str, max_total: int = 3) -> list[str]:
+    """
+    Stage 42: bounded deterministic variants for the first SEARCH policy attempt.
+    Returns [base] + up to (max_total - 1) variants from generate_query_variants.
+    Deduped by exact string, base first, blank strings ignored. Hard cap at max_total.
+    """
+    if not base_query or not str(base_query).strip():
+        return []
+    base = base_query.strip()
+    if max_total < 1:
+        return []
+    seen: set[str] = {base}
+    out: list[str] = [base]
+    for v in generate_query_variants(base):
+        if len(out) >= max_total:
+            break
+        if not v or not isinstance(v, str):
+            continue
+        s = v.strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
 def _extract_symbol_from_description(description: str) -> str | None:
     """Extract likely symbol name from instruction (e.g. multiply from 'Repair ... multiply(2,3)')."""
     if not description or not isinstance(description, str):

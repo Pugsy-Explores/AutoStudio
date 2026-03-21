@@ -5,10 +5,13 @@ import os
 import re
 from pathlib import Path
 
+from agent.contracts.error_codes import REASON_CODE_INSUFFICIENT_SUBSTANTIVE_CONTEXT
 from agent.execution.explain_gate import (
+    GRAPH_PLACEHOLDER_SNIPPET_PREFIX,
     REASON_CODE_INSUFFICIENT_GROUNDING,
     code_explain_grounding_ready,
     ensure_context_before_explain,
+    has_substantive_code_context,
 )
 from agent.prompt_system import get_registry
 from config.agent_config import MAX_CONTEXT_CHARS
@@ -29,6 +32,7 @@ from agent.retrieval.result_contract import (
 from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline
 from agent.tools import build_context, list_files, read_file, run_command, search_candidates, search_code
 from config.retrieval_config import (
+    ENABLE_EXPLORATION,
     ENABLE_HYBRID_RETRIEVAL,
     ENABLE_VECTOR_SEARCH,
     RETRIEVAL_CACHE_SIZE,
@@ -187,7 +191,8 @@ def _search_fn(query: str, state: AgentState):
                                 {"file": str(resolved / e), "symbol": "", "line": 0, "snippet": e}
                                 for e in entries[:20]
                             ],
-                            "query": query,
+                            "query": query or "",
+                            "retrieval_fallback": "list_dir",
                         }
                         break
                 except Exception as e:
@@ -229,7 +234,8 @@ def _search_fn(query: str, state: AgentState):
         if result is None or not isinstance(result, dict):
             result = {"results": [], "query": query or ""}
 
-        # Phase 4: guarantee at least 1 snippet - fallback to file search
+        # Phase 4: last-resort directory listing when all retrievers are empty (not semantic hits).
+        # Policy layer treats retrieval_fallback=file_search as empty for success (Stage 43).
         retrieval_fallback_used = None
         if not (result.get("results") or []):
             try:
@@ -259,13 +265,16 @@ def _search_fn(query: str, state: AgentState):
         if reslist:
             from agent.retrieval.search_target_filter import filter_and_rank_search_results
 
+            _ctx = state.context or {}
+            _sr = _ctx.get("source_root")
             result = {
                 **result,
                 "results": filter_and_rank_search_results(
                     reslist,
                     query,
                     str(project_root),
-                    parent_instruction=(state.context or {}).get("parent_instruction"),
+                    parent_instruction=_ctx.get("parent_instruction"),
+                    extra_path_roots=(str(_sr),) if _sr else None,
                 ),
             }
 
@@ -540,6 +549,217 @@ def _write_artifact_fn(step: dict, state: AgentState) -> dict:
         }
 
 
+# --- Controlled exploration (after bundle selector) ---
+MAX_EXPLORATION_TOTAL_ROWS = 8
+MAX_EXPLORATION_ADDED_ROWS = 3
+MAX_EXPLORATION_STEPS = 2
+MAX_FRONTIER_SIZE = 4
+
+
+def _rank_exploration_seeds(selected: list[dict]) -> list[dict]:
+    """Rank seeds for exploration: prefer linked, impl-backed, richer relations."""
+    return sorted(
+        selected,
+        key=lambda r: (
+            bool(r.get("relations")),
+            bool(r.get("implementation_body_present", False)),
+            len(r.get("relations") or []),
+        ),
+        reverse=True,
+    )
+
+
+def _compute_structure(rows: list[dict]) -> int:
+    """Structure score: linked_count + distinct_files."""
+    linked = sum(1 for r in rows if r.get("relations"))
+    files = len(set(r.get("file") for r in rows if r.get("file")))
+    return linked + files
+
+
+def _linked_count(rows: list[dict]) -> int:
+    """Count rows with non-empty relations."""
+    return sum(1 for r in rows if isinstance(r.get("relations"), list) and r.get("relations"))
+
+
+def _is_useful_row(r: dict) -> bool:
+    """Filter: keep only rows with relations or implementation body (avoids noise accumulation)."""
+    return bool(r.get("relations")) or bool(r.get("implementation_body_present"))
+
+
+def _norm_path_key(p: str | None) -> str:
+    """Normalize file path for set membership."""
+    return str(p or "").replace("\\", "/").strip().lower()
+
+
+def _diverse_frontier(frontier_cids: list[str], pool_by_id: dict[str, dict]) -> list[str]:
+    """Prefer distinct files in frontier (avoids same-file tunnel vision); pad to MAX_FRONTIER_SIZE."""
+    seen_files: set[str] = set()
+    out: list[str] = []
+    for cid in frontier_cids:
+        row = pool_by_id.get(cid)
+        if not row:
+            continue
+        f = _norm_path_key(row.get("file"))
+        if f and f not in seen_files:
+            out.append(cid)
+            seen_files.add(f)
+        if len(out) >= MAX_FRONTIER_SIZE:
+            break
+    if len(out) < MAX_FRONTIER_SIZE:
+        for cid in frontier_cids:
+            if cid in out:
+                continue
+            if pool_by_id.get(cid):
+                out.append(cid)
+            if len(out) >= MAX_FRONTIER_SIZE:
+                break
+    return out
+
+
+def _rank_new_rows(rows: list[dict]) -> list[dict]:
+    """Prefer shallow (depth 1) over deep; then relations, then impl. Most useful info is 1-hop."""
+    return sorted(
+        rows,
+        key=lambda r: (
+            r.get("exploration_depth", 99),  # prefer depth 1 (ascending = shallow first)
+            not bool(r.get("relations")),  # relations before non-relations
+            not bool(r.get("implementation_body_present", False)),  # impl before non-impl
+        ),
+    )
+
+
+def _skip_redundant_same_file(r: dict, selected_files: set[str]) -> bool:
+    """Skip rows in already-selected files with no relations (structural duplication)."""
+    fp = _norm_path_key(r.get("file"))
+    if not fp or fp not in selected_files:
+        return False
+    return not r.get("relations")
+
+
+def _should_run_exploration(state: AgentState) -> bool:
+    """True when exploration should run: code EXPLAIN, bundle selector used, architecture intent, low linked/impl."""
+    ctx = state.context or {}
+    mode = ctx.get("artifact_mode") or ctx.get("dominant_artifact_mode") or "code"
+    if mode != "code":
+        return False
+    if not ctx.get("bundle_selector_used"):
+        return False
+    intent = ctx.get("retrieval_intent") or ""
+    if intent != "architecture":
+        return False
+    linked = ctx.get("bundle_selector_selected_linked_row_count", 0)
+    impl = ctx.get("bundle_selector_selected_impl_body_count", 0)
+    if linked >= 2 and impl >= 1:
+        return False
+    return True
+
+
+def _run_exploration(state: AgentState) -> None:
+    """
+    Chain-aware graph exploration: step 1 = neighbors, step 2 = neighbors-of-neighbors.
+    Uses bridge-first ranked seeds, deterministic tool choice (relations > impl > file_region),
+    filters to useful rows (relations or impl), and preserves path continuity (parent_id, depth).
+    """
+    from agent.retrieval.exploration_tools import expand_from_node
+
+    ctx = state.context or {}
+    pool = ctx.get("retrieval_candidate_pool") or []
+    selected = ctx.get("bundle_selector_selected_pool") or []
+
+    if not selected or not pool:
+        return
+
+    pool_ids = {str(r.get("candidate_id", "")) for r in pool if r.get("candidate_id")}
+    pool_by_id = {str(r.get("candidate_id", "")): r for r in pool if r.get("candidate_id")}
+    selected_ids = {str(r.get("candidate_id", "")) for r in selected if r.get("candidate_id")}
+    selected_files = {_norm_path_key(r.get("file")) for r in selected if r.get("file")}
+
+    ranked_seeds = _rank_exploration_seeds(selected)
+    bridge_candidates = [r for r in selected if r.get("is_bridge")]
+    bridge_ids = {str(r.get("candidate_id", "")) for r in bridge_candidates if r.get("candidate_id")}
+    ranked_non_bridge = [r for r in ranked_seeds if str(r.get("candidate_id", "")) not in bridge_ids]
+    seeds = bridge_candidates + ranked_non_bridge
+
+    linked_before = _linked_count(selected)
+    before_structure = _compute_structure(selected)
+
+    new_rows: list[dict] = []
+    seen_ids = set(selected_ids)
+    actual_steps = 0
+    frontier = [str(r.get("candidate_id", "")) for r in seeds if r.get("candidate_id")]
+
+    for step_idx in range(MAX_EXPLORATION_STEPS):
+        if not frontier or len(new_rows) >= MAX_EXPLORATION_ADDED_ROWS:
+            break
+        frontier = _diverse_frontier(frontier, pool_by_id)
+        step_candidates: list[dict] = []
+        next_frontier: list[str] = []
+        for cid in frontier:
+            seed_row = pool_by_id.get(cid)
+            if not seed_row:
+                continue
+            results = expand_from_node(cid, pool, seed_row)
+            for r in results:
+                rid = str(r.get("candidate_id", ""))
+                if not rid or rid in seen_ids or rid not in pool_ids:
+                    continue
+                if not _is_useful_row(r):
+                    continue
+                if _skip_redundant_same_file(r, selected_files):
+                    continue
+                r_copy = dict(r)
+                r_copy["exploration_parent_id"] = cid
+                r_copy["exploration_depth"] = step_idx + 1
+                step_candidates.append(r_copy)
+                next_frontier.append(rid)
+        ranked = _rank_new_rows(step_candidates)
+        for r_copy in ranked:
+            if len(new_rows) >= MAX_EXPLORATION_ADDED_ROWS:
+                break
+            rid = str(r_copy.get("candidate_id", ""))
+            if rid in seen_ids:
+                continue
+            parent_id = str(r_copy.get("exploration_parent_id", ""))
+            if parent_id and parent_id not in seen_ids:
+                parent_row = pool_by_id.get(parent_id)
+                if parent_row and _is_useful_row(parent_row):
+                    p_copy = dict(parent_row)
+                    p_copy["exploration_parent_id"] = ""
+                    p_copy["exploration_depth"] = step_idx
+                    new_rows.append(p_copy)
+                    seen_ids.add(parent_id)
+                    if len(new_rows) >= MAX_EXPLORATION_ADDED_ROWS:
+                        break
+            new_rows.append(r_copy)
+            seen_ids.add(rid)
+        actual_steps += 1
+        after_structure = _compute_structure(selected + new_rows)
+        if after_structure <= before_structure and step_idx > 0:
+            break
+        before_structure = after_structure
+        frontier = next_frontier
+
+    new_rows = new_rows[:MAX_EXPLORATION_ADDED_ROWS]
+    combined = selected + new_rows
+    linked_after = _linked_count(combined)
+    structure_gain = _compute_structure(combined) - _compute_structure(selected)
+
+    ctx["ranked_context"] = combined[:MAX_EXPLORATION_TOTAL_ROWS]
+    ctx["exploration_used"] = True
+    ctx["exploration_added_count"] = len(new_rows)
+    ctx["exploration_structure_gain"] = structure_gain
+    ctx["exploration_steps_used"] = actual_steps
+    ctx["exploration_helped"] = structure_gain > 0
+    ctx["exploration_improved_structure"] = structure_gain > 0
+    ctx["exploration_linked_gain"] = linked_after - linked_before
+    if structure_gain > 0:
+        ctx["bundle_selector_post_exploration_hint"] = True
+    logger.debug(
+        "[exploration] added %d rows, steps=%d, structure_gain=%d, linked_gain=%d, total %d",
+        len(new_rows), actual_steps, structure_gain, linked_after - linked_before, len(ctx["ranked_context"]),
+    )
+
+
 def _shape_query_for_explain_retrieval(instruction: str) -> str | None:
     """
     Extract focused code-explanation target from compound requests.
@@ -608,9 +828,6 @@ def _get_explain_system_prompt() -> str:
     return get_registry().get_instructions("explain_system")
 
 
-_STUB_PLACEHOLDER_PREFIX = "Symbol from graph:"
-
-
 def _filter_stub_placeholders_when_impl_exists(ranked_context: list[dict]) -> list[dict]:
     """
     When impl-body snippets exist, filter out stub-only placeholders so they
@@ -629,7 +846,7 @@ def _filter_stub_placeholders_when_impl_exists(ranked_context: list[dict]) -> li
         c
         for c in ranked_context
         if not isinstance(c, dict)
-        or not (c.get("snippet") or "").strip().startswith(_STUB_PLACEHOLDER_PREFIX)
+        or not (c.get("snippet") or "").strip().startswith(GRAPH_PLACEHOLDER_SNIPPET_PREFIX)
     ]
 
 
@@ -641,6 +858,14 @@ def _format_explain_context(state: AgentState) -> str:
     ranked_context = state.context.get("ranked_context") or []
     if ranked_context:
         filtered = _filter_stub_placeholders_when_impl_exists(ranked_context)
+        if filtered and not any(
+            isinstance(r, dict) and (r.get("retrieval_result_type") or r.get("candidate_kind"))
+            for r in filtered
+        ):
+            logger.warning(
+                "[step_dispatcher] EXPLAIN ranked_context lacks retrieval_result_type/candidate_kind "
+                "on all rows (typed grounding signal weak)"
+            )
         assembled = assemble_reasoning_context(filtered, max_chars=8000)
         if assembled:
             parts.append("--- BEGIN CONTEXT ---")
@@ -784,6 +1009,24 @@ def dispatch(step: dict, state: AgentState) -> dict:
                     if f and f not in cand:
                         cand.append(f)
             state.context["search_target_candidates"] = cand[:40]
+            # SEARCH Quality Audit (env-gated): evaluate query quality, log to trace
+            try:
+                from agent.eval.search_quality_audit import run_audit_after_search
+
+                search_query = (out.get("query") or step.get("description") or "") if isinstance(out, dict) else ""
+                results_list = (out.get("results") or []) if isinstance(out, dict) else []
+                top_files = [str(r.get("file", "")) for r in results_list[:5] if isinstance(r, dict) and r.get("file")]
+                run_audit_after_search(
+                    instruction=getattr(state, "instruction", "") or "",
+                    search_description=search_query,
+                    ranked_context=state.context.get("ranked_context") or [],
+                    results_count=len(results_list),
+                    top_files=top_files,
+                    step_results=state.step_results,
+                    trace_id=state.context.get("trace_id"),
+                )
+            except Exception as e:
+                logger.debug("[SEARCH] search_quality_audit skipped: %s", e)
         return raw
 
     if action == "EDIT":
@@ -824,12 +1067,32 @@ def dispatch(step: dict, state: AgentState) -> dict:
     # EXPLAIN or unknown: use config task_models["EXPLAIN"] then call chosen model
     state.context["tool_node"] = chosen_tool
 
+    def _code_explain_substantive_fail_response() -> dict:
+        """Stage 47: ranked_context has rows but none are usable for code-lane EXPLAIN."""
+        return {
+            "success": False,
+            "output": "",
+            "error": (
+                "EXPLAIN received non-substantive context. "
+                "Add SEARCH for implementation code or rebuild context with source snippets."
+            ),
+            "reason_code": REASON_CODE_INSUFFICIENT_SUBSTANTIVE_CONTEXT,
+            "classification": ResultClassification.RETRYABLE_FAILURE.value,
+        }
+
+    # 1) Substantive gate (code lane): fail fast if context exists but is junk.
+    if artifact_mode == "code":
+        ranked_for_explain = state.context.get("ranked_context") or []
+        if ranked_for_explain and not has_substantive_code_context(ranked_for_explain):
+            return _code_explain_substantive_fail_response()
+
     # Context gate: avoid LLM call when ranked_context is empty
     has_context, _ = ensure_context_before_explain(step, state)
     if not has_context:
         logger.info("[context_gate] explain requested without context -> injecting SEARCH")
-        query = step.get("description", "") or ""
+        base = step.get("query") or step.get("description") or ""
         if artifact_mode == "docs":
+            query = base
             # Idempotency: reuse candidates when already present for this query.
             reuse = (
                 (state.context.get("artifact_mode") == "docs")
@@ -850,15 +1113,15 @@ def dispatch(step: dict, state: AgentState) -> dict:
                 state.context["query"] = query
             build_context(candidates=None, state=state, artifact_mode="docs")
         else:
-            # Query shaping: use focused code-explanation target for first EXPLAIN retrieval
-            # to avoid mixed context from broad compound instructions (replan_count 2->1).
-            if artifact_mode == "code":
-                shaped = _shape_query_for_explain_retrieval(query)
-                if shaped:
-                    query = shaped
+            # Code lane: use query if present; else apply shaping to description.
+            if step.get("query"):
+                query = base
+            else:
+                shaped = _shape_query_for_explain_retrieval(base)
+                query = shaped if shaped else base
             search_output = _search_fn(query, state)
             results = (search_output or {}).get("results") or []
-            if not _is_valid_search_result(results):
+            if not _is_valid_search_result(results, search_output if isinstance(search_output, dict) else None):
                 return {
                     "success": False,
                     "output": "",
@@ -872,12 +1135,56 @@ def dispatch(step: dict, state: AgentState) -> dict:
                     (search_output or {}).get("query"),
                 )
 
+    # 2) Substantive gate again after inject (code lane): inject may have populated ranked_context.
+    if artifact_mode == "code":
+        ranked_after_inject = state.context.get("ranked_context") or []
+        if ranked_after_inject and not has_substantive_code_context(ranked_after_inject):
+            return _code_explain_substantive_fail_response()
+
+    # 2b) Bundle selector pass (code EXPLAIN, architecture-style, when flag on)
+    if artifact_mode == "code":
+        state.context["final_answer_context_from_selected_rows_only"] = False
+        try:
+            from agent.retrieval.bundle_selector import run_bundle_selector, should_use_bundle_selector
+
+            ranked_for_selector = state.context.get("ranked_context") or []
+            if should_use_bundle_selector(step, state, ranked_for_selector):
+                run_bundle_selector(step, state)  # fail-soft: leaves ranked_context unchanged on failure
+
+            # 2c) Controlled exploration pass (optional, after bundle selector)
+            if ENABLE_EXPLORATION and _should_run_exploration(state):
+                try:
+                    _run_exploration(state)
+                except Exception as e:
+                    logger.debug("[step_dispatcher] exploration skipped: %s", e)
+            # Search debug: update last record with post-selector final context
+            _records = state.context.get("search_debug_records") or []
+            if _records:
+                _rec = _records[-1]
+                _final = state.context.get("ranked_context") or []
+                _rec["final_count"] = len(_final)
+                _rec["final_files"] = [str(r.get("file", "")) for r in _final[:10] if isinstance(r, dict) and r.get("file")]
+                _rec["final_has_impl"] = any(isinstance(r, dict) and r.get("implementation_body_present") for r in _final)
+                _rec["final_has_linked"] = any(
+                    isinstance(r, dict) and isinstance(r.get("relations"), list) and r.get("relations")
+                    for r in _final
+                )
+                _rec["selector_used"] = bool(state.context.get("bundle_selector_used"))
+                _rec["final_has_signal"] = _rec["final_has_impl"] or _rec["final_has_linked"]
+                _rec["selection_loss"] = _rec.get("pool_has_signal", False) and not _rec["final_has_signal"]
+        except Exception as e:
+            logger.debug("[step_dispatcher] bundle selector skipped: %s", e)
+            state.context.setdefault("bundle_selector_skip_reason", "error")
+
     trace_id = state.context.get("trace_id")
     step_id = state.context.get("current_step_id")
     try:
-        # Phase 7B.3: grounding readiness gate (code lane only) — avoid wasting an EXPLAIN attempt.
-        ready, signals = code_explain_grounding_ready(step, state)
-        if trace_id:
+        # 3) Grounding readiness (code lane): typed/heuristic sufficiency — distinct from Stage 47.
+        if artifact_mode == "code":
+            ready, signals = code_explain_grounding_ready(step, state)
+        else:
+            ready, signals = True, {}
+        if trace_id and artifact_mode == "code":
             log_event(
                 trace_id,
                 "explain_grounding_check",

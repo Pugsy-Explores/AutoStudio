@@ -344,6 +344,7 @@ def _raw_to_step_result(step: dict, raw: dict) -> StepResult:
         files_modified = output.get("files_modified")
         patch_size = output.get("patches_applied")
 
+    rc = raw.get("reason_code")
     return StepResult(
         step_id=step.get("id", 0),
         action=step.get("action", "EXPLAIN"),
@@ -354,4 +355,5 @@ def _raw_to_step_result(step: dict, raw: dict) -> StepResult:
         classification=raw.get("classification"),
         files_modified=files_modified,
         patch_size=patch_size,
+        reason_code=rc if isinstance(rc, str) else None,
     )

@@ -32,6 +32,9 @@ class StepExecutor:
                 patch_size = output.get("patches_applied")
             elif action == "WRITE_ARTIFACT" and isinstance(output, dict):
                 files_modified = output.get("files_modified")
+            rc = raw.get("reason_code")
+            if isinstance(state.context, dict):
+                state.context["last_dispatch_reason_code"] = rc
             return StepResult(
                 step_id=step_id,
                 action=action,
@@ -42,9 +45,12 @@ class StepExecutor:
                 classification=classification,
                 files_modified=files_modified,
                 patch_size=patch_size,
+                reason_code=rc if isinstance(rc, str) else None,
             )
         except Exception as e:
             elapsed = time.perf_counter() - start
+            if isinstance(state.context, dict):
+                state.context["last_dispatch_reason_code"] = None
             return StepResult(
                 step_id=step_id,
                 action=action,
