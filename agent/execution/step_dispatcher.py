@@ -1,5 +1,6 @@
 """Dispatch step actions to tool adapters. ToolGraph → Router → PolicyEngine. EXPLAIN uses model_router + chosen model."""
 
+import hashlib
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ import yaml
 from pathlib import Path
 
 from agent.contracts.error_codes import REASON_CODE_INSUFFICIENT_SUBSTANTIVE_CONTEXT
+from agent.core.actions import Action, normalize_action_for_execution, valid_action_values
 from agent.execution.explain_gate import (
     GRAPH_PLACEHOLDER_SNIPPET_PREFIX,
     REASON_CODE_INSUFFICIENT_GROUNDING,
@@ -48,7 +50,27 @@ logger = logging.getLogger(__name__)
 
 _tool_graph = ToolGraph()
 
-_DOCS_COMPATIBLE_ACTIONS = ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN")
+_DOCS_COMPATIBLE_ACTIONS = (
+    Action.SEARCH_CANDIDATES.value,
+    Action.BUILD_CONTEXT.value,
+    Action.EXPLAIN.value,
+)
+
+
+def _dedupe_context_rows(rows: list[dict]) -> list[dict]:
+    """Deduplicate context rows by (file, symbol, content_hash). Preserves order."""
+    seen: set[tuple] = set()
+    unique: list[dict] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        content = (r.get("content") or r.get("snippet") or "")
+        normalized = " ".join(content.split())
+        key = (r.get("file"), r.get("symbol"), hashlib.md5(normalized.encode()).hexdigest())
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+    return unique
 
 
 def _lane_violation(state: AgentState, *, message: str, step: dict | None = None) -> dict:
@@ -88,7 +110,7 @@ def _enforce_runtime_lane_contract(step: dict, state: AgentState) -> dict | None
     dom = (state.context or {}).get("dominant_artifact_mode", "code")
     if dom not in ("code", "docs"):
         dom = "code"
-    action = (step.get("action") or "EXPLAIN").upper()
+    action = (step.get("action") or Action.EXPLAIN.value).upper()
 
     if dom == "docs":
         # Only docs-compatible actions allowed.
@@ -129,6 +151,13 @@ def _get_retrieval_order(chosen_tool: str | None) -> list[str]:
 
 def _search_fn(query: str, state: AgentState):
     """Raw search result: { results, query }. Cache -> graph -> vector -> Serena fallback."""
+    # Phase 5: Search query sanity guard (prevent degenerate 1-word queries)
+    tokens = (query or "").split()
+    if len(tokens) < 2:
+        original = getattr(state, "instruction", "") or ""
+        if original.strip():
+            query = " ".join(original.split()[:20])
+
     trace_id = state.context.get("trace_id") if state else None
     step_id = state.context.get("current_step_id") if state else None
 
@@ -525,7 +554,7 @@ def _write_artifact_fn(step: dict, state: AgentState) -> dict:
     project_root = (state.context or {}).get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
     content = ""
     for sr in reversed(state.step_results or []):
-        if getattr(sr, "action", "").upper() == "EXPLAIN" and getattr(sr, "success", False):
+        if getattr(sr, "action", "").upper() == Action.EXPLAIN.value and getattr(sr, "success", False):
             out = getattr(sr, "output", "")
             content = out if isinstance(out, str) else str(out or "")
             break
@@ -747,6 +776,7 @@ def _run_exploration(state: AgentState) -> None:
 
     new_rows = new_rows[:MAX_EXPLORATION_ADDED_ROWS]
     combined = selected + new_rows
+    combined = _dedupe_context_rows(combined)
     linked_after = _linked_count(combined)
     structure_gain = _compute_structure(combined) - _compute_structure(selected)
 
@@ -969,6 +999,7 @@ def _format_explain_context(state: AgentState) -> str:
                 "[step_dispatcher] EXPLAIN ranked_context lacks retrieval_result_type/candidate_kind "
                 "on all rows (typed grounding signal weak)"
             )
+        filtered = _dedupe_context_rows(filtered)
         assembled = assemble_reasoning_context(filtered, max_chars=8000)
         if assembled:
             parts.append("--- BEGIN CONTEXT ---")
@@ -1026,7 +1057,11 @@ def dispatch(step: dict, state: AgentState) -> dict:
     except InvalidStepError as e:
         return {"success": False, "output": {}, "error": f"Invalid step: {e}", "classification": ResultClassification.FATAL_FAILURE.value}
 
-    action = (step.get("action") or "EXPLAIN").upper()
+    action = (step.get("action") or Action.EXPLAIN.value).upper()
+    # Safety: reject unknown actions that may have passed via relaxed guardrail.
+    # Relax validation ≠ accept unknown semantics.
+    if action not in valid_action_values():
+        raise RuntimeError(f"Unknown action after guardrail relaxation: {action}")
     description = step.get("description") or ""
     artifact_mode = step.get("artifact_mode") or "code"
     if artifact_mode not in ("code", "docs"):
@@ -1036,6 +1071,9 @@ def dispatch(step: dict, state: AgentState) -> dict:
             "error": f"Invalid artifact_mode: {artifact_mode!r} (allowed: 'code', 'docs')",
             "classification": ResultClassification.FATAL_FAILURE.value,
         }
+    # Action semantic normalization: SEARCH_CANDIDATES → SEARCH in code mode so execution
+    # routing is canonical and no layer diverges (e.g. if action == Action.SEARCH.value).
+    action = normalize_action_for_execution(action, artifact_mode=artifact_mode)
     # Phase 6A: runtime lane contract enforcement (dominant lane is source of truth).
     lane_err = _enforce_runtime_lane_contract(step, state)
     if lane_err is not None:
@@ -1049,7 +1087,7 @@ def dispatch(step: dict, state: AgentState) -> dict:
     chosen_tool = resolve_tool(action, allowed_tools, preferred_from_graph, current_node)
     state.context["chosen_tool"] = chosen_tool
 
-    if action == "SEARCH_CANDIDATES":
+    if action == Action.SEARCH_CANDIDATES.value:
         query = step.get("query") or step.get("description") or ""
         last_error = None
         for attempt in range(3):  # retry limit 2 + 1 initial = 3 attempts
@@ -1080,14 +1118,14 @@ def dispatch(step: dict, state: AgentState) -> dict:
                 return {"success": False, "output": {}, "error": f"{last_error}; fallback grep failed: {e}"}
         return {"success": True, "output": {"candidates": [], "fallback": "none", "artifact_mode": artifact_mode}}
 
-    if action == "BUILD_CONTEXT":
+    if action == Action.BUILD_CONTEXT.value:
         try:
             out = build_context(candidates=None, state=state, artifact_mode=artifact_mode)
             return {"success": True, "output": out}
         except Exception as e:
             return {"success": False, "output": {}, "error": str(e)}
 
-    if action == "SEARCH":
+    if action == Action.SEARCH.value:
         if artifact_mode == "docs":
             return {
                 "success": False,
@@ -1112,6 +1150,26 @@ def dispatch(step: dict, state: AgentState) -> dict:
                     if f and f not in cand:
                         cand.append(f)
             state.context["search_target_candidates"] = cand[:40]
+            # Populate candidates for BUILD_CONTEXT (canonical when SEARCH_CANDIDATES normalized to SEARCH)
+            results_list = (out.get("results") or []) if isinstance(out, dict) else []
+            if results_list:
+                candidates = [
+                    {
+                        "symbol": (r.get("symbol") or ""),
+                        "file": (r.get("file") or ""),
+                        "snippet": (r.get("snippet") or r.get("content") or ""),
+                        "score": 0.5,
+                        "source": "search",
+                    }
+                    for r in results_list[:40]
+                    if isinstance(r, dict)
+                ]
+                state.context["candidates"] = candidates
+                state.context["query"] = out.get("query") or step.get("description") or ""
+                # Include candidates in return for callers expecting SEARCH_CANDIDATES-style output
+                raw = dict(raw)
+                raw["output"] = dict(raw.get("output") or {})
+                raw["output"]["candidates"] = candidates
             # SEARCH Quality Audit (env-gated): evaluate query quality, log to trace
             try:
                 from agent.eval.search_quality_audit import run_audit_after_search
@@ -1132,12 +1190,12 @@ def dispatch(step: dict, state: AgentState) -> dict:
                 logger.debug("[SEARCH] search_quality_audit skipped: %s", e)
         return raw
 
-    if action == "EDIT":
+    if action == Action.EDIT.value:
         raw = _policy_engine.execute_with_policy(step, state)
         state.context["tool_node"] = chosen_tool
         return raw
 
-    if action == "INFRA":
+    if action == Action.INFRA.value:
         # If the router chose list_dir, treat INFRA as a directory listing instead of a shell command.
         # This prevents natural-language queries from being executed via run_command().
         if chosen_tool == "list_dir":
@@ -1164,7 +1222,7 @@ def dispatch(step: dict, state: AgentState) -> dict:
         state.context["tool_node"] = chosen_tool
         return raw
 
-    if action == "WRITE_ARTIFACT":
+    if action == Action.WRITE_ARTIFACT.value:
         return _write_artifact_fn(step, state)
 
     # EXPLAIN or unknown: use config task_models["EXPLAIN"] then call chosen model
