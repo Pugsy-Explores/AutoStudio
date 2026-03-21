@@ -113,19 +113,6 @@ def _instruction_hint_file_targets(instruction: str, project_root: str) -> list[
     if _instruction_suggests_docs_consistency(instruction):
         allowed_suffixes = (".py", ".pyi", ".md")
     hints = _instruction_path_hints(instruction)
-    # docs-consistency: prefer edit target by task semantics
-    # - version alignment: edit constants.py (APP_VERSION) to match README
-    # - stability/httpbin: edit .md to match .py
-    if _instruction_suggests_docs_consistency(instruction):
-        low = instruction.lower()
-        if "version" in low and ("constants" in low or "app_version" in low):
-            py_hints = [h for h in hints if h.strip().endswith((".py", ".pyi"))]
-            md_hints = [h for h in hints if h.strip().endswith(".md")]
-            hints = py_hints + md_hints
-        else:
-            md_hints = [h for h in hints if h.strip().endswith(".md")]
-            py_hints = [h for h in hints if h.strip().endswith((".py", ".pyi"))]
-            hints = md_hints + py_hints
     for hint in hints:
         h = hint.strip()
         if not h.endswith(allowed_suffixes):

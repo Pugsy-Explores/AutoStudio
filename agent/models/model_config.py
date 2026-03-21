@@ -28,6 +28,7 @@ _DEFAULT_TASK_MODELS = {
     "routing": "SMALL",
     "planner": "REASONING",
     "context_ranking": "REASONING",
+    "bundle_selector": "SMALL",
 }
 
 _DEFAULT_API_KEY = "none"

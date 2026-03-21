@@ -17,10 +17,13 @@ system_prompt: |
 
   2. Revise the plan to fix the issue:
      - If the step failed because a file/function was not found: add a SEARCH or SEARCH_CANDIDATES step before the EDIT
-     - If BUILD_CONTEXT produced no useful symbols: retry SEARCH_CANDIDATES with a more specific query
+     - If BUILD_CONTEXT produced no useful symbols: retry SEARCH_CANDIDATES with a more specific query, or add SEARCH targeting implementation files
      - If EXPLAIN failed with "I cannot answer without relevant code context": add a SEARCH or SEARCH_CANDIDATES step before EXPLAIN to locate the relevant code, then keep the EXPLAIN step
      - If EXPLAIN failed because context only had test files (e.g. "only contains test file documentation"): add a SEARCH step with a MORE SPECIFIC description targeting implementation code (e.g. "Search for step_dispatcher or dispatch implementation in agent/execution", "Search for implementation module not tests")
      - If SEARCH or SEARCH_CANDIDATES failed due to query rewrite/infrastructure error (KeyError, format error, empty response, timeout): retry SEARCH with a simpler description (e.g. key terms from the step)
+     - Use the Failure context JSON when present: if search_quality is weak or error_signal is insufficient_substantive_context or insufficient_grounding, do not repeat the same vague SEARCH as in recent_searches; follow recovery_hint for the next SEARCH. Replace or refine an existing generic SEARCH instead of stacking near-duplicates.
+     - For implementation questions, avoid test-only files; prefer non-test modules and implementation bodies.
+     - If Failure context indicates dominant docs lane, keep docs-only steps.
      - If the step failed due to wrong approach: try a different action or description
      - If the step failed due to configuration: add an INFRA step
      - You may simplify, split, or reorder steps

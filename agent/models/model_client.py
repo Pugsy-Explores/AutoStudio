@@ -9,16 +9,86 @@ Set ENABLE_PROMPT_GUARDRAILS=0 to disable (e.g. eval, tests).
 
 Retries: exponential backoff on ConnectionError, TimeoutError, and transient API errors.
 Configure via MODEL_RETRY_MAX_ATTEMPTS (default 5) and MODEL_RETRY_BASE_DELAY_SECONDS (default 1.0).
+
+Stage 28: Model call audit — record_model_call() is invoked only from _call_chat (real HTTP).
+Stubbed benchmark paths never reach _call_chat, so audit counts are trustworthy.
 """
 
 import json
 import logging
 import os
 import sys
+import threading
 import time
 from typing import Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Stage 28: Model call audit (thread-safe, process-local)
+# ---------------------------------------------------------------------------
+
+_MODEL_CALL_AUDIT_LOCK = threading.Lock()
+_MODEL_CALL_AUDIT: dict = {
+    "model_call_count": 0,
+    "small_model_call_count": 0,
+    "reasoning_model_call_count": 0,
+    "model_call_sites": [],  # bounded list, max 50
+    "model_provider": None,
+    "model_base_url": None,
+    "model_name_small": None,
+    "model_name_reasoning": None,
+}
+_MAX_CALL_SITES = 50
+
+
+def _record_model_call(kind: str, callsite: str, model_name: str, base_url: str) -> None:
+    """Record a real model call. Called only from _call_chat (actual HTTP)."""
+    with _MODEL_CALL_AUDIT_LOCK:
+        _MODEL_CALL_AUDIT["model_call_count"] += 1
+        if kind == "small":
+            _MODEL_CALL_AUDIT["small_model_call_count"] += 1
+        else:
+            _MODEL_CALL_AUDIT["reasoning_model_call_count"] += 1
+        if _MODEL_CALL_AUDIT["model_provider"] is None:
+            _MODEL_CALL_AUDIT["model_provider"] = "openai_compatible"
+        if _MODEL_CALL_AUDIT["model_base_url"] is None:
+            _MODEL_CALL_AUDIT["model_base_url"] = base_url
+        if kind == "small" and _MODEL_CALL_AUDIT["model_name_small"] is None:
+            _MODEL_CALL_AUDIT["model_name_small"] = model_name
+        if kind == "reasoning" and _MODEL_CALL_AUDIT["model_name_reasoning"] is None:
+            _MODEL_CALL_AUDIT["model_name_reasoning"] = model_name
+        sites = _MODEL_CALL_AUDIT["model_call_sites"]
+        if len(sites) < _MAX_CALL_SITES:
+            sites.append({"kind": kind, "callsite": callsite, "model_name": model_name})
+
+
+def reset_model_call_audit() -> None:
+    """Reset audit state. Call before each benchmark task in live_model mode."""
+    with _MODEL_CALL_AUDIT_LOCK:
+        _MODEL_CALL_AUDIT["model_call_count"] = 0
+        _MODEL_CALL_AUDIT["small_model_call_count"] = 0
+        _MODEL_CALL_AUDIT["reasoning_model_call_count"] = 0
+        _MODEL_CALL_AUDIT["model_call_sites"] = []
+        _MODEL_CALL_AUDIT["model_provider"] = None
+        _MODEL_CALL_AUDIT["model_base_url"] = None
+        _MODEL_CALL_AUDIT["model_name_small"] = None
+        _MODEL_CALL_AUDIT["model_name_reasoning"] = None
+
+
+def get_model_call_audit() -> dict:
+    """Return a copy of the current audit state."""
+    with _MODEL_CALL_AUDIT_LOCK:
+        return {
+            "model_call_count": _MODEL_CALL_AUDIT["model_call_count"],
+            "small_model_call_count": _MODEL_CALL_AUDIT["small_model_call_count"],
+            "reasoning_model_call_count": _MODEL_CALL_AUDIT["reasoning_model_call_count"],
+            "model_call_sites": list(_MODEL_CALL_AUDIT["model_call_sites"]),
+            "model_provider": _MODEL_CALL_AUDIT["model_provider"],
+            "model_base_url": _MODEL_CALL_AUDIT["model_base_url"],
+            "model_name_small": _MODEL_CALL_AUDIT["model_name_small"],
+            "model_name_reasoning": _MODEL_CALL_AUDIT["model_name_reasoning"],
+        }
 
 T = TypeVar("T")
 
@@ -75,6 +145,7 @@ _ENABLE_GUARDRAILS = os.getenv("ENABLE_PROMPT_GUARDRAILS", "1").lower() in ("1",
 from agent.models.model_config import (
     get_endpoint_for_model,
     get_model_call_params,
+    get_model_name,
     MODEL_API_KEY,
     MODEL_MAX_TOKENS,
     MODEL_REQUEST_TIMEOUT,
@@ -87,6 +158,27 @@ _TIMEOUT = MODEL_REQUEST_TIMEOUT
 
 _MAX_PRETTY_LINES = 40
 _PRETTY_WIDTH = 72
+
+
+def _dump_replanner_prompt_files(system_prompt: str | None, user_prompt: str) -> None:
+    """Write replanner system/user prompts for observability (debug_replanner)."""
+    out_dir = "artifacts/replanner_debug"
+    os.makedirs(out_dir, exist_ok=True)
+    ts = int(time.time() * 1000)
+    sys_txt = system_prompt if system_prompt is not None else ""
+    body = (
+        "=== SYSTEM PROMPT ===\n"
+        f"{sys_txt}\n\n"
+        "=== USER PROMPT ===\n"
+        f"{user_prompt or ''}"
+    )
+    last_path = os.path.join(out_dir, "last_prompt.txt")
+    ts_path = os.path.join(out_dir, f"prompt_{ts}.txt")
+    with open(last_path, "w", encoding="utf-8") as f:
+        f.write(body)
+    with open(ts_path, "w", encoding="utf-8") as f:
+        f.write(body)
+    logger.info("[DEBUG] replanner prompts written to %s and %s", last_path, ts_path)
 
 
 def _pretty_print_request(messages: list[dict]) -> None:
@@ -426,6 +518,7 @@ def call_small_model(
     task_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
     prompt_name: Optional[str] = None,
+    debug_replanner: bool = False,
 ) -> str:
     """Call the model for the given task. Returns model output text.
     When task_name is set, uses params and endpoint from models_config (task_params, task_models).
@@ -457,8 +550,18 @@ def call_small_model(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
+        _sys_for_dump = system_prompt
+        _user_for_dump = prompt
     else:
         messages = [{"role": "user", "content": prompt}]
+        _sys_for_dump = ""
+        _user_for_dump = prompt
+    if task_name == "replanner" and debug_replanner:
+        _dump_replanner_prompt_files(_sys_for_dump or None, _user_for_dump or "")
+    # Stage 28: record real model call (stubs never reach here)
+    model_name = get_model_name(model_key)
+    base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
+    _record_model_call("small", callsite=task_name or "call_small_model", model_name=model_name, base_url=base_url)
     response = _call_chat(
         endpoint,
         messages,
@@ -479,6 +582,7 @@ def call_reasoning_model(
     task_name: Optional[str] = None,
     model_type: Optional[str] = None,
     prompt_name: Optional[str] = None,
+    debug_replanner: bool = False,
 ) -> str:
     """
     Call the reasoning model. If system_prompt is given, send as chat with system + user;
@@ -511,8 +615,18 @@ def call_reasoning_model(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
+        _sys_for_dump = system_prompt
+        _user_for_dump = prompt
     else:
         messages = [{"role": "user", "content": prompt}]
+        _sys_for_dump = ""
+        _user_for_dump = prompt
+    if task_name == "replanner" and debug_replanner:
+        _dump_replanner_prompt_files(_sys_for_dump or None, _user_for_dump or "")
+    # Stage 28: record real model call (stubs never reach here)
+    model_name = get_model_name(model_key)
+    base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
+    _record_model_call("reasoning", callsite=task_name or "call_reasoning_model", model_name=model_name, base_url=base_url)
     response = _call_chat(
         endpoint,
         messages,

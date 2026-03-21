@@ -10,6 +10,60 @@ logger = logging.getLogger(__name__)
 _CHARS_PER_TOKEN = 4
 _COMPRESSION_SYSTEM = """Summarize this code snippet in 1-2 sentences. Focus on: what it does, key parameters, return value. Keep it under 100 words."""
 
+# Must survive snippet summarization / truncation (EXPLAIN grounding + typed candidates).
+_GROUNDING_METADATA_KEYS = (
+    "implementation_body_present",
+    "retrieval_result_type",
+    "candidate_kind",
+    "line",
+    "line_range",
+    "relations",
+    "enclosing_class",
+    "intent_boost",
+    "selection_score",
+)
+
+
+def _merge_grounding_metadata(source: dict, dest: dict) -> None:
+    """Re-apply grounding fields after mutating snippet (defensive; dict() copy should already retain them)."""
+    if not isinstance(source, dict) or not isinstance(dest, dict):
+        return
+    for k in _GROUNDING_METADATA_KEYS:
+        if k in source:
+            dest[k] = source[k]
+
+
+def _verify_compression_output(before_ctx: list, after_ctx: list) -> None:
+    """Index-aligned prefix rows; tail rows may be dropped by budget (logged if they carried impl body)."""
+    for i, dst in enumerate(after_ctx):
+        if i >= len(before_ctx):
+            break
+        src = before_ctx[i]
+        if not isinstance(src, dict) or not isinstance(dst, dict):
+            continue
+        if src.get("implementation_body_present") is True and dst.get("implementation_body_present") is not True:
+            logger.error(
+                "[context_compressor] implementation_body_present=True lost after compression (file=%s)",
+                dst.get("file") or src.get("file"),
+            )
+        for k in ("retrieval_result_type", "candidate_kind"):
+            if k in src and src.get(k) != dst.get(k):
+                logger.error(
+                    "[context_compressor] grounding field %r dropped or changed after compression: "
+                    "was=%s now=%s (file=%s)",
+                    k,
+                    src.get(k),
+                    dst.get(k),
+                    dst.get("file") or src.get("file"),
+                )
+    for j in range(len(after_ctx), len(before_ctx)):
+        src = before_ctx[j]
+        if isinstance(src, dict) and src.get("implementation_body_present") is True:
+            logger.error(
+                "[context_compressor] implementation_body_present=True row omitted by compression budget (file=%s)",
+                src.get("file"),
+            )
+
 
 def compress_context(
     ranked_context: list[dict],
@@ -42,7 +96,9 @@ def compress_context(
         snippet = c.get("snippet") or ""
         snip_len = len(snippet)
         if used + snip_len <= max_chars:
-            result.append(dict(c))
+            row = dict(c)
+            _merge_grounding_metadata(c, row)
+            result.append(row)
             used += snip_len
             continue
         if used >= max_chars:
@@ -60,6 +116,7 @@ def compress_context(
                 compressed = dict(c)
                 compressed["snippet"] = summary
                 compressed["compressed"] = True
+                _merge_grounding_metadata(c, compressed)
                 result.append(compressed)
                 used += len(summary)
             except Exception as e:
@@ -68,14 +125,18 @@ def compress_context(
                 compressed = dict(c)
                 compressed["snippet"] = truncated
                 compressed["compressed"] = True
+                _merge_grounding_metadata(c, compressed)
                 result.append(compressed)
                 used += len(truncated)
         else:
-            result.append(dict(c))
+            row = dict(c)
+            _merge_grounding_metadata(c, row)
+            result.append(row)
             used += snip_len
         if used >= max_chars:
             break
 
+    _verify_compression_output(ranked_context, result)
     ratio = total_chars / used if used else 1.0
     logger.info("[context_compressor] compressed to %d snippets, %d chars, ratio=%.2f", len(result), used, ratio)
     return (result, ratio)

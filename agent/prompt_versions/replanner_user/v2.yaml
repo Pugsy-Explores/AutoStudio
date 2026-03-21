@@ -1,4 +1,6 @@
-version: v1
+# Frozen contract v2 — replanner_user prompt.
+# No edits. Every future change must pass tests/test_replanner_regression_suite.py
+version: v2
 role: user
 instructions: |
   Original instruction:
@@ -133,8 +135,10 @@ instructions: |
      - Return a plan that is robust to failure.
 
   8. If the plan contains only one SEARCH:
+     - Single SEARCH is allowed when the instruction is specific and scoped (e.g. "Where is X defined?", "What does Y do?", "Where are Z configured?").
      - You must justify why a second SEARCH is not needed.
      - If no strong justification exists, add a second SEARCH.
+     - Do not overfit to multi-hop; compress when appropriate.
 
   9. BUILD_CONTEXT must process the results of the most recent SEARCH.
      - If a SEARCH occurs after BUILD_CONTEXT, another BUILD_CONTEXT is required before EXPLAIN.

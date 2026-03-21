@@ -159,6 +159,7 @@ _LEGACY_MAP: dict[str, str] = {
     "query_expansion": "query_expansion",
     "context_interpreter": "context_interpreter",
     "patch_generator": "patch_generator",
+    "bundle_selector": "bundle_selector",
 }
 
 

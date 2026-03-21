@@ -8,6 +8,7 @@ import os
 import re
 
 from agent.models.model_client import call_reasoning_model
+from agent.retrieval.query_rewriter import heuristic_condense_for_retrieval
 from agent.models.model_config import get_model_call_params
 from planner.planner_prompts import PLANNER_SYSTEM_PROMPT
 from planner.planner_utils import normalize_actions, validate_plan
@@ -131,12 +132,15 @@ def _build_controlled_fallback_plan(
             ],
             "error": error,
         }
+    condensed = heuristic_condense_for_retrieval(instruction)
+    query = condensed.strip() if condensed and condensed.strip() else (instruction or "").strip()[:200]
     return {
         "steps": [
             {
                 "id": 1,
                 "action": "SEARCH",
                 "description": f"Locate items mentioned in: {instruction[:200]}{'...' if len(instruction) > 200 else ''}",
+                "query": query,
                 "reason": reason,
             }
         ],

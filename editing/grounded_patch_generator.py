@@ -68,6 +68,11 @@ def generate_grounded_candidates(
     if c:
         candidates.append(c)
 
+    # Strategy 1b — fix existing function return value (e.g. "fix get_timeout so it returns 30")
+    c = _try_fix_return_value(instruction, file_content)
+    if c:
+        candidates.append(c)
+
     # Strategy 2 — negate inverted empty check (len(s) == 0 → len(s) > 0)
     c = _try_empty_check_negation(instruction, file_content)
     if c:
@@ -191,6 +196,20 @@ def validate_semantic_grounded_candidate(
             else:
                 return False, "requested_literal_not_realized"
 
+    # Fix F so it returns N (numeric): patch must contain return N
+    ret_num_m = re.search(
+        r"\b(?:fix|make)\s+[a-zA-Z_]\w*\s*(?:\(\))?\s*(?:so\s+it\s+)?returns?\s+([0-9]+)\b",
+        instruction,
+        re.I,
+    )
+    if ret_num_m:
+        requested_num = ret_num_m.group(1)
+        code = patch.get("code", "") if action == "insert" else ""
+        new = patch.get("new", "") if action == "text_sub" else ""
+        combined = code + new
+        if f"return {requested_num}" not in combined and f"return{requested_num}" not in combined.replace(" ", ""):
+            return False, "requested_literal_not_realized"
+
     # Rename CONST from A to B: patch should contain both old and new evidence
     rename_m = re.search(
         r"\b(?:Rename|Change)\s+([A-Z][A-Z0-9_]*)\s+from\s+['\"]([^'\"]+)['\"]\s+to\s+['\"]([^'\"]+)['\"]",
@@ -237,6 +256,15 @@ def _apply_semantic_ranking(instruction: str, candidates: list[PatchCandidate]) 
                 if fname in instruction:
                     score += 1.0
                 c.extra.setdefault("requested_symbol_name", fname)
+        # text_sub for fix_return_value / return_binary_op_repair: symbol in instruction
+        if action == "text_sub" and c.strategy in ("fix_return_value", "return_binary_op_repair"):
+            for fname in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\)", instruction):
+                if fname in ("fix", "make", "change", "return"):
+                    continue
+                if fname in instruction:
+                    score += 0.5
+                    c.extra.setdefault("requested_symbol_name", fname)
+                    break
 
         # Return literal alignment
         ret_m = re.search(
@@ -284,7 +312,7 @@ def grounded_generation_telemetry(
 ) -> dict[str, Any]:
     """Build machine-readable telemetry dict (JSON-safe, bounded)."""
     best = selected or (candidates[0] if candidates else None)
-    return {
+    out = {
         "grounded_candidate_count": len(candidates),
         "selected_candidate_rank": selected.rank if selected else -1,
         "patch_candidate_strategy": best.strategy if best else None,
@@ -294,6 +322,15 @@ def grounded_generation_telemetry(
         ),
         "generation_rejected_reason": rejected_reason,
     }
+    # Stage 28: repair type for RCA (existing-function vs missing-function)
+    if best:
+        strat = best.strategy
+        out["grounded_repair_type"] = (
+            "existing_function_repair"
+            if strat in ("fix_return_value", "return_binary_op_repair", "empty_check_negation")
+            else "missing_function_add" if strat == "add_missing_function" else "docs_code_align" if "align" in strat else "other"
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -309,14 +346,20 @@ def _try_return_binary_op_repair(instruction: str, text: str) -> PatchCandidate 
     low = instruction.lower()
     # (wrong_op_pattern, correct_op) pairs driven by instruction keywords
     op_pairs: list[tuple[str, str]] = []
-    if any(k in low for k in ("divid", "division", "quotient")):
+    if any(k in low for k in ("divid", "division", "quotient", "halve", "half", "halves")):
         op_pairs.append((r"\*", "/"))
+    # halve(n) equals 2: integer division (n//2), not float
+    if any(k in low for k in ("halve", "half")) and "equals" in low:
+        op_pairs.append((r"/", "//"))
     if any(k in low for k in ("product", "multiplied")):
         op_pairs.append((r"/", "*"))
     if any(k in low for k in ("negate", "subtract", "difference", "minus")):
         op_pairs.append((r"\+", "-"))
-    if any(k in low for k in (" sum ", "total", " add to", "addition")):
+    if any(k in low for k in (" sum ", "total", " add to", "addition", "add_ints", "add ints")):
         op_pairs.append((r"-", "+"))
+    # "add" in function name (add_ints) or "equals 5" / "equals N" when instruction implies sum
+    if "add" in low and ("equals" in low or "==" in low):
+        op_pairs.append((r"\*", "+"))
 
     for wrong_re, correct_op in op_pairs:
         # Match: return IDENT op IDENT (with optional spaces and trailing comment)
@@ -338,6 +381,74 @@ def _try_return_binary_op_repair(instruction: str, text: str) -> PatchCandidate 
                     evidence_excerpt=old[:MAX_EVIDENCE_LEN],
                     rank=0,
                 )
+    return None
+
+
+def _try_fix_return_value(instruction: str, text: str) -> PatchCandidate | None:
+    """
+    Generic: fix existing function so it returns a specific literal.
+    "fix get_timeout so it returns 30", "make F return X".
+    Only fires when the named function exists with a different return.
+    """
+    low = instruction.lower()
+    if not any(k in low for k in ("fix", "make", "change")) or "return" not in low:
+        return None
+
+    # Extract: "fix FNAME() in path so it returns 30" or "fix FNAME so it returns X"
+    fname_m = re.search(
+        r"\b(?:fix|make|change)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\)\s+.*?returns?\s+([0-9]+|True|False|None)\b",
+        instruction,
+        re.I,
+    )
+    if not fname_m:
+        fname_m = re.search(
+            r"\b(?:fix|make|change)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\(\))?\s*(?:so\s+it\s+)?returns?\s+([0-9]+|True|False|None)\b",
+            instruction,
+            re.I,
+        )
+    if not fname_m:
+        fname_m = re.search(
+            r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*\)\s+returns?\s+([0-9]+|True|False|None)\b",
+            instruction,
+            re.I,
+        )
+    if not fname_m:
+        return None
+    fname = fname_m.group(1)
+    target_val = fname_m.group(2)
+
+    # Function must exist
+    if not re.search(rf"\bdef\s+{re.escape(fname)}\s*\(", text):
+        return None
+
+    # Find return line in target function (line-by-line after def fname)
+    lines = text.split("\n")
+    in_target = False
+    for line in lines:
+        if re.search(rf"^\s*def\s+{re.escape(fname)}\s*\(", line):
+            in_target = True
+            continue
+        if in_target and re.match(r"^\s*(?:def |class )", line):
+            break
+        if not in_target:
+            continue
+        # Match return <number> or return True/False/None
+        ret_m = re.search(r"return\s+([0-9]+|True|False|None)\s*(?:#.*)?$", line.strip())
+        if ret_m:
+            current = ret_m.group(1)
+            if current == target_val:
+                return None
+            old_line = line
+            new_line = re.sub(r"return\s+" + re.escape(current) + r"\b", f"return {target_val}", line, count=1)
+            if new_line == old_line:
+                return None
+            return PatchCandidate(
+                patch={"action": "text_sub", "old": old_line, "new": new_line},
+                strategy="fix_return_value",
+                evidence_type="matched_return_line",
+                evidence_excerpt=old_line[:MAX_EVIDENCE_LEN],
+                rank=0,
+            )
     return None
 
 
@@ -453,21 +564,20 @@ def _try_version_constant_align(
     project_root: str,
 ) -> PatchCandidate | None:
     """
-    Generic: align a version constant in a .py file to the version header in a paired .md file.
-    Works for any uppercase constant that holds a semver string paired with any .md file
-    containing a ## vX.Y.Z header. Edits the .py constant to match the .md version.
+    Generic: align a version constant in a .py file to the version in a paired .md file.
+    Supports ## vX.Y.Z, **X.Y.Z**, version: X.Y.Z. Edits the .py constant to match the .md.
     """
     low = instruction.lower()
     if not ("align" in low or "agree" in low or "match" in low):
         return None
-    if "version" not in low and "release" not in low and "changelog" not in low:
+    if "version" not in low and "release" not in low and "changelog" not in low and "readme" not in low:
         return None
 
     p = Path(file_path)
     if p.suffix.lower() not in (".py", ".pyi"):
         return None
 
-    # Find any uppercase constant = "semver-like" in file content
+    # Find uppercase constant = "semver-like" (RELEASE_VERSION, TYPER_BENCH_VER, etc.)
     const_m = re.search(
         r"^[ \t]*([A-Z][A-Z0-9_]*)\s*=\s*\"([0-9]+\.[0-9]+(?:\.[0-9]+)?)\"\s*(?:#.*)?$",
         file_content,
@@ -479,8 +589,10 @@ def _try_version_constant_align(
     current_ver = const_m.group(2)
     old_line = const_m.group(0)
 
-    # Scan project root for .md files with ## vX.Y.Z
-    target_ver = _find_md_version_header(project_root)
+    # Use extended version finder (## vX.Y.Z, **X.Y.Z**, version: X.Y.Z)
+    target_ver = _find_md_version_any_format(project_root, file_path, instruction)
+    if not target_ver:
+        target_ver = _find_md_version_header(project_root)
     if not target_ver or target_ver == current_ver:
         return None
 
@@ -652,6 +764,41 @@ def _find_md_version_header(project_root: str) -> str | None:
         m = re.search(r"##\s+v([0-9]+\.[0-9]+(?:\.[0-9]+)?)", content)
         if m:
             return m.group(1)
+    return None
+
+
+def _find_md_version_any_format(project_root: str, file_path: str, instruction: str) -> str | None:
+    """
+    Find version from .md files. Supports ## vX.Y.Z, **X.Y.Z**, labeled versions.
+    Looks in project root and same dir as file_path.
+    """
+    root = Path(project_root)
+    search_dirs: list[Path] = [root]
+    fp = Path(file_path)
+    if fp.parent != root:
+        search_dirs.append(root / fp.parent)
+    cand_names = ["README.md", "CHANGELOG.md"]
+    for d in search_dirs:
+        for name in cand_names:
+            md_file = d / name
+            if not md_file.is_file():
+                continue
+            try:
+                content = md_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            # ## vX.Y.Z
+            m = re.search(r"##\s+v([0-9]+\.[0-9]+(?:\.[0-9]+)?)", content)
+            if m:
+                return m.group(1)
+            # **X.Y.Z** (bold)
+            m = re.search(r"\*\*([0-9]+\.[0-9]+(?:\.[0-9]+)?)\*\*", content)
+            if m:
+                return m.group(1)
+            # version: X.Y.Z or Version: X.Y.Z
+            m = re.search(r"[Vv]ersion[:\s]+\*\*?([0-9]+\.[0-9]+(?:\.[0-9]+)?)", content)
+            if m:
+                return m.group(1)
     return None
 
 

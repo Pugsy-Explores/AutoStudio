@@ -23,6 +23,7 @@ from config.agent_config import (
 from config.router_config import ENABLE_INSTRUCTION_ROUTER, ROUTER_CONFIDENCE_THRESHOLD
 from planner.planner import plan
 
+from agent.retrieval.query_rewriter import heuristic_condense_for_retrieval
 from agent.routing.docs_intent import DOCS_DISCOVERY_VERBS, DOCS_INTENT_TOKENS, is_two_phase_docs_code_intent
 from agent.routing.intent import (
     INTENT_COMPOUND,
@@ -272,6 +273,8 @@ def get_plan(
                 "resolver_consumption": "short_search",
             }
         )
+        condensed = heuristic_condense_for_retrieval(instruction)
+        query = condensed.strip() if condensed and condensed.strip() else (instruction or "").strip()[:500]
         plan_result = _ensure_plan_id(
             {
                 "steps": [
@@ -279,6 +282,7 @@ def get_plan(
                         "id": 1,
                         "action": "SEARCH",
                         "description": instruction,
+                        "query": query,
                         "reason": "Routed by unified production router",
                     }
                 ],
