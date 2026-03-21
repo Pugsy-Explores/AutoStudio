@@ -1,8 +1,11 @@
 """Dispatch step actions to tool adapters. ToolGraph → Router → PolicyEngine. EXPLAIN uses model_router + chosen model."""
 
+import json
 import logging
 import os
+import random
 import re
+import yaml
 from pathlib import Path
 
 from agent.contracts.error_codes import REASON_CODE_INSUFFICIENT_SUBSTANTIVE_CONTEXT
@@ -22,6 +25,7 @@ from agent.memory.state import AgentState
 from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
+from agent.observability.grounding_audit import _extract_context_tokens, _normalize_tokens
 from agent.observability.trace_logger import log_event, trace_stage
 from agent.retrieval import rewrite_query_with_context
 from agent.retrieval.context_builder_v2 import assemble_reasoning_context
@@ -32,6 +36,8 @@ from agent.retrieval.result_contract import (
 from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline
 from agent.tools import build_context, list_files, read_file, run_command, search_candidates, search_code
 from config.retrieval_config import (
+    ANSWER_EVAL_SAMPLE_RATE,
+    ENABLE_ANSWER_EVAL,
     ENABLE_EXPLORATION,
     ENABLE_HYBRID_RETRIEVAL,
     ENABLE_VECTOR_SEARCH,
@@ -744,6 +750,10 @@ def _run_exploration(state: AgentState) -> None:
     linked_after = _linked_count(combined)
     structure_gain = _compute_structure(combined) - _compute_structure(selected)
 
+    before_tokens = _extract_context_tokens(selected)
+    after_tokens = _extract_context_tokens(combined)
+    new_tokens = after_tokens - before_tokens
+
     ctx["ranked_context"] = combined[:MAX_EXPLORATION_TOTAL_ROWS]
     ctx["exploration_used"] = True
     ctx["exploration_added_count"] = len(new_rows)
@@ -752,12 +762,105 @@ def _run_exploration(state: AgentState) -> None:
     ctx["exploration_helped"] = structure_gain > 0
     ctx["exploration_improved_structure"] = structure_gain > 0
     ctx["exploration_linked_gain"] = linked_after - linked_before
+    ctx["exploration_debug"] = {
+        "used": True,
+        "added_count": len(new_rows),
+        "new_token_count": len(new_tokens),
+        "exploration_new_tokens": list(new_tokens),
+    }
     if structure_gain > 0:
         ctx["bundle_selector_post_exploration_hint"] = True
     logger.debug(
         "[exploration] added %d rows, steps=%d, structure_gain=%d, linked_gain=%d, total %d",
         len(new_rows), actual_steps, structure_gain, linked_after - linked_before, len(ctx["ranked_context"]),
     )
+
+
+def _apply_grounding_and_exploration_audit(state: AgentState, answer_text: str) -> None:
+    """Compute grounding_debug (overlap-based) and update exploration_debug with used_new_tokens."""
+    ctx = state.context or {}
+    final_rows = [r for r in (ctx.get("ranked_context") or []) if isinstance(r, dict)]
+    answer_tokens = _normalize_tokens(answer_text)
+    context_tokens = _extract_context_tokens(final_rows)
+    overlap = answer_tokens.intersection(context_tokens)
+    overlap_score = len(overlap) / max(len(answer_tokens), 1)
+    ctx["grounding_debug"] = {
+        "overlap_score": overlap_score,
+        "overlap_count": len(overlap),
+    }
+    exploration_debug = dict(ctx.get("exploration_debug") or {})
+    new_tokens_set = set(exploration_debug.get("exploration_new_tokens") or [])
+    used_new_tokens = new_tokens_set & answer_tokens
+    exploration_debug["used_new_token_count"] = len(used_new_tokens)
+    exploration_debug["exploration_effective"] = len(used_new_tokens) > 0
+    exploration_debug.pop("exploration_new_tokens", None)
+    ctx["exploration_debug"] = exploration_debug
+
+
+def _run_answer_grounding_evaluation(state: AgentState, answer_text: str) -> None:
+    """Post-EXPLAIN evaluation: is the answer supported by retrieved context? Pure observability; fail-safe."""
+    if not ENABLE_ANSWER_EVAL:
+        return
+    if random.random() > ANSWER_EVAL_SAMPLE_RATE:
+        return
+
+    ctx = state.context or {}
+    selected = ctx.get("bundle_selector_selected_pool") or []
+    fallback = ctx.get("ranked_context") or []
+    rows = selected if selected else fallback
+    rows_for_eval = rows[:6]
+
+    instruction = getattr(state, "instruction", "") or ""
+
+    context_snippets = []
+    for r in rows_for_eval:
+        if not isinstance(r, dict):
+            continue
+        snippet = r.get("snippet") or r.get("content") or ""
+        if snippet:
+            context_snippets.append(str(snippet)[:500])
+    context_text = "\n\n".join(context_snippets)
+
+    try:
+        prompt_dir = Path(__file__).resolve().parent.parent / "prompt_versions" / "evaluation"
+        prompt_path = prompt_dir / "answer_grounding_v1.yaml"
+        if not prompt_path.exists():
+            ctx["answer_grounding_eval"] = {"error": "prompt_not_found", "supported": None}
+            return
+        with open(prompt_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        system_text = (data.get("system") or "").strip()
+        user_tpl = (data.get("user") or "").strip()
+        user_prompt = user_tpl.format(
+            instruction=instruction[:1000],
+            answer=(answer_text or "")[:3000],
+            context=context_text[:4000] or "(none)",
+        )
+
+        result = call_small_model(
+            user_prompt,
+            task_name="evaluation",
+            system_prompt=system_text,
+            max_tokens=600,
+        )
+
+        s = (result or "").strip()
+        m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", s)
+        if m:
+            s = m.group(1).strip()
+        parsed = json.loads(s) if s else None
+
+        if parsed and isinstance(parsed, dict):
+            ctx["answer_grounding_eval"] = {
+                "supported": parsed.get("supported"),
+                "support_strength": parsed.get("support_strength"),
+                "missing_evidence": parsed.get("missing_evidence"),
+                "context_row_count": len(rows_for_eval),
+            }
+        else:
+            ctx["answer_grounding_eval"] = {"error": "parse_failed", "supported": None}
+    except Exception as e:
+        ctx["answer_grounding_eval"] = {"error": str(e)[:200], "supported": None}
 
 
 def _shape_query_for_explain_retrieval(instruction: str) -> str | None:
@@ -1175,6 +1278,14 @@ def dispatch(step: dict, state: AgentState) -> dict:
         except Exception as e:
             logger.debug("[step_dispatcher] bundle selector skipped: %s", e)
             state.context.setdefault("bundle_selector_skip_reason", "error")
+        if not state.context.get("exploration_used"):
+            state.context["exploration_debug"] = {
+                "used": False,
+                "added_count": 0,
+                "new_token_count": 0,
+                "used_new_token_count": 0,
+                "exploration_effective": False,
+            }
 
     trace_id = state.context.get("trace_id")
     step_id = state.context.get("current_step_id")
@@ -1246,6 +1357,8 @@ def dispatch(step: dict, state: AgentState) -> dict:
                     out_str = (out or "").strip() or "[EXPLAIN: no model output]"
                     summary["first_200_chars"] = out_str[:200]
                     print("  [model] output:", out_str[:120] + ("..." if len(out_str) > 120 else ""))
+                    _apply_grounding_and_exploration_audit(state, out_str)
+                    _run_answer_grounding_evaluation(state, out_str)
                     return {"success": True, "output": out_str}
                 except Exception as e:
                     summary["error"] = str(e)[:200]
@@ -1264,6 +1377,8 @@ def dispatch(step: dict, state: AgentState) -> dict:
             )
         out_str = (out or "").strip() or "[EXPLAIN: no model output]"
         print("  [model] output:", out_str[:120] + ("..." if len(out_str) > 120 else ""))
+        _apply_grounding_and_exploration_audit(state, out_str)
+        _run_answer_grounding_evaluation(state, out_str)
         return {"success": True, "output": out_str}
     except Exception as e:
         base = {"success": False, "output": "", "error": str(e)}
