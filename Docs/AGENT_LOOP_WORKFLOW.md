@@ -16,7 +16,7 @@ Preferred flow for locate-then-edit: SEARCH_CANDIDATES (with query) → BUILD_CO
 
 **Architecture (phase.md):** router decides, planner plans, dispatcher executes.
 
-**Instruction router:** Enabled by default (`ENABLE_INSTRUCTION_ROUTER=1`). Classifies before planner; CODE_SEARCH/CODE_EXPLAIN/INFRA skip planner. Set to 0 to disable.
+**Instruction routing (Stage 38/39):** `route_production_instruction` returns `RoutedIntent`; plan_resolver consumes it. Enabled by default (`ENABLE_INSTRUCTION_ROUTER=1`). Order: docs-artifact (DOC) → two-phase docs+code (COMPOUND) → legacy router. DOC/SEARCH/EXPLAIN/INFRA short-circuit; EDIT/AMBIGUOUS/COMPOUND-flat use planner. Telemetry: `resolver_consumption`. Set to 0 to disable.
 
 ---
 
@@ -34,18 +34,21 @@ flowchart TB
 
     subgraph PLAN["Plan resolver (router + planner)"]
         C --> D{"ENABLE_INSTRUCTION_ROUTER?"}
-        D -->|yes| E["route_instruction"]
-        E --> F{"category"}
-        F -->|CODE_SEARCH| G1["Single SEARCH step"]
-        F -->|CODE_EXPLAIN| G2["Single EXPLAIN step"]
+        D -->|yes| E["route_production_instruction"]
+        E --> RI["RoutedIntent"]
+        RI --> F{"primary_intent"}
+        F -->|DOC| G0["docs_seed_plan"]
+        F -->|SEARCH| G1["Single SEARCH step"]
+        F -->|EXPLAIN| G2["Single EXPLAIN step"]
         F -->|INFRA| G3["Single INFRA step"]
-        F -->|CODE_EDIT/GENERAL| H["plan instruction"]
+        F -->|EDIT/AMBIGUOUS/COMPOUND-flat| H["plan instruction"]
         D -->|no| H
         H --> I1{"Planner OK?"}
         I1 -->|yes| J["Parse JSON steps"]
         I1 -->|no| K["Fallback: single EXPLAIN"]
         J --> L["Plan: plan_id, steps with id, action, description, reason"]
         K --> L
+        G0 --> L
         G1 --> L
         G2 --> L
         G3 --> L
@@ -89,9 +92,9 @@ flowchart TB
          ┌──────────────────────────────────────────┴──────────────────────────────────────────┐
          │ for each attempt: get_plan(retry_context)                                            │
          │   ENABLE_INSTRUCTION_ROUTER? (default: yes)                                          │
-         │   yes: route_instruction ──► category                                                 │
-         │     CODE_SEARCH ──► Single SEARCH  │  CODE_EXPLAIN ──► Single EXPLAIN  │  INFRA ──► Single INFRA │
-         │     CODE_EDIT/GENERAL ──► plan     │  no: plan instruction                           │
+         │   yes: route_production_instruction ──► RoutedIntent                                  │
+         │     DOC ──► docs_seed  │  SEARCH ──► Single SEARCH  │  EXPLAIN ──► Single EXPLAIN  │  INFRA ──► Single INFRA │
+         │     EDIT/AMBIGUOUS/COMPOUND-flat ──► plan     │  no: plan instruction              │
          │   ──► AgentState (instruction, plan with plan_id, completed_steps as (plan_id, step_id), results, context) │
          │   ──► Step loop: next_step ──► execute_step ──► dispatch ──► state.record             │
          │        validate? ──► success: record │ fail: replan, update_plan (no record)             │

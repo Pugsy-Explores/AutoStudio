@@ -1,5 +1,7 @@
 # AutoStudio Agent Routing Architecture Report
 
+Stage 38/39: Unified production routing via `route_production_instruction` → `RoutedIntent`; plan_resolver consumes RoutedIntent. Production-emission contract: VALIDATE deferred; COMPOUND production-real only for two-phase docs+code.
+
 ## SECTION 1 — ROUTER ENTRYPOINT
 
 ### Call Chain
@@ -9,11 +11,17 @@
 ```
 User Query (instruction)
   → run_controller() [agent/orchestrator/agent_controller.py]
-  → get_plan(instruction) [agent/orchestrator/plan_resolver.py; ENABLE_INSTRUCTION_ROUTER=1 (default)]
-       → route_instruction(instruction) [agent/routing/instruction_router.py]
-       → category ∈ {CODE_SEARCH, CODE_EDIT, CODE_EXPLAIN, INFRA, GENERAL}
-       → if CODE_SEARCH/CODE_EXPLAIN/INFRA: single-step plan, skip planner
-       → if CODE_EDIT/GENERAL: plan(instruction) [planner/planner.py]
+  → get_parent_plan(instruction) or get_plan(instruction) [agent/orchestrator/plan_resolver.py]
+       → route_production_instruction(instruction) [agent/routing/production_routing.py]
+            → (1) is_docs_artifact_intent → DOC, docs_seed_lane
+            → (2) is_two_phase_docs_code_intent → COMPOUND, two_phase_docs_code
+            → (3) route_instruction() [agent/routing/instruction_router.py]
+                 → category ∈ {CODE_SEARCH, CODE_EDIT, CODE_EXPLAIN, INFRA, GENERAL}
+                 → routed_intent_from_router_decision → RoutedIntent
+       → ri = RoutedIntent(primary_intent, suggested_plan_shape, ...)
+       → if DOC + docs_seed_lane: _docs_seed_plan (skip planner)
+       → if SEARCH/EXPLAIN/INFRA: single-step plan (skip planner)
+       → if EDIT/VALIDATE/AMBIGUOUS/COMPOUND-flat: plan(instruction) [planner/planner.py]
   → (when ENABLE_INSTRUCTION_ROUTER=0) plan(instruction) directly [to disable router]
   → state.next_step() [agent/memory/state.py]
   → step = { id, action, description, reason }
@@ -39,10 +47,12 @@ User Query
 
 ### Findings
 
-1. **Instruction-level router in production (default).** When `ENABLE_INSTRUCTION_ROUTER=1` (default), `route_instruction()` classifies before planning; CODE_SEARCH/CODE_EXPLAIN/INFRA skip the planner. Set to 0 to disable.
-2. **Planner is the routing source for CODE_EDIT/GENERAL.** `planner/planner.py` calls `call_reasoning_model()` and returns steps with `action` in `{EDIT, SEARCH, EXPLAIN, INFRA}`.
-3. **`tool_graph_router` is deterministic.** It maps `action` → tool via `ACTION_TO_PREFERRED_TOOL`; no LLM.
-4. **`model_router` is for model choice.** It selects SMALL vs REASONING for tasks like EXPLAIN, query rewriting, validation, replanner; it does not route instructions to actions.
+1. **Unified production entrypoint (Stage 38).** `route_production_instruction()` returns `RoutedIntent`; plan_resolver consumes it. Order: docs-artifact → two-phase docs+code → legacy `route_instruction()`.
+2. **Instruction-level router in production (default).** When `ENABLE_INSTRUCTION_ROUTER=1` (default), legacy router classifies before planning; CODE_SEARCH/CODE_EXPLAIN/INFRA skip the planner. Set to 0 to disable.
+3. **Planner is the routing source for CODE_EDIT/GENERAL.** `planner/planner.py` calls `call_reasoning_model()` and returns steps with `action` in `{EDIT, SEARCH, EXPLAIN, INFRA}`.
+4. **`tool_graph_router` is deterministic.** It maps `action` → tool via `ACTION_TO_PREFERRED_TOOL`; no LLM.
+5. **`model_router` is for model choice.** It selects SMALL vs REASONING for tasks like EXPLAIN, query rewriting, validation, replanner; it does not route instructions to actions.
+6. **Production-emission contract (Stage 39).** `PRODUCTION_EMITTABLE_PRIMARY_INTENTS` documents what `route_production_instruction` can return. VALIDATE is deferred (no emission path). Telemetry: `resolver_consumption` (docs_seed | short_search | short_explain | short_infra | planner).
 
 ---
 
@@ -376,14 +386,21 @@ User Query
 User Query
     │
     ▼
+┌─────────────────────────────────────┐
+│ route_production_instruction()      │  ← Stage 38: single production entrypoint
+│ (1) docs-artifact → DOC             │
+│ (2) two-phase docs+code → COMPOUND  │
+│ (3) route_instruction() → RoutedIntent │  ← legacy 5-way when ENABLE_INSTRUCTION_ROUTER=1
+└──────────┬──────────────────────────┘
+           │ RoutedIntent(primary_intent, suggested_plan_shape, ...)
+           ▼
 ┌─────────────────────┐
-│ Instruction Router  │  ← when ENABLE_INSTRUCTION_ROUTER=1 (SMALL or ROUTER_TYPE)
-│ route_instruction() │
+│ Plan Resolver       │  DOC→docs_seed | SEARCH/EXPLAIN/INFRA→single-step | else→planner
 └──────────┬──────────┘
-           │ category → single-step plan or
+           │
            ▼
 ┌─────────────┐
-│   Planner   │  ← LLM (reasoning model) when CODE_EDIT or GENERAL
+│   Planner   │  ← LLM (reasoning model) when EDIT, AMBIGUOUS, COMPOUND-flat, etc.
 └──────┬──────┘
        │ steps: [{ action, description }]
        ▼
@@ -422,7 +439,9 @@ User Query
 
 ### Summary
 
-- **Instruction router** (optional) classifies before planning; reduces planner calls for CODE_SEARCH/CODE_EXPLAIN/INFRA.
+- **route_production_instruction** (Stage 38) is the single production entrypoint; returns `RoutedIntent`. Plan resolver consumes it.
+- **Instruction router** (optional, legacy path) classifies before planning; reduces planner calls for CODE_SEARCH/CODE_EXPLAIN/INFRA.
+- **Production-emission contract** (Stage 39): VALIDATE deferred; COMPOUND production-real only for two-phase docs+code. Telemetry: `resolver_consumption`.
 - **Planner** produces EDIT/SEARCH/EXPLAIN/INFRA steps for CODE_EDIT and GENERAL.
 - **Tool graph router** maps actions to tools deterministically; graph nodes align with execution (retrieve_graph, retrieve_vector, retrieve_grep).
 - **Model router** selects SMALL vs REASONING via config; no LLM.

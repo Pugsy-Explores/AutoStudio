@@ -67,8 +67,10 @@ flowchart TD
 
 ### 1. Plan Resolution
 
-- **Instruction router** classifies intent (CODE_EDIT, CODE_SEARCH, EXPLAIN, INFRA, GENERAL).
-- **Planner** (for CODE_EDIT/GENERAL) produces JSON plan: `{plan_id, steps: [{id, action, description, reason}]}` (Phase 4: every plan has plan_id).
+- **route_production_instruction** (Stage 38) returns `RoutedIntent`; single production entrypoint. Order: docs-artifact (DOC) → two-phase docs+code (COMPOUND) → legacy `route_instruction` (5 categories).
+- **Plan resolver** consumes `RoutedIntent`: DOC→docs_seed_plan; SEARCH/EXPLAIN/INFRA→single-step; EDIT/AMBIGUOUS/COMPOUND-flat→planner. Telemetry: `resolver_consumption` (docs_seed | short_search | short_explain | short_infra | planner).
+- **Production-emission contract** (Stage 39): VALIDATE deferred; COMPOUND production-real only for two-phase. See `agent/routing/README.md`.
+- **Planner** (for EDIT/GENERAL/AMBIGUOUS) produces JSON plan: `{plan_id, steps: [{id, action, description, reason}]}` (Phase 4: every plan has plan_id).
 - Actions: SEARCH, EDIT, EXPLAIN, INFRA.
 
 ### 2. Step Execution

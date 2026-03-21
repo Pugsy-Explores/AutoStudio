@@ -1,6 +1,6 @@
 # Router Eval
 
-Phased router evolution and evaluation harness. Same dataset for all phases; swap router by changing one import in `router_eval.py`. Categories: EDIT, SEARCH, EXPLAIN, INFRA, GENERAL.
+Phased router evolution and evaluation harness. Same dataset for all phases; swap router by changing one import in `router_eval.py`. Categories: EDIT, SEARCH, EXPLAIN, INFRA, GENERAL. Production uses `route_production_instruction` (Stage 38); router_registry maps eval routers to legacy 5-way when `ROUTER_TYPE` is set. See `agent/routing/README.md` for production contract (Stage 39).
 
 ## Run evaluation
 
