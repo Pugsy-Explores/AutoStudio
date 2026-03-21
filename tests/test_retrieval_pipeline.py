@@ -24,20 +24,33 @@ def _setup_indexed_repo(tmp_path: Path, source_root: Path) -> tuple[str, str]:
     return str(tmp_path), str(source_root)
 
 
-def _setup_indexed_subset(tmp_path: Path, project_root: Path, subdirs: tuple[str, ...]) -> tuple[str, str]:
-    """Index only subdirs of project. Returns (project_root for retrieval, source_root for path resolution)."""
+def _setup_indexed_subset(
+    tmp_path: Path,
+    project_root: Path,
+    subdirs: tuple[str, ...],
+    *,
+    build_embeddings: bool = True,
+) -> tuple[str, str]:
+    """Index only subdirs of project. Returns (project_root for retrieval, source_root for path resolution).
+    build_embeddings=False skips SentenceTransformer/ChromaDB for faster graph-only tests."""
     out_dir = tmp_path / ".symbol_graph"
     out_dir.mkdir(parents=True, exist_ok=True)
-    index_repo(str(project_root), output_dir=str(out_dir), include_dirs=subdirs)
+    index_repo(
+        str(project_root),
+        output_dir=str(out_dir),
+        include_dirs=subdirs,
+        build_embeddings=build_embeddings,
+    )
     return str(tmp_path), str(project_root)
 
 
 @pytest.fixture(scope="session")
 def indexed_autostudio(tmp_path_factory):
-    """Index agent/ and editing/ once per session; shared by all slow tests."""
+    """Index agent/ and editing/ once per session; shared by all slow tests.
+    Skips embeddings (SentenceTransformer/ChromaDB) for speed; tests use graph retrieval only."""
     tmp_path = tmp_path_factory.mktemp("retrieval_index")
     project_root = Path(__file__).resolve().parent.parent
-    return _setup_indexed_subset(tmp_path, project_root, _INDEX_SUBDIRS)
+    return _setup_indexed_subset(tmp_path, project_root, _INDEX_SUBDIRS, build_embeddings=False)
 
 
 @pytest.fixture
