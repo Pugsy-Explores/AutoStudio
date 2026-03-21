@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agent.observability.grounding_audit import _extract_context_tokens
 from agent.retrieval.result_contract import (
     RETRIEVAL_RESULT_TYPE_FILE_HEADER,
     RETRIEVAL_RESULT_TYPE_REGION_BODY,
@@ -455,6 +456,40 @@ def build_retrieval_quality_record(spec: Any, state: Any, loop_out: dict[str, An
     if search_debug_records is not None:
         out["search_debug_records"] = search_debug_records
 
+    # NOTE:
+    # overlap_score is a lexical diagnostic signal only.
+    # It must NOT be used for correctness decisions.
+    # Use answer_supported for grounding truth.
+
+    grounding = ctx.get("grounding_debug") or {}
+    exploration = ctx.get("exploration_debug") or {}
+    final_context_tokens = len(_extract_context_tokens(rows))
+    out["final_has_signal"] = (
+        (breakdown.get("implementation_body_present_count") or 0) >= 1
+        or (breakdown.get("linked_row_count") or 0) >= 1
+    )
+    out.update({
+        "overlap_score": grounding.get("overlap_score"),
+        "overlap_count": grounding.get("overlap_count"),
+        "exploration_new_token_count": exploration.get("new_token_count"),
+        "exploration_used_new_token_count": exploration.get("used_new_token_count"),
+        "exploration_effective": exploration.get("exploration_effective"),
+        "final_context_tokens": final_context_tokens,
+    })
+
+    eval_res = ctx.get("answer_grounding_eval") or {}
+    out.update({
+        "answer_supported": eval_res.get("supported"),
+        "support_strength": eval_res.get("support_strength"),
+    })
+    supported = eval_res.get("supported")
+    if supported is True:
+        out["grounding_status"] = "supported"
+    elif supported is False:
+        out["grounding_status"] = "unsupported"
+    else:
+        out["grounding_status"] = "unknown"
+
     return out
 
 
@@ -572,6 +607,15 @@ def aggregate_retrieval_metrics(records: list[dict[str, Any]]) -> dict[str, Any]
             "average_exploration_structure_gain": None,
             "average_exploration_linked_gain": None,
             "exploration_helped_rate": None,
+            "avg_overlap_score": None,
+            "exploration_effective_rate": None,
+            "avg_used_new_token_count": None,
+            "supported_answer_rate": None,
+            "average_support_strength": None,
+            "evaluator_coverage_rate": None,
+            "unsupported_with_signal_rate": None,
+            "unsupported_without_signal_rate": None,
+            "weak_support_rate": None,
             "timeout_count": timeout_count,
         }
 
@@ -659,6 +703,52 @@ def aggregate_retrieval_metrics(records: list[dict[str, Any]]) -> dict[str, Any]
             if any(r.get("exploration_used") for r in rows)
             else None
         ),
+        "avg_overlap_score": (
+            sum(v for r in rows if (v := r.get("overlap_score")) is not None) / len([r for r in rows if r.get("overlap_score") is not None])
+            if [r for r in rows if r.get("overlap_score") is not None]
+            else None
+        ),
+        "exploration_effective_rate": (
+            _mean_bool(rows, "exploration_effective", lambda r: bool(r.get("exploration_used")))
+            if any(r.get("exploration_used") for r in rows)
+            else None
+        ),
+        "avg_used_new_token_count": (
+            sum(int(r.get("exploration_used_new_token_count") or 0) for r in rows if r.get("exploration_used"))
+            / len([r for r in rows if r.get("exploration_used")])
+            if [r for r in rows if r.get("exploration_used")]
+            else None
+        ),
+        "supported_answer_rate": (
+            sum(1 for r in rows if r.get("answer_supported") is True)
+            / len(supported_rows)
+            if (supported_rows := [r for r in rows if r.get("answer_supported") is not None])
+            else None
+        ),
+        "average_support_strength": (
+            sum(strength_vals) / len(strength_vals)
+            if (strength_vals := [r.get("support_strength") for r in rows if isinstance(r.get("support_strength"), int)])
+            else None
+        ),
+        "evaluator_coverage_rate": (
+            len([r for r in rows if r.get("answer_supported") is not None]) / len(rows)
+            if rows else None
+        ),
+        "unsupported_with_signal_rate": (
+            len([r for r in rows if r.get("answer_supported") is False and r.get("final_has_signal") is True])
+            / len(rows)
+            if rows else None
+        ),
+        "unsupported_without_signal_rate": (
+            len([r for r in rows if r.get("answer_supported") is False and not r.get("final_has_signal")])
+            / len(rows)
+            if rows else None
+        ),
+        "weak_support_rate": (
+            len([r for r in rows if isinstance(r.get("support_strength"), int) and r.get("support_strength") <= 2])
+            / len(rows)
+            if rows else None
+        ),
     }
     sfm = aggregate_search_failure_modes(rows)
     if sfm.get("search_debug_record_count", 0) > 0:
@@ -712,6 +802,15 @@ _DELTA_KEYS = (
     "average_exploration_structure_gain",
     "average_exploration_linked_gain",
     "exploration_helped_rate",
+    "avg_overlap_score",
+    "exploration_effective_rate",
+    "avg_used_new_token_count",
+    "supported_answer_rate",
+    "average_support_strength",
+    "evaluator_coverage_rate",
+    "unsupported_with_signal_rate",
+    "unsupported_without_signal_rate",
+    "weak_support_rate",
 )
 
 
