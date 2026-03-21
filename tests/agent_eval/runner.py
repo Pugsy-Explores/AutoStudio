@@ -150,6 +150,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Run only this task_id (e.g. core12_pin_click_multifile).",
     )
+    p.add_argument(
+        "--task-timeout",
+        type=int,
+        default=None,
+        help="Per-task timeout in seconds. Tasks exceeding this are marked as task_timeout failures.",
+    )
     return p
 
 
@@ -419,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output,
         execution_mode=args.execution_mode,
         task_filter=getattr(args, "task", None),
+        task_timeout_seconds=getattr(args, "task_timeout", None),
     )
     print(json.dumps(summary, indent=2))
     print(f"\nRun directory: {run_dir}", file=sys.stderr)

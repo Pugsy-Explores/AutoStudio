@@ -303,6 +303,16 @@ def run_structural_agent_offline(spec, project_root: str, *, trace_id: str | Non
         if exc is None
         else {}
     )
+    # Extract answer for golden LLM judge (Phase 3): last successful EXPLAIN output, else loop_output["output"]
+    answer = ""
+    if exc is None and final_state is not None:
+        for sr in reversed(getattr(final_state, "step_results", []) or []):
+            if getattr(sr, "action", "").upper() == "EXPLAIN" and getattr(sr, "success", False):
+                out = getattr(sr, "output", "")
+                answer = out if isinstance(out, str) else str(out or "")
+                break
+        if not answer and isinstance(loop_out, dict):
+            answer = str(loop_out.get("output", "") or "")
     return {
         "loop_output": loop_out if exc is None else {},
         "exception": exc,
@@ -321,6 +331,7 @@ def run_structural_agent_offline(spec, project_root: str, *, trace_id: str | Non
         "live_model_integrity_ok": False,
         "integrity_failure_reason": "offline_mode_uses_stubs",
         "retrieval_quality_bundle": rq_bundle,
+        "answer": answer,
     }
 
 
