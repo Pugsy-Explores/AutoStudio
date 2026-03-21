@@ -94,13 +94,16 @@ class PromptRegistry:
         name: str,
         response: str,
         user_input: str | None = None,
+        *,
+        relax_actions: bool = False,
     ) -> tuple[bool, str]:
         """
         Validate LLM response against template constraints (injection, output_schema, safety).
         Returns (is_valid, error_message).
+        relax_actions: When True (planner-only recovery), skip action validation in safety check.
         """
         template = self.get(name)
-        return check_constraints(user_input, response, template)
+        return check_constraints(user_input, response, template, relax_actions=relax_actions)
 
     def get_model_type(self, name: str) -> ModelType:
         """Return which model type this prompt expects."""

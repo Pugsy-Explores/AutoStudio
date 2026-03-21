@@ -1,47 +1,22 @@
 """Validate LLM response against PromptTemplate.output_schema."""
 
 import json
-import re
+import logging
 from typing import Any
+
+from agent.utils.json_utils import safe_json_loads
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_json(text: str) -> dict | list | None:
-    """Extract first valid JSON object or array from text."""
-    if not text or not text.strip():
+    """Extract first valid JSON object or array from text. Uses safe_json_loads for parsing."""
+    data, err, repaired = safe_json_loads(text)
+    if data is None:
         return None
-    text = text.strip()
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, (dict, list)) else None
-    except json.JSONDecodeError:
-        pass
-    if "```" in text:
-        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-        if match:
-            try:
-                obj = json.loads(match.group(1).strip())
-                return obj if isinstance(obj, (dict, list)) else None
-            except json.JSONDecodeError:
-                pass
-    start = text.find("{")
-    if start < 0:
-        start = text.find("[")
-    if start >= 0:
-        depth = 0
-        opener = text[start]
-        closer = "}" if opener == "{" else "]"
-        for i in range(start, len(text)):
-            if text[i] == opener:
-                depth += 1
-            elif text[i] == closer:
-                depth -= 1
-                if depth == 0:
-                    try:
-                        obj = json.loads(text[start : i + 1])
-                        return obj if isinstance(obj, (dict, list)) else None
-                    except json.JSONDecodeError:
-                        break
-    return None
+    if repaired:
+        logger.warning("[json] repaired malformed JSON response")
+    return data if isinstance(data, (dict, list)) else None
 
 
 def _validate_against_schema(obj: Any, schema: dict) -> tuple[bool, str]:

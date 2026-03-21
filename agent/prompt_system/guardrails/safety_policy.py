@@ -3,12 +3,14 @@
 from dataclasses import dataclass, field
 import re
 
+from agent.core.actions import all_action_values
+
 
 @dataclass
 class SafetyPolicy:
     """Defines allowed tools and forbidden operations for a prompt."""
 
-    allowed_tools: list[str] = field(default_factory=lambda: ["SEARCH", "READ", "EDIT", "EXPLAIN", "INFRA", "RUN_TEST"])
+    allowed_tools: list[str] = field(default_factory=all_action_values)
     forbidden_operations: list[str] = field(default_factory=list)
     # Regex patterns that indicate unsafe content in response
     forbidden_patterns: list[str] = field(default_factory=list)
@@ -18,9 +20,10 @@ def _extract_actions(text: str) -> list[str]:
     """Extract action names from response (e.g. SEARCH, EDIT from JSON steps)."""
     import json
 
+    valid = set(all_action_values())
     actions: list[str] = []
     upper = text.upper()
-    for action in ["SEARCH", "EDIT", "EXPLAIN", "INFRA", "READ", "RUN_TEST"]:
+    for action in valid:
         if action in upper:
             actions.append(action)
     try:
@@ -48,29 +51,33 @@ def _extract_actions(text: str) -> list[str]:
     return actions
 
 
-def check_safety(response: str, policy: SafetyPolicy) -> bool:
+def check_safety(response: str, policy: SafetyPolicy, *, relax_actions: bool = False) -> tuple[bool, str]:
     """
     Check response against safety policy.
-    Returns True if safe, False if policy violated.
+    Returns (is_safe, error_message). When safe, error_message is empty.
+
+    relax_actions: When True (planner-only recovery path), skip action validation only.
+    All other checks (forbidden_patterns, forbidden_operations, JSON structure) remain enforced.
     """
     if not response or not policy:
-        return True
+        return (True, "")
 
-    # Check forbidden patterns
+    # Check forbidden patterns (always enforced)
     for pattern in policy.forbidden_patterns:
         if re.search(pattern, response, re.IGNORECASE):
-            return False
+            return (False, "forbidden pattern matched")
 
-    # Check forbidden operations (keywords)
+    # Check forbidden operations (always enforced)
     for op in policy.forbidden_operations:
         if op.lower() in response.lower():
-            return False
+            return (False, f"forbidden operation: {op}")
 
-    # Check allowed tools (if response contains structured steps)
-    actions = _extract_actions(response)
-    if actions:
-        for a in actions:
-            if a not in policy.allowed_tools:
-                return False
+    # Check allowed tools — skipped when relax_actions=True (planner recovery)
+    if not relax_actions:
+        actions = _extract_actions(response)
+        if actions:
+            for a in actions:
+                if a not in policy.allowed_tools:
+                    return (False, f"invalid action: {a}")
 
-    return True
+    return (True, "")
