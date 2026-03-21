@@ -1119,6 +1119,11 @@ def dispatch(step: dict, state: AgentState) -> dict:
         return {"success": True, "output": {"candidates": [], "fallback": "none", "artifact_mode": artifact_mode}}
 
     if action == Action.BUILD_CONTEXT.value:
+        # Code mode: context already assembled via retrieval in prior SEARCH step. No-op.
+        # Docs mode: build_context assembles from candidates (SEARCH_CANDIDATES).
+        if artifact_mode == "code":
+            logger.info("[dispatcher] BUILD_CONTEXT no-op executed")
+            return {"success": True, "output": "context_ready"}
         try:
             out = build_context(candidates=None, state=state, artifact_mode=artifact_mode)
             return {"success": True, "output": out}
@@ -1135,7 +1140,14 @@ def dispatch(step: dict, state: AgentState) -> dict:
                 "reason_code": "lane_violation",
                 "classification": ResultClassification.RETRYABLE_FAILURE.value,
             }
-        raw = _policy_engine.execute_with_policy(step, state)
+        # Execution contract: SEARCH_CANDIDATES (code mode) normalizes to SEARCH. Pass normalized
+        # step so policy engine uses SEARCH policy; otherwise it sees SEARCH_CANDIDATES and returns "unknown action".
+        original_action = (step.get("action") or "").upper()
+        step_for_policy = step
+        if original_action == Action.SEARCH_CANDIDATES.value:
+            logger.info("[dispatcher] normalized SEARCH_CANDIDATES → SEARCH")
+            step_for_policy = {**step, "action": Action.SEARCH.value}
+        raw = _policy_engine.execute_with_policy(step_for_policy, state)
         state.context["tool_node"] = chosen_tool
         if raw.get("success") and raw.get("output"):
             out = raw["output"]
