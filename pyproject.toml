@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "openai>=1.0.0",
     "PyYAML>=6.0",
+    "rapidfuzz>=3.0.0",
     "rank-bm25>=0.2.2",
     "tree-sitter>=0.20.0",
     "tree-sitter-python>=0.20.0",
@@ -33,6 +34,8 @@ include = ["agent*", "config*", "editing*", "planner*", "repo_graph*", "repo_ind
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks test as integration test (requires real services, TEST_MODE=integration)",
+    "explain_inject: EXPLAIN code-lane injected retrieval contract matrix (dispatch + helpers)",
+    "replanner_regression: replanner prompt regression suite (8 scenarios, live LLM calls); every prompt change must pass",
 ]
 # Benchmark fixtures contain pytest files for manual validation; do not collect them as AutoStudio tests.
 norecursedirs = [

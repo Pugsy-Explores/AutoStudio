@@ -9,6 +9,7 @@ from typing import Any, Literal
 Layer = Literal["mini_repo", "pinned_repo"]
 GradingMode = Literal["structural_loop", "validation_exit_code", "explain_artifact"]
 OrchestrationPath = Literal["compat", "hierarchical"]
+EvaluationKind = Literal["execution_regression", "full_agent"]
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,8 @@ class TaskSpec:
     orchestration_path: OrchestrationPath = "hierarchical"
     """Substring checks for explain_artifact grading (artifact paths in expected_artifacts)."""
     explain_required_substrings: tuple[str, ...] = ()
+    """Stage 28: execution_regression (plan injection ok) or full_agent (live model required)."""
+    evaluation_kind: EvaluationKind = "execution_regression"
 
 
 def get_fixtures_root() -> Path:
@@ -53,6 +56,8 @@ def validate_task_spec(spec: TaskSpec) -> None:
         raise ValueError(f"{spec.task_id}: invalid grading_mode")
     if spec.orchestration_path not in ("compat", "hierarchical"):
         raise ValueError(f"{spec.task_id}: invalid orchestration_path")
+    if getattr(spec, "evaluation_kind", "execution_regression") not in ("execution_regression", "full_agent"):
+        raise ValueError(f"{spec.task_id}: invalid evaluation_kind")
     if spec.timeout_seconds < 1:
         raise ValueError(f"{spec.task_id}: timeout_seconds must be >= 1")
 

@@ -20,10 +20,10 @@ from agent.orchestrator.deterministic_runner import (
     run_hierarchical,
 )
 from agent.orchestrator.goal_evaluator import GoalEvaluator, is_explain_like_instruction
+from agent.routing.docs_intent import is_two_phase_docs_code_intent as _is_two_phase_docs_code_intent
 from agent.orchestrator.plan_resolver import (
     _build_two_phase_parent_plan,
     _derive_phase_subgoals,
-    _is_two_phase_docs_code_intent,
     get_parent_plan,
 )
 from tests.hierarchical_test_locks import assert_compat_loop_output_has_no_hierarchical_keys

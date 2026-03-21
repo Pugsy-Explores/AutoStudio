@@ -68,10 +68,15 @@ def test_get_plan_search_short_circuit_from_routed_intent():
         matched_signals=("CODE_SEARCH",),
         suggested_plan_shape="single_step_search",
     )
+    instruction = "Locate the auth module"
     with patch("agent.orchestrator.plan_resolver.ENABLE_INSTRUCTION_ROUTER", True):
-        plan = get_plan("Locate the auth module", routed_intent=ri)
+        plan = get_plan(instruction, routed_intent=ri)
     assert len(plan.get("steps", [])) == 1
-    assert plan["steps"][0].get("action") == "SEARCH"
+    step = plan["steps"][0]
+    assert step.get("action") == "SEARCH"
+    assert step.get("description") == instruction
+    assert "query" in step
+    assert step.get("query")
     tel = get_plan_resolution_telemetry()
     assert tel.get("router_short_circuit_used") is True
     assert tel.get("routed_intent_primary") == INTENT_SEARCH

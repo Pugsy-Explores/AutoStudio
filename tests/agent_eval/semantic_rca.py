@@ -332,4 +332,9 @@ def build_semantic_rca_dict(
         "candidate_rejected_semantic_reason": et.get("candidate_rejected_semantic_reason"),
         "selected_candidate_out_of_n": et.get("selected_candidate_out_of_n"),
         "semantic_expectation_type": et.get("semantic_expectation_type"),
+        # Stage 28: grounding telemetry
+        "grounded_repair_type": et.get("grounded_repair_type"),
+        "source_file_preferred_over_validator": (
+            (et.get("target_resolution") or {}).get("target_resolution_telemetry") or {}
+        ).get("source_file_preferred_over_validator"),
     }

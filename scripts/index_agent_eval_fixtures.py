@@ -29,12 +29,10 @@ SKIP_POLICY = (
 
 def _discover_repo_roots() -> list[Path]:
     roots: list[Path] = []
-    mini = FIXTURES / "mini_repos"
-    if mini.is_dir():
-        roots.extend(p for p in sorted(mini.iterdir()) if p.is_dir())
-    pinned = FIXTURES / "pinned_repos"
-    if pinned.is_dir():
-        roots.extend(p for p in sorted(pinned.iterdir()) if p.is_dir())
+    for subdir in ("mini_repos", "adversarial_mini_repos", "holdout_mini_repos", "pinned_repos"):
+        d = FIXTURES / subdir
+        if d.is_dir():
+            roots.extend(p for p in sorted(d.iterdir()) if p.is_dir())
     return roots
 
 

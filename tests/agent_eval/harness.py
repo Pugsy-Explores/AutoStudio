@@ -15,16 +15,17 @@ import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from agent.memory.state import AgentState
 from agent.orchestrator.deterministic_runner import run_hierarchical
 from agent.orchestrator.plan_resolver import _derive_phase_subgoals
 
+from tests.agent_eval.execution_mode import ExecutionMode, uses_real_workspace
+from tests.agent_eval.integrity import build_extra_integrity, ensure_integrity_fields
+from tests.agent_eval.success import compute_success, count_replans, failure_class_from, replan_observed, task_success
 from tests.agent_eval.task_specs import TaskSpec
-
-ExecutionMode = Literal["mocked", "real"]
 
 
 def index_workspace(workspace: Path) -> dict[str, Any]:
@@ -208,36 +209,6 @@ def _parent_plan_for_spec(spec: TaskSpec) -> dict:
     return _two_phase_parent_plan(spec.instruction, parent_plan_id=f"pplan_{spec.task_id}", spec=spec)
 
 
-def _task_success(loop_output: dict, path_mode: str, exc: BaseException | None) -> bool:
-    if exc is not None:
-        return False
-    if path_mode == "hierarchical":
-        return bool(loop_output.get("parent_goal_met"))
-    errs = loop_output.get("errors_encountered") or []
-    return isinstance(errs, list) and len(errs) == 0
-
-
-def _failure_class_from(exc: BaseException | None, success: bool, loop_output: dict) -> str | None:
-    if exc is not None:
-        return "exception"
-    if success:
-        return None
-    return "goal_or_parent_not_met"
-
-
-def _replan_observed(loop_output: dict) -> bool:
-    prs = loop_output.get("phase_results") or []
-    if not isinstance(prs, list):
-        return False
-    for pr in prs:
-        if not isinstance(pr, dict):
-            continue
-        ah = pr.get("attempt_history") or []
-        if isinstance(ah, list) and len(ah) > 1:
-            return True
-    return False
-
-
 def run_structural_agent(spec: TaskSpec, project_root: str, *, trace_id: str | None = None) -> dict[str, Any]:
     """Invoke `run_hierarchical` with mocked execution_loop; return loop_output dict."""
     parent = _parent_plan_for_spec(spec)
@@ -282,13 +253,13 @@ def run_structural_agent(spec: TaskSpec, project_root: str, *, trace_id: str | N
 
         assert_compat_loop_output_has_no_hierarchical_keys(loop_out)
 
-    success = _task_success(loop_out, spec.orchestration_path, exc)
+    success = task_success(loop_out, spec.orchestration_path, exc)
     return {
         "loop_output": loop_out if exc is None else {},
         "exception": exc,
         "structural_success": success,
-        "failure_class": _failure_class_from(exc, success, loop_out if exc is None else {}),
-        "replan_observed": _replan_observed(loop_out if exc is None else {}),
+        "failure_class": failure_class_from(exc, success, loop_out if exc is None else {}),
+        "replan_observed": replan_observed(loop_out if exc is None else {}),
         "loop_output_snapshot": _serialize_loop_output(loop_out if exc is None else {}),
         "attempts_total": loop_out.get("attempts_total") if isinstance(loop_out, dict) else None,
         "retries_used": loop_out.get("retries_used") if isinstance(loop_out, dict) else None,
@@ -424,31 +395,6 @@ class TaskOutcome:
         return asdict(self)
 
 
-def compute_success(
-    spec: TaskSpec,
-    *,
-    structural_success: bool,
-    validation_passed: bool,
-    explain_ok: bool | None,
-) -> bool:
-    if spec.grading_mode == "structural_loop":
-        return structural_success
-    if spec.grading_mode == "explain_artifact":
-        return bool(explain_ok)
-    return validation_passed
-
-
-def _count_replans(loop_snapshot: dict[str, Any]) -> int:
-    n = 0
-    for pr in loop_snapshot.get("phase_results") or []:
-        if not isinstance(pr, dict):
-            continue
-        ah = pr.get("attempt_history") or []
-        if isinstance(ah, list) and len(ah) > 1:
-            n += len(ah) - 1
-    return n
-
-
 def run_single_task(
     spec: TaskSpec,
     workspace: Path,
@@ -470,19 +416,26 @@ def run_single_task(
         notes_parts.append(f"index_failed: {e!s}")
 
     git_meta: dict[str, Any] = {"skipped": True}
-    if execution_mode == "real":
+    _uses_real_workspace = uses_real_workspace(execution_mode)
+    if _uses_real_workspace:
         from tests.agent_eval.workspace_artifacts import try_git_init_commit
 
         git_meta = try_git_init_commit(workspace)
         if not git_meta.get("ok"):
             notes_parts.append(f"git_baseline_failed: {git_meta.get('reason')!s}")
 
-    if execution_mode == "real":
-        from tests.agent_eval.real_execution import run_structural_agent_real
-
-        structural = run_structural_agent_real(spec, str(workspace), trace_id=trace_id)
-    else:
+    if execution_mode == "mocked":
         structural = run_structural_agent(spec, str(workspace), trace_id=trace_id)
+        # Stage 31: mocked mode has no model calls, no stubs; ensure canonical integrity fields
+        structural = ensure_integrity_fields(structural, execution_mode="mocked")
+    elif execution_mode == "live_model":
+        from tests.agent_eval.real_execution import run_structural_agent_live_model
+
+        structural = run_structural_agent_live_model(spec, str(workspace), trace_id=trace_id)
+    else:
+        from tests.agent_eval.real_execution import run_structural_agent_offline
+
+        structural = run_structural_agent_offline(spec, str(workspace), trace_id=trace_id)
     struct_ok = bool(structural["structural_success"])
     retries = structural.get("retries_used")
     attempts = structural.get("attempts_total")
@@ -492,7 +445,7 @@ def run_single_task(
         retries = retries if isinstance(retries, int) else None
 
     loop_snap = structural.get("loop_output_snapshot") or {}
-    replans = _count_replans(loop_snap) if isinstance(loop_snap, dict) else 0
+    replans = count_replans(loop_snap) if isinstance(loop_snap, dict) else 0
     if replans == 0 and structural.get("replan_observed"):
         replans = 1
 
@@ -503,7 +456,7 @@ def run_single_task(
     bad_patterns: list[str] = []
     ret_signals: list[str] = []
 
-    if execution_mode == "real":
+    if _uses_real_workspace:
         from tests.agent_eval.workspace_artifacts import (
             git_diff_after,
             heuristic_unrelated_files,
@@ -599,5 +552,7 @@ def run_single_task(
             "diff_unified": diff_text[:200000] if diff_text else "",
             "edit_telemetry": (loop_snap.get("edit_telemetry") if isinstance(loop_snap, dict) else None)
             or {},
+            "retrieval_quality_bundle": structural.get("retrieval_quality_bundle") or {},
+            **build_extra_integrity(structural, execution_mode),
         },
     )

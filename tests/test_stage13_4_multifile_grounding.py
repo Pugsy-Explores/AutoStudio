@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from editing.diff_planner import plan_diff, _path_relative_to_root
-from editing.patch_generator import to_structured_patches, _inject_click_benchmark_multifile_change
+from editing.patch_generator import to_structured_patches
 from editing.patch_executor import execute_patch
 
 
@@ -26,35 +26,19 @@ def test_path_relative_to_root_preserves_relative(tmp_path):
     assert rel == "benchmark_local/part_a.py"
 
 
-def test_inject_works_when_project_root_from_env(tmp_path, monkeypatch):
-    """Inject works when project_root comes from SERENA_PROJECT_DIR (simulating to_structured_patches fallback)."""
-    monkeypatch.setenv("SERENA_PROJECT_DIR", str(tmp_path))
-    (tmp_path / "benchmark_local").mkdir()
-    (tmp_path / "benchmark_local" / "part_a.py").write_text('SUFFIX = "legacy"\n')
-    instruction = (
-        "Rename the shared suffix from legacy to unified in benchmark_local/part_a.py and any dependent "
-        "text so benchmark_local/test_multifile.py passes."
-    )
-    result = _inject_click_benchmark_multifile_change(instruction, os.environ.get("SERENA_PROJECT_DIR", ""))
-    assert result is not None
-    assert result.get("file") == "benchmark_local/part_a.py"
-    assert result["patch"].get("action") == "text_sub"
-
-
 def test_to_structured_patches_uses_project_root_fallback(tmp_path, monkeypatch):
     """to_structured_patches uses env fallback when context.project_root is empty."""
     monkeypatch.setenv("SERENA_PROJECT_DIR", str(tmp_path))
-    (tmp_path / "benchmark_local").mkdir()
-    (tmp_path / "benchmark_local" / "part_a.py").write_text('SUFFIX = "legacy"\n')
-    instruction = (
-        "Rename legacy to unified in benchmark_local/part_a.py and multifile test."
-    )
-    plan = {"changes": [{"file": "benchmark_local/part_a.py", "symbol": "", "action": "modify", "patch": "x"}]}
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "ops.py").write_text("def divide(a, b):\n    return a * b\n")
+    instruction = "Change divide to return a/b in src/ops.py."
+    plan = {"changes": [{"file": "src/ops.py", "symbol": "divide", "action": "modify", "patch": "x"}]}
     ctx = {"project_root": ""}
     out = to_structured_patches(plan, instruction, ctx)
-    assert out.get("changes")
+    assert out.get("changes"), "Generic multiply-to-div repair should produce a patch"
     er = execute_patch(out, str(tmp_path))
     assert er.get("success") is True
+    assert "a / b" in (tmp_path / "src" / "ops.py").read_text()
 
 
 def test_plan_diff_outputs_relative_paths(tmp_path):
@@ -79,8 +63,10 @@ def test_plan_diff_outputs_relative_paths(tmp_path):
         assert not Path(fp).is_absolute(), f"Expected relative path, got {fp!r}"
 
 
-def test_click_multifile_apply_succeeds_with_relative_paths(fixtures_click_snapshot: Path):
-    """Regression: click multifile task applies successfully (was target_not_found)."""
+def test_click_multifile_no_benchmark_inject(fixtures_click_snapshot: Path):
+    """Stage 30: legacy->unified multifile task no longer uses benchmark-specific inject.
+    Without the inject, patch generation relies on grounded generation; with vague plan
+    patch text, we get rejection. Documents honest benchmark impact."""
     root = fixtures_click_snapshot
     instruction = (
         "Rename the shared suffix from legacy to unified in benchmark_local/part_a.py and any dependent "
@@ -94,11 +80,13 @@ def test_click_multifile_apply_succeeds_with_relative_paths(fixtures_click_snaps
     }
     ctx = {"project_root": str(root)}
     out = to_structured_patches(plan, instruction, ctx)
-    er = execute_patch(out, str(root))
-    assert er.get("success") is True, f"Expected success, got {er}"
-    assert er.get("patch_reject_reason") is None
-    text = (root / "benchmark_local" / "part_a.py").read_text(encoding="utf-8")
-    assert "unified" in text
+    # Benchmark inject removed in Stage 30; grounded generation may reject vague patches
+    if not out.get("changes"):
+        assert out.get("patch_generation_reject") == "weakly_grounded_patch"
+        assert out.get("generation_rejected_reason") == "no_grounded_candidate_found"
+    else:
+        er = execute_patch(out, str(root))
+        assert er.get("success") is True
 
 
 @pytest.fixture

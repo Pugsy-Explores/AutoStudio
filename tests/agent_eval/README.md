@@ -34,6 +34,21 @@ python3 -m tests.agent_eval.runner --suite core12 --output artifacts/agent_eval_
 
 # Stage 12.1 — real execution_loop, audit subset only (6 tasks), offline model stubs
 python3 -m tests.agent_eval.runner --real --output artifacts/agent_eval_runs/latest
+
+# Stage 39/40 — routing contract: live model + post-hoc telemetry checks (mini repo mr01_arch)
+python3 -m tests.agent_eval.runner --suite routing_contract --execution-mode live_model --output artifacts/agent_eval_runs/latest
+python3 -m tests.agent_eval.check_routing_contract --run-dir artifacts/agent_eval_runs/latest
+
+# SEARCH stack — retrieval / SEARCH policy / repo_map; then machine-check outcomes
+python3 -m tests.agent_eval.runner --suite search_stack --execution-mode offline --output artifacts/agent_eval_runs/latest
+python3 -m tests.agent_eval.check_search_stack --run-dir artifacts/agent_eval_runs/latest
+
+# Typed retrieval A/B — ENABLE_KIND_AWARE_EXPANSION off vs on (offline, retrieval_quality tasks)
+python3 -m tests.agent_eval.run_kind_expansion_ab --output-dir artifacts/kind_expansion_ab --suite search_stack --execution-mode offline
+
+# EXPLAIN injected retrieval — pytest contract matrix (offline + integration); no full agent loop
+python3 -m tests.agent_eval.run_explain_inject
+python3 -m pytest tests/test_explain_inject_retrieval.py tests/test_explain_inject_integration.py -m explain_inject -v
 ```
 
 ### Pre-index fixture trees (optional, Stage 13.0)
@@ -67,7 +82,7 @@ Real mode uses **compat** benchmark plans with **SEARCH → EDIT** steps for the
 Artifacts are written under `artifacts/agent_eval_runs/<timestamp>_<id>/` (gitignored):
 
 - `summary.json`, `summary.md`
-- `tasks/<task_id>/outcome.json` — canonical fields + `_audit` (structural success, grading mode, `failure_bucket`, `execution_mode`, index meta)
+- `tasks/<task_id>/outcome.json` — canonical fields + `_audit` (structural success, grading mode, `failure_bucket`, `execution_mode`, index meta, `plan_resolution_telemetry` for routing-contract runs)
 - `tasks/<task_id>/validation_logs.json`, `indexing.json`, `loop_output_snapshot.json`, `transcript.txt`, `patch.diff`, `changed_files.txt`, `task_summary_snippet.txt`
 - `summary.json` includes `failure_bucket_histogram` and `execution_mode`
 

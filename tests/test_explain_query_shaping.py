@@ -5,8 +5,11 @@ compound instructions to extract a focused code-explanation target.
 """
 
 import unittest
+from unittest.mock import patch
 
 from agent.execution.step_dispatcher import _shape_query_for_explain_retrieval
+from agent.execution.step_dispatcher import dispatch
+from agent.memory.state import AgentState
 
 
 class TestShapeQueryForExplainRetrieval(unittest.TestCase):
@@ -59,3 +62,60 @@ class TestShapeQueryForExplainRetrieval(unittest.TestCase):
         self.assertIsNone(_shape_query_for_explain_retrieval(""))
         self.assertIsNone(_shape_query_for_explain_retrieval("   "))
         self.assertIsNone(_shape_query_for_explain_retrieval(None))
+
+
+def test_explain_inject_uses_query_when_present():
+    """EXPLAIN injected search uses step.query when present, does not re-shape description."""
+    captured = {}
+
+    def capture_search(q, state):
+        captured["query"] = q
+        return {"results": [{"file": "x.py", "snippet": "x"}], "query": q}
+
+    state = AgentState(
+        instruction="explain the plan_resolver",
+        current_plan={"plan_id": "p", "steps": []},
+        context={
+            "project_root": "/tmp",
+            "dominant_artifact_mode": "code",
+            "lane_violations": [],
+            "ranked_context": [],
+        },
+    )
+    step = {
+        "id": 1,
+        "action": "EXPLAIN",
+        "description": "explain the plan_resolver",
+        "query": "explicit_query",
+    }
+    with patch("agent.execution.step_dispatcher._search_fn", side_effect=capture_search):
+        dispatch(step, state)
+    assert captured.get("query") == "explicit_query"
+
+
+def test_explain_inject_shapes_when_query_absent():
+    """EXPLAIN injected search applies shaping to description when query is absent."""
+    captured = {}
+
+    def capture_search(q, state):
+        captured["query"] = q
+        return {"results": [{"file": "x.py", "snippet": "x"}], "query": q}
+
+    state = AgentState(
+        instruction="explain replanner flow",
+        current_plan={"plan_id": "p", "steps": []},
+        context={
+            "project_root": "/tmp",
+            "dominant_artifact_mode": "code",
+            "lane_violations": [],
+            "ranked_context": [],
+        },
+    )
+    step = {
+        "id": 1,
+        "action": "EXPLAIN",
+        "description": "explain replanner flow",
+    }
+    with patch("agent.execution.step_dispatcher._search_fn", side_effect=capture_search):
+        dispatch(step, state)
+    assert captured.get("query") == "replanner"

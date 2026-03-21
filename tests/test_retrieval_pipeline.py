@@ -342,7 +342,11 @@ def test_retrieval_pipeline_ranked_context_step_executor(indexed_autostudio):
     state = AgentState(
         instruction=query,
         current_plan={"plan_id": "retrieval_plan", "steps": []},
-        context={"project_root": project_root, "instruction": query},
+        context={
+            "project_root": project_root,
+            "source_root": source_root,
+            "instruction": query,
+        },
     )
 
     run_retrieval_pipeline(results, state, query=query)

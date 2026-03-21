@@ -4,6 +4,12 @@ CLI runner for Stage 12 benchmarks.
 Examples:
   python3 -m tests.agent_eval.runner --suite core12 --output artifacts/agent_eval_runs/latest
   python3 -m tests.agent_eval.runner --real --output artifacts/agent_eval_runs/latest
+  python3 -m tests.agent_eval.runner --suite routing_contract --execution-mode live_model
+  python3 -m tests.agent_eval.check_routing_contract --run-dir artifacts/agent_eval_runs/latest
+
+  # SEARCH stack (retrieval / policy / repo_map contracts; offline or live_model)
+  python3 -m tests.agent_eval.runner --suite search_stack --execution-mode offline --output artifacts/agent_eval_runs/latest
+  python3 -m tests.agent_eval.check_search_stack --run-dir artifacts/agent_eval_runs/latest
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ import shutil
 import sys
 import time
 import uuid
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -28,30 +35,6 @@ def _ensure_repo_root_on_path() -> None:
     r = str(REPO_ROOT)
     if r not in sys.path:
         sys.path.insert(0, r)
-
-
-def _load_suite(name: str):
-    if name == "core12":
-        from tests.agent_eval.suites.core12 import load_core12
-
-        return load_core12()
-    if name == "audit12":
-        from tests.agent_eval.suites.audit12 import load_audit12_specs
-
-        return load_audit12_specs()
-    if name == "holdout8":
-        from tests.agent_eval.suites.holdout8 import load_holdout8_specs
-
-        return load_holdout8_specs()
-    if name == "adversarial12":
-        from tests.agent_eval.suites.adversarial12 import load_adversarial12_specs
-
-        return load_adversarial12_specs()
-    if name == "external6":
-        from tests.agent_eval.suites.external6 import load_external6_specs
-
-        return load_external6_specs()
-    raise SystemExit(f"unknown suite: {name!r} (try core12, audit12, holdout8, adversarial12, external6)")
 
 
 def _copy_fixture_workspace(fixture_src: Path, dest: Path) -> None:
@@ -113,6 +96,18 @@ def _markdown_summary(
                 f"- retries_used_aggregate: {summary.get('retries_used_aggregate', 'N/A')}",
                 f"- replans_used_aggregate: {summary.get('replans_used_aggregate', 'N/A')}",
                 "",
+                "## Integrity (Stage 31)",
+                f"- execution_mode: {summary.get('execution_mode', 'N/A')}",
+                f"- run_valid_for_live_eval: {summary.get('run_valid_for_live_eval', 'N/A')}",
+                f"- invalid_live_model_task_count: {summary.get('invalid_live_model_task_count', 'N/A')}",
+                f"- zero_model_call_task_count: {summary.get('zero_model_call_task_count', 'N/A')}",
+                f"- offline_stubbed_task_count: {summary.get('offline_stubbed_task_count', 'N/A')}",
+                f"- explain_stubbed_task_count: {summary.get('explain_stubbed_task_count', 'N/A')}",
+                f"- plan_injection_task_count: {summary.get('plan_injection_task_count', 'N/A')}",
+                f"- model_call_count_total: {summary.get('model_call_count_total', 'N/A')}",
+                f"- small_model_call_count_total: {summary.get('small_model_call_count_total', 'N/A')}",
+                f"- reasoning_model_call_count_total: {summary.get('reasoning_model_call_count_total', 'N/A')}",
+                "",
                 "## Histograms",
                 f"- failure_bucket: {summary.get('failure_bucket_histogram', {})}",
                 f"- patch_reject_reason: {summary.get('patch_reject_reason_histogram', {})}",
@@ -129,7 +124,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--suite",
         default="core12",
-        help="Suite name: core12, audit12, holdout8, adversarial12, external6",
+        help="Suite name: core12, audit12, audit6, holdout8, adversarial12, external6, live4, paired4, paired8, routing_contract",
     )
     p.add_argument(
         "--output",
@@ -139,14 +134,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--execution-mode",
-        choices=("mocked", "real"),
+        choices=("mocked", "offline", "live_model", "real"),
         default="mocked",
-        help="mocked: stub execution_loop (default). real: real execution_loop (audit6 or audit12 per --suite).",
+        help="mocked: stub execution_loop. offline: deterministic+stubs, no real model. "
+        "live_model: real model required. real: deprecated, maps to offline.",
     )
     p.add_argument(
         "--real",
         action="store_true",
-        help="Shortcut for --execution-mode real (runs fixed 6-task audit subset).",
+        help="Deprecated: shortcut for --execution-mode offline. Use --execution-mode live_model for real model.",
     )
     p.add_argument(
         "--task",
@@ -164,47 +160,38 @@ def run_suite(
     repo_root: Path | None = None,
     execution_mode: str = "mocked",
     task_filter: str | None = None,
+    task_id_allowlist: Collection[str] | None = None,
+    output_dir: Path | None = None,
+    task_timeout_seconds: int | None = None,
 ) -> tuple[Path, list, dict[str, Any]]:
     """Execute tasks; return (run_dir, results, summary_dict)."""
     _ensure_repo_root_on_path()
     from tests.agent_eval.harness import run_single_task
+    from tests.agent_eval.suite_loader import load_specs_for_mode
     from tests.agent_eval.task_specs import validate_suite
 
-    if execution_mode == "real":
-        if suite_name == "audit12":
-            from tests.agent_eval.suites.audit12 import load_audit12_specs
-
-            specs = load_audit12_specs()
-        elif suite_name == "holdout8":
-            from tests.agent_eval.suites.holdout8 import load_holdout8_specs
-
-            specs = load_holdout8_specs()
-        elif suite_name == "adversarial12":
-            from tests.agent_eval.suites.adversarial12 import load_adversarial12_specs
-
-            specs = load_adversarial12_specs()
-        elif suite_name == "external6":
-            from tests.agent_eval.suites.external6 import load_external6_specs
-
-            specs = load_external6_specs()
-        else:
-            from tests.agent_eval.suites.audit6 import load_audit6_specs
-
-            specs = load_audit6_specs()
-    else:
-        specs = _load_suite(suite_name)
+    specs = load_specs_for_mode(suite_name, execution_mode)
     if task_filter:
         specs = [s for s in specs if s.task_id == task_filter]
         if not specs:
             raise SystemExit(f"No task matching --task {task_filter!r}")
+    if task_id_allowlist is not None:
+        specs = [s for s in specs if s.task_id in task_id_allowlist]
+        if not specs:
+            raise SystemExit("No tasks left after task_id_allowlist filter")
     validate_suite(specs)
 
     repo_root = repo_root or REPO_ROOT
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    run_id = uuid.uuid4().hex[:6]
     runs_parent = (repo_root / "artifacts" / "agent_eval_runs").resolve()
-    run_dir = runs_parent / f"{ts}_{run_id}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir is not None:
+        run_dir = output_dir.resolve()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+    else:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        run_id = uuid.uuid4().hex[:6]
+        run_dir = runs_parent / f"{ts}_{run_id}"
+        run_dir.mkdir(parents=True, exist_ok=True)
 
     out_resolved = output_arg.resolve()
     want_latest_link = out_resolved.name == "latest" or str(output_arg).rstrip("/").endswith(
@@ -233,56 +220,60 @@ def run_suite(
         _copy_fixture_workspace(src, ws)
 
         trace = f"{suite_name}-{spec.task_id}-{uuid.uuid4().hex[:8]}"
-        em = "real" if execution_mode == "real" else "mocked"
-        outcome = run_single_task(spec, ws, trace_id=trace, execution_mode=em)
+        from tests.agent_eval.execution_mode import resolve_execution_mode
+
+        em = resolve_execution_mode(execution_mode)
+
+        if task_timeout_seconds is not None and task_timeout_seconds > 0:
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+            def _run():
+                return run_single_task(spec, ws, trace_id=trace, execution_mode=em)
+
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_run)
+                try:
+                    outcome = fut.result(timeout=task_timeout_seconds)
+                except FuturesTimeoutError:
+                    from tests.agent_eval.harness import TaskOutcome
+
+                    outcome = TaskOutcome(
+                        task_id=spec.task_id,
+                        success=False,
+                        validation_passed=False,
+                        retries_used=None,
+                        replans_used=None,
+                        attempts_total=None,
+                        failure_class="task_timeout",
+                        files_changed=[],
+                        diff_stat={},
+                        unrelated_files_changed=[],
+                        bad_edit_patterns=[],
+                        retrieval_miss_signals=[],
+                        notes=f"Task timed out after {task_timeout_seconds}s",
+                        structural_success=False,
+                        grading_mode=getattr(spec, "grading_mode", ""),
+                        loop_output_snapshot={},
+                        validation_logs=[],
+                        extra={
+                            "failure_bucket": "task_timeout",
+                            "first_failing_stage": "run_single_task",
+                            "timeout_seconds": task_timeout_seconds,
+                            "retrieval_quality_bundle": {"timeout": True, "task_id": spec.task_id},
+                        },
+                    )
+        else:
+            outcome = run_single_task(spec, ws, trace_id=trace, execution_mode=em)
         results.append(outcome)
 
         task_dir = run_dir / "tasks" / spec.task_id
-        et = outcome.extra.get("edit_telemetry") or {}
-        val_cmd = None
-        if outcome.validation_logs:
-            val_cmd = outcome.validation_logs[0].get("command")
-        retrieval_fallback = []
-        if isinstance(et, dict):
-            if et.get("reranker_failed"):
-                retrieval_fallback.append("reranker_failed")
-            if et.get("reranker_failed_fallback_used"):
-                retrieval_fallback.append("reranker_fallback_used")
-            if et.get("bm25_available") is False and et.get("reranker_failed"):
-                retrieval_fallback.append("bm25_unavailable")
+        from tests.agent_eval.task_audit import build_task_audit_dict
+
         pub = outcome.to_public_dict()
-        retrieval_telemetry = None
-        for pr in (outcome.loop_output_snapshot.get("phase_results") or []):
-            if isinstance(pr, dict):
-                co = pr.get("context_output") or {}
-                if isinstance(co, dict) and "retrieval_telemetry" in co:
-                    retrieval_telemetry = co.get("retrieval_telemetry")
-                    break
-        pub["_audit"] = {
-            "structural_success": outcome.structural_success,
-            "grading_mode": outcome.grading_mode,
-            "exception": outcome.extra.get("exception"),
-            "index": outcome.extra.get("index"),
-            "failure_bucket": outcome.extra.get("failure_bucket"),
-            "first_failing_stage": outcome.extra.get("first_failing_stage"),
-            "execution_mode": outcome.extra.get("execution_mode"),
-            "retrieval_telemetry": retrieval_telemetry,
-            "edit_telemetry": et,
-            "patch_reject_reason": et.get("patch_reject_reason") if isinstance(et, dict) else None,
-            "validation_scope_kind": et.get("validation_scope_kind") if isinstance(et, dict) else None,
-            "changed_files_count": et.get("changed_files_count") if isinstance(et, dict) else None,
-            "patches_applied": et.get("patches_applied") if isinstance(et, dict) else None,
-            "files_modified": outcome.files_changed,
-            "retrieval_fallback_flags": retrieval_fallback,
-            "target_selection_telemetry": {
-                "attempted_target_files": et.get("attempted_target_files") if isinstance(et, dict) else None,
-                "chosen_target_file": et.get("chosen_target_file") if isinstance(et, dict) else None,
-                "search_viable_file_hits": et.get("search_viable_file_hits") if isinstance(et, dict) else None,
-            }
-            if isinstance(et, dict)
-            else None,
-            "selected_validation_command": val_cmd,
-        }
+        pub["_audit"] = build_task_audit_dict(outcome, spec)
+        rqb = outcome.extra.get("retrieval_quality_bundle")
+        if isinstance(rqb, dict) and rqb:
+            pub["retrieval_quality"] = rqb
         _write_json(task_dir / "outcome.json", pub)
         _write_json(task_dir / "edit_telemetry.json", outcome.extra.get("edit_telemetry") or {})
         # Stage 22: semantic_rca.json for failed EDIT tasks
@@ -318,7 +309,8 @@ def run_suite(
         )
         _write_text(task_dir / "transcript.txt", summary_line + "\n" + lo_txt)
         diff_unified = (outcome.extra or {}).get("diff_unified") or ""
-        if execution_mode == "real" and diff_unified.strip():
+        _uses_real_workspace = em in ("offline", "live_model")
+        if _uses_real_workspace and diff_unified.strip():
             _write_text(task_dir / "patch.diff", diff_unified)
         else:
             _write_text(
@@ -331,62 +323,16 @@ def run_suite(
         _write_text(task_dir / "task_summary_snippet.txt", summary_line)
 
     duration = time.time() - t0
-    bucket_hist: dict[str, int] = {}
-    reject_hist: dict[str, int] = {}
-    validation_scope_hist: dict[str, int] = {}
-    first_failing_stage_hist: dict[str, int] = {}
-    patches_applied_total = 0
-    files_modified_total = 0
-    attempts_agg = 0
-    retries_agg = 0
-    replans_agg = 0
-    for r in results:
-        b = (r.extra or {}).get("failure_bucket")
-        if b:
-            bucket_hist[str(b)] = bucket_hist.get(str(b), 0) + 1
-        ffs = (r.extra or {}).get("first_failing_stage")
-        if ffs:
-            first_failing_stage_hist[str(ffs)] = first_failing_stage_hist.get(str(ffs), 0) + 1
-        et = (r.extra or {}).get("edit_telemetry") or {}
-        if isinstance(et, dict):
-            vsk = et.get("validation_scope_kind")
-            if vsk:
-                validation_scope_hist[str(vsk)] = validation_scope_hist.get(str(vsk), 0) + 1
-            pr = et.get("patch_reject_reason")
-            if pr:
-                reject_hist[str(pr)] = reject_hist.get(str(pr), 0) + 1
-            try:
-                patches_applied_total += int(et.get("patches_applied") or 0)
-            except (TypeError, ValueError):
-                pass
-            try:
-                files_modified_total += int(et.get("changed_files_count") or 0)
-            except (TypeError, ValueError):
-                pass
-        if isinstance(r.attempts_total, int):
-            attempts_agg += r.attempts_total
-        if isinstance(r.retries_used, int):
-            retries_agg += r.retries_used
-        if isinstance(r.replans_used, int):
-            replans_agg += r.replans_used
-
-    suite_label = (
-        f"audit12_real"
-        if (execution_mode == "real" and suite_name == "audit12")
-        else (
-            f"holdout8_real"
-            if (execution_mode == "real" and suite_name == "holdout8")
-            else (
-                f"adversarial12_real"
-                if (execution_mode == "real" and suite_name == "adversarial12")
-                else (
-                    f"external6_real"
-                    if (execution_mode == "real" and suite_name == "external6")
-                    else ("core12_audit6_real" if execution_mode == "real" else suite_name)
-                )
-            )
-        )
+    from tests.agent_eval.summary_aggregation import (
+        aggregate_histograms,
+        aggregate_integrity_metrics,
+        build_per_task_outcomes,
+        build_suite_label,
     )
+
+    histograms = aggregate_histograms(results)
+    integrity_metrics = aggregate_integrity_metrics(results, execution_mode)
+    suite_label = build_suite_label(suite_name, execution_mode)
     # Stage 22: semantic RCA cause histogram for failed EDIT tasks
     semantic_rca_cause_hist: dict[str, int] = {}
     spec_by_id = {s.task_id: s for s in specs}
@@ -436,42 +382,14 @@ def run_suite(
         "success_count": sum(1 for r in results if r.success),
         "validation_pass_count": sum(1 for r in results if r.validation_passed),
         "structural_success_count": sum(1 for r in results if r.structural_success),
-        "attempts_total_aggregate": attempts_agg,
-        "retries_used_aggregate": retries_agg,
-        "replans_used_aggregate": replans_agg,
         "task_ids": [r.task_id for r in results],
-        "failure_bucket_histogram": bucket_hist,
-        "patch_reject_reason_histogram": reject_hist,
-        "validation_scope_kind_histogram": validation_scope_hist,
-        "first_failing_stage_histogram": first_failing_stage_hist,
-        "patches_applied_total": patches_applied_total,
-        "files_modified_total": files_modified_total,
+        **histograms,
+        **integrity_metrics,
         "task_type_histogram": task_type_hist,
         "instruction_explicit_path_count": instruction_explicit_path_count,
         "semantic_rca_cause_histogram": semantic_rca_cause_hist,
     }
-    per_task = []
-    for r in results:
-        et = (r.extra or {}).get("edit_telemetry") or {}
-        pt = {
-            "task_id": r.task_id,
-            "success": r.success,
-            "validation_passed": r.validation_passed,
-            "structural_success": r.structural_success,
-            "attempts_total": r.attempts_total,
-            "retries_used": r.retries_used,
-            "replans_used": r.replans_used,
-            "failure_bucket": (r.extra or {}).get("failure_bucket"),
-            "first_failing_stage": (r.extra or {}).get("first_failing_stage"),
-            "files_modified": r.files_changed,
-        }
-        if isinstance(et, dict):
-            pt["patch_reject_reason"] = et.get("patch_reject_reason")
-            pt["validation_scope_kind"] = et.get("validation_scope_kind")
-            pt["changed_files_count"] = et.get("changed_files_count")
-            pt["patches_applied"] = et.get("patches_applied")
-        per_task.append(pt)
-    summary["per_task_outcomes"] = per_task
+    summary["per_task_outcomes"] = build_per_task_outcomes(results)
 
     _write_json(run_dir / "summary.json", summary)
     _write_text(
@@ -483,10 +401,18 @@ def run_suite(
 
 
 def main(argv: list[str] | None = None) -> int:
+    import warnings
+
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     if args.real:
-        args.execution_mode = "real"
+        warnings.warn(
+            "--real is deprecated; use --execution-mode offline. "
+            "For real model evaluation use --execution-mode live_model --suite live4",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        args.execution_mode = "offline"
 
     run_dir, results, summary = run_suite(
         args.suite,
