@@ -270,6 +270,7 @@ def index_repo(
     include_dirs: tuple[str, ...] | None = None,
     ignore_gitignore: bool = True,
     verbose: bool = False,
+    build_embeddings: bool = True,
 ) -> tuple[list[dict], str]:
     """
     Scan repo, extract symbols and dependencies, build graph, write to output.
@@ -277,6 +278,8 @@ def index_repo(
     include_dirs: if set, only index these subdirs (e.g. ("agent", "editing")).
     ignore_gitignore: if True, exclude paths matching .gitignore (default True).
     verbose: if True, log each file indexed.
+    build_embeddings: if True, build ChromaDB embedding index (default True).
+      Set False for faster indexing when graph/repo_map only are needed.
     """
     root = Path(root_dir).resolve()
     out = output_dir or str(root / SYMBOL_GRAPH_DIR)
@@ -304,7 +307,8 @@ def index_repo(
 
     build_graph(symbols, edges, str(db_path))
 
-    _build_embedding_index(root_dir, symbols, out_path)
+    if build_embeddings:
+        _build_embedding_index(root_dir, symbols, out_path)
 
     try:
         from repo_graph.repo_map_builder import build_repo_map
