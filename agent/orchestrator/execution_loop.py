@@ -22,6 +22,7 @@ from config.agent_config import (
 )
 from agent.execution.executor import StepExecutor
 from agent.execution.policy_engine import ResultClassification
+from agent.models.model_client import GuardrailError
 from agent.memory.state import AgentState
 from agent.memory.step_result import StepResult
 from agent.orchestrator.goal_evaluator import GoalEvaluator
@@ -109,6 +110,9 @@ def execution_loop(
 
     while not state.is_finished():
         iteration += 1
+        # Propagate plan degraded flag from fallback plans into context for observability
+        plan = state.current_plan or {}
+        state.context["plan_degraded"] = plan.get("degraded", False)
         if iteration > MAX_LOOP_ITERATIONS:
             logger.warning("[execution_loop] max iterations exceeded, stopping")
             if errors_encountered is not None:
@@ -179,8 +183,20 @@ def execution_loop(
                     break
                 if trace_id:
                     log_fn(trace_id, "goal_not_satisfied", {"replan_count": replan_count})
-                new_plan = replan(state, failed_step=None, error="goal_not_satisfied")
-                state.update_plan(new_plan)
+                replan_result = replan(state, failed_step=None, error="goal_not_satisfied")
+                if isinstance(replan_result, dict):
+                    term = replan_result.get("terminal")
+                    if term == "NOT_FOUND":
+                        logger.info("[execution_loop] NOT_FOUND termination (goal_not_satisfied path)")
+                        state.context["termination_reason"] = "NOT_FOUND"
+                        state.context["terminal_output"] = replan_result.get("output", "")
+                        break
+                    if term == "LOOP_PROTECTION":
+                        logger.info("[execution_loop] LOOP_PROTECTION termination (goal_not_satisfied path)")
+                        state.context["termination_reason"] = "LOOP_PROTECTION"
+                        state.context["terminal_output"] = replan_result.get("output", "")
+                        break
+                state.update_plan(replan_result)
                 continue
             break
 
@@ -197,6 +213,27 @@ def execution_loop(
             future = pool.submit(executor.execute_step, step, state)
             try:
                 result = future.result(timeout=MAX_STEP_TIMEOUT_SECONDS)
+            except GuardrailError as e:
+                err_msg = str(e)
+                logger.error("[control] guardrail failure: %s", err_msg)
+                result = StepResult(
+                    step_id=step.get("id", 0),
+                    action=action,
+                    success=False,
+                    output="",
+                    latency_seconds=0,
+                    error="guardrail_failure",
+                    classification=ResultClassification.FATAL_FAILURE.value,
+                )
+                if errors_encountered is not None:
+                    errors_encountered.append(err_msg)
+                if trace_id:
+                    log_fn(
+                        trace_id,
+                        "guardrail_failure",
+                        {"plan_id": current_plan_id, "step_id": step_id, "action": action, "error": err_msg},
+                    )
+                break
             except FuturesTimeoutError:
                 logger.warning(
                     "[execution_loop] step %s timed out after %ss", step_id, MAX_STEP_TIMEOUT_SECONDS
@@ -296,8 +333,20 @@ def execution_loop(
                     log_fn(trace_id, "error", {"type": "max_replan_attempts_exceeded"})
                 break
             error_msg = result.error or str(result.output)[:300] if result.output else "Step failed"
-            new_plan = replan(state, failed_step=step, error=error_msg)
-            state.update_plan(new_plan)
+            replan_result = replan(state, failed_step=step, error=error_msg)
+            if isinstance(replan_result, dict):
+                term = replan_result.get("terminal")
+                if term == "NOT_FOUND":
+                    logger.info("[execution_loop] NOT_FOUND termination (step failure path)")
+                    state.context["termination_reason"] = "NOT_FOUND"
+                    state.context["terminal_output"] = replan_result.get("output", "")
+                    break
+                if term == "LOOP_PROTECTION":
+                    logger.info("[execution_loop] LOOP_PROTECTION termination (step failure path)")
+                    state.context["termination_reason"] = "LOOP_PROTECTION"
+                    state.context["terminal_output"] = replan_result.get("output", "")
+                    break
+            state.update_plan(replan_result)
             continue
 
         if result.success and enable_goal_evaluator:
@@ -345,8 +394,20 @@ def execution_loop(
                 or validation_feedback
                 or (str(result.output)[:300] if result.output else "Validation failed")
             )
-            new_plan = replan(state, failed_step=step, error=error_msg)
-            state.update_plan(new_plan)
+            replan_result = replan(state, failed_step=step, error=error_msg)
+            if isinstance(replan_result, dict):
+                term = replan_result.get("terminal")
+                if term == "NOT_FOUND":
+                    logger.info("[execution_loop] NOT_FOUND termination (validation failure path)")
+                    state.context["termination_reason"] = "NOT_FOUND"
+                    state.context["terminal_output"] = replan_result.get("output", "")
+                    break
+                if term == "LOOP_PROTECTION":
+                    logger.info("[execution_loop] LOOP_PROTECTION termination (validation failure path)")
+                    state.context["termination_reason"] = "LOOP_PROTECTION"
+                    state.context["terminal_output"] = replan_result.get("output", "")
+                    break
+            state.update_plan(replan_result)
             continue
 
         state.record(step, result)
@@ -384,21 +445,25 @@ def execution_loop(
             "tool_calls": tool_call_count,
             "plan_result": state.current_plan,
             "start_time": start_time,
-            "edit_telemetry": {
-                "attempted_target_files": state.context.get("search_target_candidates"),
-                "chosen_target_file": state.context.get("edit_target_file"),
-                "chosen_symbol": state.context.get("edit_target_symbol"),
-                "edit_failure_reason": state.context.get("edit_failure_reason"),
-                "search_viable_file_hits": state.context.get("search_viable_file_hits"),
-                "search_viable_raw_hits": state.context.get("search_viable_raw_hits"),
-                "patches_applied": patch_count,
-                "changed_files_count": len(fm_distinct),
-                **(state.context.get("edit_patch_telemetry") or {}),
-                "bm25_available": state.context.get("bm25_available"),
-                "reranker_failed": state.context.get("reranker_failed"),
-                "reranker_failed_fallback_used": state.context.get("reranker_failed_fallback_used"),
-                "grounding": state.context.get("edit_grounding_telemetry"),
-            },
+        }
+        term_reason = state.context.get("termination_reason")
+        if term_reason in ("NOT_FOUND", "LOOP_PROTECTION"):
+            loop_output["terminal"] = term_reason
+            loop_output["output"] = state.context.get("terminal_output", "")
+        loop_output["edit_telemetry"] = {
+            "attempted_target_files": state.context.get("search_target_candidates"),
+            "chosen_target_file": state.context.get("edit_target_file"),
+            "chosen_symbol": state.context.get("edit_target_symbol"),
+            "edit_failure_reason": state.context.get("edit_failure_reason"),
+            "search_viable_file_hits": state.context.get("search_viable_file_hits"),
+            "search_viable_raw_hits": state.context.get("search_viable_raw_hits"),
+            "patches_applied": patch_count,
+            "changed_files_count": len(fm_distinct),
+            **(state.context.get("edit_patch_telemetry") or {}),
+            "bm25_available": state.context.get("bm25_available"),
+            "reranker_failed": state.context.get("reranker_failed"),
+            "reranker_failed_fallback_used": state.context.get("reranker_failed_fallback_used"),
+            "grounding": state.context.get("edit_grounding_telemetry"),
         }
         # Prefer last patch attempt count when step-level patch_count is zero (EDIT telemetry gap).
         et = loop_output["edit_telemetry"]

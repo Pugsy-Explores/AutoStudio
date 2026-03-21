@@ -630,38 +630,42 @@ def run_deterministic(
     Phase 5: retry_context (previous_attempts, critic_feedback) is passed to get_plan when provided.
     """
     log_fn = log_event_fn or log_event
+    # Phase 4C: Context reset safety at request entry (no stale intent_classification)
+    # Phase 4B: Create minimal state before get_plan for intent_classification memoization
+    context = {
+        "tool_node": "START",
+        "retrieved_files": [],
+        "retrieved_symbols": [],
+        "retrieved_references": [],
+        "context_snippets": [],
+        "ranked_context": [],
+        "context_candidates": [],
+        "ranking_scores": [],
+        "project_root": project_root,
+        "instruction": instruction,
+        "trace_id": trace_id,
+        "similar_past_tasks": similar_tasks or [],
+        "lane_violations": [],
+    }
+    state = AgentState(
+        instruction=instruction,
+        current_plan={"steps": []},
+        context=context,
+    )
+    state.context.pop("intent_classification", None)
     plan_result = get_plan(
         instruction,
         trace_id=trace_id,
         log_event_fn=log_fn,
         retry_context=retry_context,
+        state=state,
     )
     if trace_id:
         log_fn(trace_id, "planner_decision", {"plan": plan_result})
 
     dominant_artifact_mode = "docs" if is_explicit_docs_lane_by_structure(plan_result) else "code"
-
-    state = AgentState(
-        instruction=instruction,
-        current_plan=plan_result,
-        context={
-            "tool_node": "START",
-            "retrieved_files": [],
-            "retrieved_symbols": [],
-            "retrieved_references": [],
-            "context_snippets": [],
-            "ranked_context": [],
-            "context_candidates": [],
-            "ranking_scores": [],
-            "project_root": project_root,
-            "instruction": instruction,
-            "trace_id": trace_id,
-            "similar_past_tasks": similar_tasks or [],
-            # Phase 6A: single-lane per task. Set once; immutable for the task/attempt.
-            "dominant_artifact_mode": dominant_artifact_mode,
-            "lane_violations": [],
-        },
-    )
+    state.current_plan = plan_result
+    state.context["dominant_artifact_mode"] = dominant_artifact_mode
 
     if trace_id:
         # Log once per deterministic attempt start.

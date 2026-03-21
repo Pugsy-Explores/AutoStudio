@@ -273,6 +273,8 @@ def run_controller(
         "files_modified": list(dict.fromkeys(files_modified)),
         "errors": errors_encountered,
         "retrieved_symbols": list(dict.fromkeys(retrieved_symbols)),
+        "termination_reason": state.context.get("termination_reason"),
+        "loop_output": loop_output,
     }
 
 

@@ -22,13 +22,18 @@ from agent.models.model_client import call_reasoning_model, call_small_model
 from agent.models.model_router import get_model_for_task
 from agent.models.model_types import ModelType
 from agent.prompt_system import get_registry
+from agent.core.actions import Action
 from planner.planner_utils import DOCS_COMPATIBLE_ACTIONS, is_explicit_docs_lane_by_structure, normalize_actions, validate_plan
 
 logger = logging.getLogger(__name__)
 
 REPLANNER_SYSTEM_PROMPT = get_registry().get_instructions("replanner")
 
-_DOCS_PRESERVE_ACTIONS = ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN")
+_DOCS_PRESERVE_ACTIONS = (
+    Action.SEARCH_CANDIDATES.value,
+    Action.BUILD_CONTEXT.value,
+    Action.EXPLAIN.value,
+)
 
 
 def _is_explicit_docs_lane_plan_by_structure(plan: dict | None) -> bool:
@@ -91,7 +96,7 @@ def _fallback_docs_lane(state: AgentState) -> dict:
         "steps": [
             {
                 "id": 1,
-                "action": "SEARCH_CANDIDATES",
+                "action": Action.SEARCH_CANDIDATES.value,
                 "artifact_mode": "docs",
                 "description": "Find README/docs artifacts",
                 "query": "readme docs",
@@ -99,14 +104,14 @@ def _fallback_docs_lane(state: AgentState) -> dict:
             },
             {
                 "id": 2,
-                "action": "BUILD_CONTEXT",
+                "action": Action.BUILD_CONTEXT.value,
                 "artifact_mode": "docs",
                 "description": "Build docs context from candidates",
                 "reason": "Read top docs files",
             },
             {
                 "id": 3,
-                "action": "EXPLAIN",
+                "action": Action.EXPLAIN.value,
                 "artifact_mode": "docs",
                 "description": "Answer using docs context",
                 "reason": "Complete docs fallback plan",
@@ -182,6 +187,60 @@ def replan(
     error_msg = ((error or "").strip() or "Unknown error")[:500]
 
     failure_context = build_replan_failure_context(state, failed_step, error)
+
+    # Phase 1: Persist failure state in state.context before NOT_FOUND gate and LLM call
+    ctx = state.context if isinstance(getattr(state, "context", None), dict) else {}
+    curr_reason = failure_context.get("reason_code")
+    curr_mode = failure_context.get("recovery_mode")
+    prev_reason = ctx.get("last_failure_reason_code")
+    ctx["same_failure_count"] = (ctx.get("same_failure_count", 0) + 1) if prev_reason == curr_reason else 1
+    ctx["last_failure_reason_code"] = curr_reason
+    prev_mode = ctx.get("last_recovery_mode")
+    ctx["same_recovery_mode_count"] = (ctx.get("same_recovery_mode_count", 0) + 1) if prev_mode == curr_mode else 1
+    ctx["last_recovery_mode"] = curr_mode
+    failure_context["same_failure_count"] = ctx["same_failure_count"]
+    failure_context["same_recovery_mode_count"] = ctx["same_recovery_mode_count"]
+
+    # Phase 2D: Loop safety cap (non-heuristic) — always evaluate first
+    same_failure_count = ctx.get("same_failure_count", 0)
+    if same_failure_count >= 4:
+        logger.info("[replanner] terminating: LOOP_PROTECTION")
+        return {
+            "success": True,
+            "output": "Unable to complete the request due to repeated planning failures.",
+            "terminal": "LOOP_PROTECTION",
+        }
+
+    # Phase 2/2B/2C: NOT_FOUND termination gate (all paths, before replanning)
+    eval_res = ctx.get("answer_grounding_eval") or {}
+    supported = eval_res.get("supported")
+    records = ctx.get("search_debug_records") or []
+    final_has_signal = any(r.get("final_has_signal") for r in records if isinstance(r, dict))
+    count_threshold = 2 if supported is False else 3  # None -> 3 (evaluator absence)
+    if (
+        (supported is False or supported is None)
+        and final_has_signal is True
+        and same_failure_count >= count_threshold
+    ):
+        logger.info(
+            "[control] same_failure_count=%d supported=%s final_has_signal=%s termination=NOT_FOUND",
+            same_failure_count,
+            supported,
+            final_has_signal,
+        )
+        logger.info("[replanner] terminating: NOT_FOUND (all paths)")
+        return {
+            "success": True,
+            "output": "The requested behavior or structure could not be found in the codebase based on available context.",
+            "terminal": "NOT_FOUND",
+        }
+    logger.info(
+        "[control] same_failure_count=%d supported=%s final_has_signal=%s termination=none",
+        same_failure_count,
+        supported,
+        final_has_signal,
+    )
+
     failure_context_json = format_failure_context_json(failure_context)
 
     _rs = failure_context.get("recent_searches") or []
