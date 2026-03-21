@@ -4,11 +4,8 @@ Uses reasoning model only; output is always valid JSON-compatible structure.
 """
 
 import json
-import logging
 import os
 import re
-
-logger = logging.getLogger(__name__)
 
 from agent.core.actions import Action
 from agent.models.model_client import call_reasoning_model
@@ -113,8 +110,8 @@ def _build_controlled_fallback_plan(
     - edit intent: SEARCH -> EDIT (minimal viable path for code modification)
     - default: single SEARCH
     """
-    # Temporary checkpoint log: confirm fallback usage
-    logger.info("[planner] fallback triggered (intent=%s)", primary_intent or "unknown")
+    # Temporary checkpoint log: confirm fallback usage (print for visibility in eval output)
+    print(f"[planner] fallback triggered (intent={primary_intent or 'unknown'})")
     docs_lane = _has_explicit_docs_lane_steps(parsed_plan or {}) or _retry_context_has_docs_lane_lineage(
         retry_context
     )
@@ -321,6 +318,6 @@ Focus on actions that address the failure reason."""
             reason="Planner output validation failed; controlled fallback",
             primary_intent=primary_intent,
         )
-    # Temporary checkpoint log: plan passed guardrail and validation
-    logger.info("[planner] plan accepted by guardrail")
+    # Temporary checkpoint log: plan passed guardrail and validation (print for visibility in eval output)
+    print("[planner] plan accepted by guardrail")
     return data
