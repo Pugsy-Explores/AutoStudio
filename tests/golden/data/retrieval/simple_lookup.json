@@ -1,0 +1,13 @@
+[
+  {
+    "id": "symbol_lookup",
+    "input": {
+      "instruction": "Where is StepExecutor defined?"
+    },
+    "expected": {
+      "metrics": {
+        "retrieval_empty": false
+      }
+    }
+  }
+]

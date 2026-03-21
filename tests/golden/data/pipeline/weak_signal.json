@@ -1,0 +1,14 @@
+[
+  {
+    "id": "weak_signal_case",
+    "input": {
+      "instruction": "Explain obscure internal fallback behavior",
+      "repo_path": "mini_repos/mr01_arch"
+    },
+    "expected": {
+      "structure": {
+        "no_loops": true
+      }
+    }
+  }
+]

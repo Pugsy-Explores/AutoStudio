@@ -1,0 +1,13 @@
+[
+  {
+    "id": "selector_has_results",
+    "input": {
+      "instruction": "Where is StepExecutor defined?"
+    },
+    "expected": {
+      "metrics": {
+        "selection_loss": false
+      }
+    }
+  }
+]
