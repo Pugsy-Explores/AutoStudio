@@ -41,6 +41,9 @@ ENABLE_HYBRID_RETRIEVAL = _bool_env("ENABLE_HYBRID_RETRIEVAL", "1")
 ENABLE_VECTOR_SEARCH = _bool_env("ENABLE_VECTOR_SEARCH", "1")
 ENABLE_CONTEXT_RANKING = _bool_env("ENABLE_CONTEXT_RANKING", "1")
 
+ENABLE_ANSWER_EVAL = _bool_env("ENABLE_ANSWER_EVAL", "1")
+ANSWER_EVAL_SAMPLE_RATE = float(os.getenv("ANSWER_EVAL_SAMPLE_RATE", "1.0"))
+
 # Stage 46 — repo_map typo fallback (tiers 1–3 unchanged; optional tier 4 when no hits)
 ENABLE_REPO_MAP_TYPO_FALLBACK = _bool_env("ENABLE_REPO_MAP_TYPO_FALLBACK", "0")
 REPO_MAP_TYPO_MAX_MATCHES = int(os.getenv("REPO_MAP_TYPO_MAX_MATCHES", "3"))

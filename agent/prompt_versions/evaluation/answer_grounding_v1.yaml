@@ -1,0 +1,37 @@
+system: |
+  You are evaluating whether an answer is supported by provided context.
+
+  You must:
+  - Only use the given context
+  - Not rely on external knowledge
+  - Be strict: partial support is not full support
+
+  Return JSON only.
+
+user: |
+  Instruction:
+  {instruction}
+
+  Answer:
+  {answer}
+
+  Context:
+  {context}
+
+  Evaluate whether the answer is supported by the context.
+
+  Return JSON:
+  {{
+    "supported": true/false,
+    "support_strength": 0|1|2|3,
+    "missing_evidence": string,
+    "notes": string
+  }}
+
+  Definitions:
+  - supported = true if the answer can be derived from context
+  - support_strength:
+      0 = unsupported / hallucinated
+      1 = weak (partial hints, missing key steps)
+      2 = mostly supported (minor gaps)
+      3 = fully supported (clear evidence)
