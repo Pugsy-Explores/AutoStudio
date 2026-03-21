@@ -7,6 +7,7 @@ When EMBEDDING_USE_DAEMON=1 and retrieval daemon is reachable, uses daemon /embe
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from agent.retrieval.daemon_embed import daemon_embed_available, encode_via_daemon
 from agent.retrieval.retrieval_expander import normalize_file_path
@@ -21,7 +22,16 @@ DEFAULT_TOP_K = 5
 
 _VECTOR_AVAILABLE: bool | None = None
 _model = None
-_client = None
+# Chroma PersistentClient must be scoped per workspace: a singleton ignores later project_root
+# and returns hits whose file metadata points at the first indexed tree, so filter_and_rank_search_results
+# drops every path under a different root (search_viable_raw_hits > 0, search_viable_file_hits == 0).
+_chroma_clients: dict[str, Any] = {}
+
+
+def reset_chroma_clients_for_tests() -> None:
+    """Drop cached Chroma clients (e.g. multiple workspaces in one process, agent_eval A/B)."""
+    global _chroma_clients
+    _chroma_clients.clear()
 
 
 def _check_vector_available() -> bool:
@@ -45,18 +55,18 @@ def _check_vector_available() -> bool:
 
 
 def _get_client(project_root: str):
-    """Get or create persistent ChromaDB client."""
-    global _client
-    if _client is not None:
-        return _client
+    """Get or create persistent ChromaDB client for this workspace's embeddings directory."""
+    global _chroma_clients
     try:
         import chromadb
 
         root = Path(project_root or ".").resolve()
-        path = root / EMBEDDINGS_DIR / EMBEDDINGS_SUBDIR
+        path = (root / EMBEDDINGS_DIR / EMBEDDINGS_SUBDIR).resolve()
         path.mkdir(parents=True, exist_ok=True)
-        _client = chromadb.PersistentClient(path=str(path))
-        return _client
+        key = str(path)
+        if key not in _chroma_clients:
+            _chroma_clients[key] = chromadb.PersistentClient(path=key)
+        return _chroma_clients[key]
     except Exception as e:
         logger.debug("[vector_retriever] client init failed: %s", e)
         return None

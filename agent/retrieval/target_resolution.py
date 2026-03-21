@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 # Patterns that strongly indicate validation/assertion scripts (demote as edit targets)
+# Stage 28: add test_*.py, *_test.py anywhere; bin/assert_*, scripts/check_*, scripts/verify_*
 _VALIDATION_SCRIPT_PATTERNS = (
     r"scripts/assert_\w+\.py",
     r"scripts/check_\w+\.py",
@@ -22,6 +23,8 @@ _VALIDATION_SCRIPT_PATTERNS = (
     r"bin/verify_\w+\.py",
     r"tests/test_\w+\.py",
     r"tests/.*_test\.py",
+    r".*/test_[^/]+\.py",  # test_*.py in any directory
+    r".*[^/]_test\.py",   # *_test.py in any directory
 )
 _VALIDATION_PATTERN_RE = re.compile(
     "|".join(f"({p})" for p in _VALIDATION_SCRIPT_PATTERNS)
@@ -60,7 +63,7 @@ def validation_script_paths_from_instruction(instruction: str) -> list[str]:
 
 
 def validation_script_paths_from_command(cmd: str | None) -> list[str]:
-    """Extract validation script path from command like 'python3 bin/assert_guard.py'."""
+    """Extract validation script path from command (e.g. python3 bin/assert_foo.py)."""
     if not cmd or not isinstance(cmd, str):
         return []
     out: list[str] = []
@@ -158,8 +161,6 @@ def resolve_module_descriptor_to_files(
     """
     Infer source files from module descriptors in instruction.
     E.g. "runtime options module" -> runtime/options.py
-    "validation guard" -> validation/guard.py
-    "parser module" -> *parser*.py or */*parser*.py
     "config defaults" -> cfg/defaults.py or config/defaults.py
     Returns list of (file_path, evidence).
     """
@@ -171,9 +172,7 @@ def resolve_module_descriptor_to_files(
 
     # Extract noun phrases that might be module descriptors
     # "runtime options module" -> ["runtime", "options"]
-    # "validation guard" -> ["validation", "guard"]
     # "config defaults" -> ["config", "defaults"]
-    # "parser module" -> ["parser"]
     phrases = re.findall(r"\b([a-z][a-z0-9_]*)\s+([a-z][a-z0-9_]*)\s+module\b", low)
     for a, b in phrases:
         cand = f"{a}/{b}.py"
@@ -186,7 +185,7 @@ def resolve_module_descriptor_to_files(
             except ValueError:
                 pass
         # Also try cfg/ for config, impl/ for impl
-        for prefix in ("cfg", "config", "impl", "core", "runtime", "validation", "logging", "io"):
+        for prefix in ("cfg", "config", "impl", "core", "runtime", "validation", "logging"):
             if a == prefix or (a in ("config", "cfg") and prefix in ("cfg", "config")):
                 cand2 = f"{prefix}/{b}.py"
                 p2 = root / cand2
@@ -198,8 +197,9 @@ def resolve_module_descriptor_to_files(
                     except ValueError:
                         pass
 
-    # Two-word phrases without "module": "validation guard", "config defaults"
-    phrases2 = re.findall(r"\b(validation|runtime|config|cfg|logging|parser|guard|options|defaults|levels)\s+(\w+)\b", low)
+    # Two-word phrases without "module": "config defaults", "runtime options", etc.
+    # Generic directory names only (no benchmark-specific tokens).
+    phrases2 = re.findall(r"\b(validation|runtime|config|cfg|logging|parser|options|defaults)\s+(\w+)\b", low)
     for a, b in phrases2:
         if b in ("module", "file", "script"):
             continue
@@ -214,15 +214,16 @@ def resolve_module_descriptor_to_files(
                 except ValueError:
                     pass
 
-    # Single-word + "implementation" or "guard": "guard implementation"
-    if "guard" in low and "validation" in low:
-        for cand in ("validation/guard.py", "guard.py"):
+    # Path hints: explicit path literals in instruction (e.g. lib/version.py, README.md)
+    for m in re.finditer(r"\b([\w./]+\.(?:py|pyi|md))\b", instruction, re.I):
+        cand = m.group(1).strip().replace("\\", "/")
+        if "/" in cand or cand.startswith(("README", "CHANGELOG", "API")):
             p = root / cand
             if p.is_file():
                 try:
                     rel = str(p.relative_to(root)).replace("\\", "/")
                     if not any(r[0] == rel for r in out):
-                        out.append((rel, "guard_descriptor"))
+                        out.append((rel, "path_hint_descriptor"))
                 except ValueError:
                     pass
 
@@ -310,7 +311,7 @@ def rank_edit_targets(
 
 MAX_RANKED_TARGETS = 15
 
-# Stdlib module names that commonly shadow local packages in adversarial repos
+# Stdlib module names that commonly shadow local packages
 _STDLIB_SHADOW_CANDIDATES = frozenset({"io", "logging", "config", "parser", "ast", "types"})
 
 
@@ -410,6 +411,14 @@ def resolve_edit_targets_for_plan(
         except (ValueError, OSError):
             pass
 
+    # Stage 28: telemetry for source vs validator preference
+    top_path = ranked[0][0] if ranked else ""
+    source_preferred = (
+        top_path
+        and top_path not in val_paths
+        and not is_validation_script_path(top_path)
+        and (explicit or inferred or descriptor)
+    )
     return {
         "edit_targets_ranked": ranked,
         "validation_scripts": list(val_paths),
@@ -420,5 +429,6 @@ def resolve_edit_targets_for_plan(
             "inferred_source_count": len(inferred),
             "descriptor_resolved_count": len(descriptor),
             "validation_script_count": len(val_paths),
+            "source_file_preferred_over_validator": source_preferred,
         },
     }

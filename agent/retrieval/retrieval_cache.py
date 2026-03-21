@@ -2,7 +2,6 @@
 
 import logging
 import os
-from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -46,10 +45,26 @@ def set_cached(query: str, project_root: str | None, result: dict) -> None:
 
 
 def clear_cache() -> None:
-    """Clear all cached results."""
-    global _cache, _cache_order
+    """Clear all cached search/candidate/context results and Chroma clients keyed by workspace."""
+    global _cache, _cache_order, _candidate_cache, _candidate_order, _context_cache, _context_order
     _cache.clear()
     _cache_order.clear()
+    _candidate_cache.clear()
+    _candidate_order.clear()
+    _context_cache.clear()
+    _context_order.clear()
+    try:
+        from agent.retrieval.bm25_retriever import _reset_for_testing as reset_bm25_for_tests
+
+        reset_bm25_for_tests()
+    except Exception:
+        pass
+    try:
+        from agent.retrieval.vector_retriever import reset_chroma_clients_for_tests
+
+        reset_chroma_clients_for_tests()
+    except Exception:
+        pass
 
 
 # Task 11: candidate_cache (query -> candidate list) and context_cache (symbol -> expanded context), LRU 1024

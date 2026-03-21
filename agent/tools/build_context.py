@@ -77,12 +77,24 @@ def build_context(
     search_results = []
     for c in candidates:
         if isinstance(c, dict):
-            search_results.append({
+            row = {
                 "file": c.get("file", ""),
                 "symbol": c.get("symbol", ""),
                 "snippet": c.get("snippet", ""),
                 "line": c.get("line"),
-            })
+            }
+            for opt in (
+                "candidate_kind",
+                "retrieval_result_type",
+                "implementation_body_present",
+                "line_range",
+                "source",
+                "localization_score",
+                "type",
+            ):
+                if opt in c and c[opt] is not None:
+                    row[opt] = c[opt]
+            search_results.append(row)
 
     query = state.context.get("query") or state.instruction or ""
     from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline

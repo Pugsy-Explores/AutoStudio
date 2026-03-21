@@ -154,6 +154,7 @@ def localize_issue(
             "symbol": r.get("symbol", ""),
             "snippet": snippet,
             "type": "localization",
+            "candidate_kind": "localization",
             "localization_score": r.get("localization_score", 0.0),
             "source": "localization",
         })

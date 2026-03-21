@@ -135,9 +135,13 @@ def search_bm25(query: str, project_root: str | None = None, top_k: int = 30) ->
     if not query or not query.strip():
         return []
 
-    root = project_root or _PROJECT_ROOT or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
-    if not _BM25_INDEX or not _REPO_SYMBOLS:
-        build_bm25_index(root)
+    root_path = Path(
+        project_root or _PROJECT_ROOT or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    ).resolve()
+    root_s = str(root_path)
+    # Rebuild when switching workspaces in the same process (agent_eval arms, multi-task runs).
+    if not _BM25_INDEX or not _REPO_SYMBOLS or _PROJECT_ROOT != root_s:
+        build_bm25_index(root_s)
 
     if not _BM25_INDEX or not _REPO_SYMBOLS:
         return []

@@ -6,7 +6,7 @@ import re
 
 
 def instruction_suggests_docs_consistency(instruction: str) -> bool:
-    """True when the instruction suggests aligning documentation with code or benchmarks."""
+    """True when the instruction suggests aligning documentation with code."""
     if not instruction:
         return False
     low = instruction.lower()
@@ -19,16 +19,13 @@ def instruction_suggests_docs_consistency(instruction: str) -> bool:
             "consistency",
             "readme",
             ".md",
-            "so scripts/",
-            "so benchmark_",
-            "benchmark_local/",
             "documented",
         )
     )
 
 
 def validation_check_script_paths_in_instruction(instruction: str) -> list[str]:
-    """Paths like benchmark_local/check_*.py, scripts/verify_*.py, bin/assert_*.py when named in the instruction."""
+    """Paths like check_*.py, scripts/verify_*.py, bin/assert_*.py when named in the instruction."""
     if not instruction:
         return []
     out: list[str] = []

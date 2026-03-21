@@ -41,6 +41,10 @@ ENABLE_HYBRID_RETRIEVAL = _bool_env("ENABLE_HYBRID_RETRIEVAL", "1")
 ENABLE_VECTOR_SEARCH = _bool_env("ENABLE_VECTOR_SEARCH", "1")
 ENABLE_CONTEXT_RANKING = _bool_env("ENABLE_CONTEXT_RANKING", "1")
 
+# Stage 46 — repo_map typo fallback (tiers 1–3 unchanged; optional tier 4 when no hits)
+ENABLE_REPO_MAP_TYPO_FALLBACK = _bool_env("ENABLE_REPO_MAP_TYPO_FALLBACK", "0")
+REPO_MAP_TYPO_MAX_MATCHES = int(os.getenv("REPO_MAP_TYPO_MAX_MATCHES", "3"))
+
 RETRIEVAL_CACHE_SIZE = int(os.getenv("RETRIEVAL_CACHE_SIZE", "100"))
 
 MAX_CANDIDATES_FOR_RANKING = int(os.getenv("MAX_CANDIDATES_FOR_RANKING", "20"))
@@ -130,3 +134,18 @@ RETRIEVAL_AUTO_DETECT_SERVICE_DIRS = _bool_env(
     "0",
 )  # detect src/, lib/, app/, services/
 RETRIEVAL_TEST_DOWNWEIGHT = float(os.getenv("RETRIEVAL_TEST_DOWNWEIGHT", "0.2"))
+
+# Kind-aware expansion: choose read_symbol_body vs read_file from candidate_kind when set (default OFF for safe rollout).
+ENABLE_KIND_AWARE_EXPANSION = _bool_env("ENABLE_KIND_AWARE_EXPANSION", "0")
+
+# --- LLM bundle selector (data-path only; default off) ---
+ENABLE_LLM_BUNDLE_SELECTOR = _bool_env("ENABLE_LLM_BUNDLE_SELECTOR", "0")
+MAX_SELECTOR_CANDIDATE_POOL = int(os.getenv("MAX_SELECTOR_CANDIDATE_POOL", "12"))
+MIN_SELECTOR_CANDIDATE_POOL = int(os.getenv("MIN_SELECTOR_CANDIDATE_POOL", "4"))
+BUNDLE_SELECTOR_MAX_KEEP = int(os.getenv("BUNDLE_SELECTOR_MAX_KEEP", "4"))
+FORCE_SELECTOR_IN_EVAL = _bool_env("FORCE_SELECTOR_IN_EVAL", "0")
+ENABLE_BUNDLE_SELECTION = _bool_env("ENABLE_BUNDLE_SELECTION", "0")
+ENABLE_EXPLORATION = _bool_env("ENABLE_EXPLORATION", "0")
+# Deep expansion budgets (region bounded read, file header join)
+MAX_LINES_PER_EXPANDED_UNIT = int(os.getenv("MAX_LINES_PER_EXPANDED_UNIT", "80"))
+MAX_FILE_HEADER_LINES = int(os.getenv("MAX_FILE_HEADER_LINES", "60"))

@@ -85,15 +85,37 @@ def filter_and_rank_search_results(
     project_root: str,
     *,
     parent_instruction: str | None = None,
+    extra_path_roots: tuple[str, ...] | None = None,
 ) -> list[dict]:
     """
     Drop directories, index metadata paths, and paths outside project_root.
     Prefer concrete source files; sort by heuristic score + retriever score.
+
+    When the graph index lives under a temp dir but hits reference the real checkout,
+    pass ``extra_path_roots`` (e.g. state.context[\"source_root\"]) so those files are kept.
     """
     if not results or not isinstance(results, list):
         return []
 
     root = Path(project_root).resolve()
+    extra_roots: list[Path] = []
+    if extra_path_roots:
+        for x in extra_path_roots:
+            if x and str(x).strip():
+                try:
+                    extra_roots.append(Path(x).resolve())
+                except OSError:
+                    pass
+
+    def _relative_under_any(abs_path: Path) -> tuple[Path, Path] | None:
+        """Return (chosen_root, rel) if abs_path lies under root or any extra root."""
+        for base in (root, *extra_roots):
+            try:
+                rel = abs_path.relative_to(base)
+                return base, rel
+            except ValueError:
+                continue
+        return None
     merged = _merged_semantic_text(query, parent_instruction)
     docs_alignment = instruction_suggests_docs_consistency(merged)
     query_lower = (query or "").lower()
@@ -112,10 +134,10 @@ def filter_and_rank_search_results(
             p = (root / raw).resolve()
         else:
             p = p.resolve()
-        try:
-            rel = p.relative_to(root)
-        except ValueError:
+        rel_info = _relative_under_any(p)
+        if rel_info is None:
             continue
+        _base_root, rel = rel_info
         rel_s = str(rel)
         low = rel_s.lower()
         if _is_blocked_path(low):
@@ -171,11 +193,11 @@ def filter_and_rank_search_results(
                 p = (root / raw).resolve()
             else:
                 p = p.resolve()
-            try:
-                p.relative_to(root)
-            except ValueError:
+            ri = _relative_under_any(p)
+            if ri is None:
                 continue
-            if p.is_file() and not _is_blocked_path(str(p.relative_to(root)).lower()):
+            _br, rel_salv = ri
+            if p.is_file() and not _is_blocked_path(str(rel_salv).lower()):
                 normalized.append(dict(r) | {"file": str(p)})
                 break
 
@@ -193,17 +215,20 @@ def filter_and_rank_search_results(
                 p = (root / raw).resolve()
             else:
                 p = p.resolve()
-            try:
-                p.relative_to(root)
-            except ValueError:
+            ri = _relative_under_any(p)
+            if ri is None:
                 continue
-            if not p.is_dir() or _is_blocked_path(str(p.relative_to(root)).lower()):
+            _br, rel_dir = ri
+            if not p.is_dir() or _is_blocked_path(str(rel_dir).lower()):
                 continue
             try:
                 for sub in sorted(p.rglob("*.py"))[:12]:
                     if not sub.is_file():
                         continue
-                    rel = str(sub.relative_to(root)).lower()
+                    ri_sub = _relative_under_any(sub.resolve())
+                    if ri_sub is None:
+                        continue
+                    rel = str(ri_sub[1]).lower()
                     if _is_blocked_path(rel):
                         continue
                     sp = str(sub.resolve())
