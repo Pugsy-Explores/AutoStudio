@@ -270,6 +270,26 @@ def assert_retrieval_quality(
     }
 
 
+def classify_edit_failure(record: dict[str, Any]) -> str | None:
+    """
+    Classify edit failure stage for root-cause diagnosis (observability only).
+    Returns: RETRIEVAL_FAILURE | SELECTION_FAILURE | EDIT_GROUNDING_FAILURE | UNKNOWN | None
+    """
+    if not record:
+        return None
+    has_impl_in_pool = record.get("has_impl_in_pool")
+    final_has_signal = record.get("final_has_signal")
+    answer_supported = record.get("answer_supported")
+
+    if has_impl_in_pool is False:
+        return "RETRIEVAL_FAILURE"
+    if has_impl_in_pool and final_has_signal is False:
+        return "SELECTION_FAILURE"
+    if final_has_signal and answer_supported is False:
+        return "EDIT_GROUNDING_FAILURE"
+    return "UNKNOWN"
+
+
 def build_retrieval_quality_record(spec: Any, state: Any, loop_out: dict[str, Any] | None) -> dict[str, Any]:
     """
     Compact per-task retrieval metrics for outcome.json (no full ranked_context payload).
@@ -465,6 +485,9 @@ def build_retrieval_quality_record(spec: Any, state: Any, loop_out: dict[str, An
         else None
     )
 
+    # Phase 5: Patch validation debug for RCA (stale context vs patch quality)
+    out["patch_debug"] = ctx.get("patch_validation_debug")
+
     # Search debug records (stage-wise SEARCH audit)
     search_debug_records = ctx.get("search_debug_records")
     if search_debug_records is not None:
@@ -535,6 +558,52 @@ def build_retrieval_quality_record(spec: Any, state: Any, loop_out: dict[str, An
         out["grounding_status"] = "unsupported"
     else:
         out["grounding_status"] = "unknown"
+
+    # Phase 1: per-task diagnostics for edit failure root-cause analysis
+    pool = ctx.get("retrieval_candidate_pool") or []
+    pool_has_signal = out.get("pool_has_signal")
+    if pool:
+        has_impl_in_pool = any(r.get("implementation_body_present") for r in pool if isinstance(r, dict))
+        has_linked_in_pool = any(
+            isinstance(r.get("relations"), list) and r.get("relations")
+            for r in pool
+            if isinstance(r, dict)
+        )
+    else:
+        has_impl_in_pool = pool_has_signal if pool_has_signal is not None else out.get("final_has_signal")
+        has_linked_in_pool = None
+
+    sdr = [r for r in (ctx.get("search_debug_records") or []) if isinstance(r, dict)]
+    selection_loss = sdr[-1].get("selection_loss") if sdr else None
+    if selection_loss is None:
+        selection_loss = bool(has_impl_in_pool and not out.get("final_has_signal"))
+    exploration_used = bool(out.get("exploration_used"))
+    exploration_effective = out.get("exploration_effective") if exploration_used else False
+
+    out["diagnostics"] = {
+        "has_impl_in_pool": has_impl_in_pool,
+        "has_linked_in_pool": has_linked_in_pool,
+        "final_has_signal": out.get("final_has_signal"),
+        "selection_loss": selection_loss,
+        "exploration_used": exploration_used,
+        "exploration_effective": exploration_effective,
+    }
+    out["has_impl_in_pool"] = has_impl_in_pool
+    out["selection_loss"] = selection_loss
+
+    # Phase 2: failure classification (diagnostic only)
+    out["edit_failure_stage"] = classify_edit_failure(out)
+
+    # Phase 4: per-task diagnostics logging
+    stage = out.get("edit_failure_stage")
+    _log.info(
+        "[diagnostics] task=%s stage=%s impl=%s final_signal=%s selection_loss=%s",
+        tid,
+        stage,
+        has_impl_in_pool,
+        out.get("final_has_signal"),
+        selection_loss,
+    )
 
     return out
 
@@ -871,6 +940,11 @@ def aggregate_retrieval_metrics(records: list[dict[str, Any]]) -> dict[str, Any]
             "avg_query_score_when_retrieval_empty": sfm["avg_query_score_when_retrieval_empty"],
             "avg_query_score_when_selection_loss": sfm["avg_query_score_when_selection_loss"],
         }
+
+    # Phase 3: edit failure stage histogram (for root-cause diagnosis)
+    stages = [r.get("edit_failure_stage") for r in rows if r.get("edit_failure_stage")]
+    result["edit_failure_stage_histogram"] = dict(Counter(stages))
+
     return result
 
 

@@ -20,6 +20,7 @@ Usage:
   python scripts/run_principal_engineer_suite.py --failure-mining  # Phase 4: run scenarios 10x, aggregate failures
   python scripts/run_principal_engineer_suite.py --stress       # Phase 4: run scenarios with varied models/seeds
   python scripts/run_principal_engineer_suite.py --mock        # router_eval with --mock
+  python scripts/run_principal_engineer_suite.py --live4       # Run live4 agent_eval suite (4 edit tasks, real model)
 """
 
 from __future__ import annotations
@@ -442,11 +443,13 @@ def main() -> int:
     parser.add_argument("--use-agent-loop", action="store_true", help="Use run_agent (agent_loop) for scenarios to get Phase 4 metrics")
     parser.add_argument("--mock", action="store_true", help="Use --mock for router_eval (no LLM)")
     parser.add_argument("-n", "--count", type=int, default=10, help="Number of explain/edit tasks (default 10)")
+    parser.add_argument("--live4", action="store_true", help="Run live4 agent_eval suite (4 edit tasks, real model)")
+    parser.add_argument("--task-timeout", type=int, default=None, help="Per-task timeout in seconds for live4 (default: no limit)")
     args = parser.parse_args()
 
     run_all = not any([
         args.explain, args.edit, args.router_eval, args.failure_tests, args.swe_bench,
-        args.scenarios, args.failure_mining, args.stress,
+        args.scenarios, args.failure_mining, args.stress, args.live4,
     ])
 
     summary = []
@@ -525,6 +528,53 @@ def main() -> int:
     if run_all or args.swe_bench:
         run_swe_bench_placeholder()
         summary.append("SWE-bench: (placeholder)")
+
+    if run_all or args.live4:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        output_dir = ROOT / "artifacts" / "agent_eval_runs" / f"live4_{ts}"
+        log_path = ROOT / "docs" / f"live4_run_log_{ts}.txt"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"\n--- Live4 Suite ---")
+        print(f"Output: {output_dir}")
+        print(f"Logs: {log_path}")
+        print(f"Task timeout: {args.task_timeout or 'none'}s")
+        cmd = [
+            sys.executable, "-m", "tests.agent_eval.runner",
+            "--suite", "live4",
+            "--execution-mode", "live_model",
+            "--output", str(ROOT / "artifacts" / "agent_eval_runs" / "latest"),
+        ]
+        if args.task_timeout is not None:
+            cmd.extend(["--task-timeout", str(args.task_timeout)])
+        with open(log_path, "w", encoding="utf-8") as logf:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                logf.write(line)
+                logf.flush()
+            proc.wait()
+        latest_link = ROOT / "artifacts" / "agent_eval_runs" / "latest"
+        run_dir = latest_link.resolve() if latest_link.exists() else output_dir
+        summary_path = run_dir / "summary.json"
+        if summary_path.exists():
+            live4_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary.append(
+                f"Live4: {live4_summary.get('success_count', 0)}/{live4_summary.get('total_tasks', 0)} success "
+                f"(run_dir={run_dir.name})"
+            )
+            if live4_summary.get("success_count", 0) < live4_summary.get("total_tasks", 1):
+                ok = False
+        else:
+            summary.append(f"Live4: run completed (see {log_path})")
+        print(f"Logs saved to {log_path}")
 
     print("\n" + "=" * 60)
     print("PRINCIPAL ENGINEER SUITE SUMMARY")

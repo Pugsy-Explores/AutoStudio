@@ -156,6 +156,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Per-task timeout in seconds. Tasks exceeding this are marked as task_timeout failures.",
     )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max number of tasks to run (default: all).",
+    )
     return p
 
 
@@ -167,6 +173,7 @@ def run_suite(
     execution_mode: str = "mocked",
     task_filter: str | None = None,
     task_id_allowlist: Collection[str] | None = None,
+    task_limit: int | None = None,
     output_dir: Path | None = None,
     task_timeout_seconds: int | None = None,
 ) -> tuple[Path, list, dict[str, Any]]:
@@ -181,6 +188,8 @@ def run_suite(
         specs = [s for s in specs if s.task_id == task_filter]
         if not specs:
             raise SystemExit(f"No task matching --task {task_filter!r}")
+    if task_limit is not None and task_limit > 0:
+        specs = specs[:task_limit]
     if task_id_allowlist is not None:
         specs = [s for s in specs if s.task_id in task_id_allowlist]
         if not specs:
@@ -338,6 +347,22 @@ def run_suite(
 
     histograms = aggregate_histograms(results)
     integrity_metrics = aggregate_integrity_metrics(results, execution_mode)
+
+    # Edit failure stage histogram (from retrieval_quality diagnostics)
+    rq_records = [
+        r.extra.get("retrieval_quality_bundle")
+        for r in results
+        if r.extra and isinstance(r.extra.get("retrieval_quality_bundle"), dict)
+    ]
+    edit_failure_stage_hist: dict[str, int] = {}
+    if rq_records:
+        try:
+            from tests.agent_eval.check_retrieval_quality import aggregate_retrieval_metrics
+
+            rq_agg = aggregate_retrieval_metrics(rq_records)
+            edit_failure_stage_hist = rq_agg.get("edit_failure_stage_histogram") or {}
+        except Exception:
+            pass
     suite_label = build_suite_label(suite_name, execution_mode)
     # Stage 22: semantic RCA cause histogram for failed EDIT tasks
     semantic_rca_cause_hist: dict[str, int] = {}
@@ -394,6 +419,7 @@ def run_suite(
         "task_type_histogram": task_type_hist,
         "instruction_explicit_path_count": instruction_explicit_path_count,
         "semantic_rca_cause_histogram": semantic_rca_cause_hist,
+        "edit_failure_stage_histogram": edit_failure_stage_hist,
     }
     summary["per_task_outcomes"] = build_per_task_outcomes(results)
 
@@ -425,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output,
         execution_mode=args.execution_mode,
         task_filter=getattr(args, "task", None),
+        task_limit=getattr(args, "limit", None),
         task_timeout_seconds=getattr(args, "task_timeout", None),
     )
     print(json.dumps(summary, indent=2))
