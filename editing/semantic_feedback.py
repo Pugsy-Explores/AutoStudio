@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-_MAX_SUMMARY_LEN = 500
+from config.editing_config import SEMANTIC_FEEDBACK_MAX_SUMMARY
 _MAX_FAILING_TESTS = 5
 _MAX_ERROR_LEN = 200
 _MAX_EXPECTED_LEN = 100
@@ -49,7 +49,7 @@ def extract_semantic_feedback(test_result: dict) -> dict:
 
     return {
         "tests_passed": False,
-        "failure_summary": failure_summary[: _MAX_SUMMARY_LEN],
+        "failure_summary": failure_summary[:SEMANTIC_FEEDBACK_MAX_SUMMARY],
         "failing_tests": failing_tests[: _MAX_FAILING_TESTS],
     }
 
@@ -112,7 +112,7 @@ def _parse_error_line(line: str) -> tuple[str | None, str | None, str | None]:
 def _build_failure_summary(combined: str, failing_tests: list[dict]) -> str:
     """Short structured summary."""
     if not failing_tests:
-        return combined.strip()[: _MAX_SUMMARY_LEN]
+        return combined.strip()[:SEMANTIC_FEEDBACK_MAX_SUMMARY]
     parts = []
     for t in failing_tests[:3]:
         parts.append(f"{t['name']}: {t['error']}")

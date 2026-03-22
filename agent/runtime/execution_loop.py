@@ -15,7 +15,10 @@ from config.agent_runtime import (
     MAX_PATCH_FILES,
     MAX_PATCH_LINES,
     MAX_SAME_ERROR_RETRIES,
+    MAX_SEMANTIC_RETRIES,
+    REASON_TRUNCATE_LEN,
     TEST_TIMEOUT,
+    TRAJECTORY_REASON_MAX,
 )
 from editing.diff_planner import plan_diff
 from editing.patch_executor import execute_patch
@@ -198,9 +201,6 @@ def run_edit_test_fix_loop(
                 logger.debug("[execution_loop] sandbox cleanup: %s", e)
 
 
-MAX_SEMANTIC_RETRIES = 2
-
-
 def _run_loop(
     instruction: str,
     context: dict,
@@ -269,6 +269,7 @@ def _run_loop(
             context["edit_file_snapshot"] = None
 
         patch_plan = to_structured_patches({"changes": changes}, current_instruction, context)
+        context.pop("edit_generation_debug", None)
 
         # Structural improvement check: retry must differ from previous and target same file/symbol
         previous_patch = context.get("previous_patch")
@@ -301,6 +302,9 @@ def _run_loop(
         if pp_changes:
             _first_pp = pp_changes[0]
             context["generated_patch"] = _first_pp.get("patch") if isinstance(_first_pp.get("patch"), dict) else _first_pp
+            _egd = _first_pp.get("edit_generation_debug")
+            if _egd:
+                context["edit_generation_debug"] = _egd
         elif changes:
             _first_raw = changes[0]
             context["generated_patch"] = _first_raw.get("patch") if isinstance(_first_raw.get("patch"), dict) else _first_raw
@@ -520,7 +524,7 @@ def _run_loop(
             vr = context.get("patch_verification_result") or {}
             checks = vr.get("checks", {})
             sv = context.get("syntax_validation_result") or {}
-            context["patch_validation_debug"] = {
+            pvd = {
                 "reason": reject_reason,
                 "file_contains_old_snippet": file_contains_old,
                 "old_snippet": old_snippet[:200] + "..." if (old_snippet and len(old_snippet) > 200) else old_snippet,
@@ -528,24 +532,27 @@ def _run_loop(
                 "snippet_match": snippet_match,
                 "locality": locality,
                 "failure_type": failure_type,
-                "syntax_validation": {
-                    "valid": sv.get("valid"),
-                    "error": sv.get("error"),
-                    "error_type": sv.get("error_type"),
-                    "file": sv.get("file"),
-                    "skipped": sv.get("skipped"),
-                    "language": sv.get("language"),
-                },
-                "patch_verification": {
-                    "valid": vr.get("valid"),
-                    "has_effect": checks.get("has_effect"),
-                    "targets_correct_file": checks.get("targets_correct_file"),
-                    "is_local": checks.get("is_local"),
-                    "reason": vr.get("reason"),
-                },
-                "semantic_feedback": context.get("semantic_feedback"),
-                "semantic_iteration": context.get("semantic_iteration"),
             }
+            if context.get("edit_generation_debug"):
+                pvd["edit_generation"] = context["edit_generation_debug"]
+            pvd["syntax_validation"] = {
+                "valid": sv.get("valid"),
+                "error": sv.get("error"),
+                "error_type": sv.get("error_type"),
+                "file": sv.get("file"),
+                "skipped": sv.get("skipped"),
+                "language": sv.get("language"),
+            }
+            pvd["patch_verification"] = {
+                "valid": vr.get("valid"),
+                "has_effect": checks.get("has_effect"),
+                "targets_correct_file": checks.get("targets_correct_file"),
+                "is_local": checks.get("is_local"),
+                "reason": vr.get("reason"),
+            }
+            pvd["semantic_feedback"] = context.get("semantic_feedback")
+            pvd["semantic_iteration"] = context.get("semantic_iteration")
+            context["patch_validation_debug"] = pvd
             logger.info(
                 "[patch_debug] reason=%s old_present=%s snippet_match=%s locality=%s failure_type=%s",
                 reject_reason,
@@ -673,7 +680,7 @@ def _run_loop(
             return {
                 "success": False,
                 "error": err,
-                "reason": reason[:500],
+                "reason": reason[:REASON_TRUNCATE_LEN],
                 "attempt": attempt,
                 "failure_type": err,
                 "failure_reason_code": "test_failure",
@@ -706,7 +713,7 @@ def _run_loop(
             "validation_command": test_cmd,
             "semantic_feedback": semantic_feedback,
             "semantic_iteration": sem_iter,
-            "validation_failure_summary": reason[:500] if reason else None,
+            "validation_failure_summary": reason[:REASON_TRUNCATE_LEN] if reason else None,
             "rollback_happened": True,
             "edit_rca_before_snippets": before_snippets,
             "edit_rca_after_snippets": after_snippets,
@@ -724,7 +731,7 @@ def _run_loop(
             return {
                 "success": False,
                 "error": err,
-                "reason": reason[:500],
+                "reason": reason[:REASON_TRUNCATE_LEN],
                 "attempt": attempt,
                 "failure_type": err,
                 "failure_reason_code": "test_failure",
@@ -734,7 +741,7 @@ def _run_loop(
             return {
                 "success": False,
                 "error": err,
-                "reason": reason[:500],
+                "reason": reason[:REASON_TRUNCATE_LEN],
                 "attempt": attempt,
                 "failure_type": err,
                 "failure_reason_code": "test_failure",
@@ -758,7 +765,7 @@ def _run_loop(
             context["instruction"] = inst.strip()
         if attempt >= max_attempts:
             _run_strategy_explorer(current_instruction, hints, trajectory_history, context, project_root)
-        trajectory_history.append({"attempt": attempt, "failure_type": err, "reason": reason[:300]})
+        trajectory_history.append({"attempt": attempt, "failure_type": err, "reason": reason[:TRAJECTORY_REASON_MAX]})
         _append_trajectory_on_fail(
             current_instruction, context, changes, patch_plan, reason, err, None, project_root, hints=hints
         )
