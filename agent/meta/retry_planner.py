@@ -54,6 +54,8 @@ RETRY_STRATEGIES = frozenset({
     "retry_edit_with_different_patch",
     "search_symbol_dependencies",
 })
+# Model may output "rewrite_query"; treat as rewrite_retrieval_query
+STRATEGY_ALIASES = {"rewrite_query": "rewrite_retrieval_query"}
 FALLBACK_STRATEGY = "generate_new_plan"
 
 
@@ -130,12 +132,19 @@ Produce retry hints as JSON."""
             if end > idx:
                 obj = json.loads(out[idx : end + 1])
                 strategy = str(obj.get("strategy", "")).strip()
+                if strategy in STRATEGY_ALIASES:
+                    strategy = STRATEGY_ALIASES[strategy]
                 if strategy not in RETRY_STRATEGIES:
                     logger.warning("[retry_planner] unrecognised strategy %r, using fallback", strategy or "(empty)")
                     strategy = FALLBACK_STRATEGY
+                rq = obj.get("rewrite_query", "") or ""
+                if not rq and obj.get("rewrite_queries"):
+                    rq_list = obj.get("rewrite_queries")
+                    rq = rq_list[0] if isinstance(rq_list, list) and rq_list else ""
+                rewrite_query = str(rq)[:500]
                 return RetryHints(
                     strategy=strategy,
-                    rewrite_query=str(obj.get("rewrite_query", "") or "")[:500],
+                    rewrite_query=rewrite_query,
                     plan_override=str(obj.get("plan_override") or "") if obj.get("plan_override") else None,
                     retrieve_files=obj.get("retrieve_files") or [],
                 )

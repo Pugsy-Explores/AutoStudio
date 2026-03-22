@@ -621,6 +621,7 @@ def run_deterministic(
     log_event_fn=None,
     retry_context: dict | None = None,
     max_runtime_seconds: int | None = None,
+    plan_result: dict | None = None,
 ) -> tuple[AgentState, dict]:
     """
     Run deterministic loop: get_plan -> execution_loop (goal evaluator on plan exhaustion, no step retries).
@@ -628,6 +629,9 @@ def run_deterministic(
     errors_encountered, tool_calls, plan_result, start_time.
 
     Phase 5: retry_context (previous_attempts, critic_feedback) is passed to get_plan when provided.
+
+    When plan_result is provided (e.g. from run_hierarchical compatibility path), skip redundant get_plan
+    to avoid duplicate intent + planner model calls.
     """
     log_fn = log_event_fn or log_event
     # Phase 4C: Context reset safety at request entry (no stale intent_classification)
@@ -653,13 +657,14 @@ def run_deterministic(
         context=context,
     )
     state.context.pop("intent_classification", None)
-    plan_result = get_plan(
-        instruction,
-        trace_id=trace_id,
-        log_event_fn=log_fn,
-        retry_context=retry_context,
-        state=state,
-    )
+    if plan_result is None:
+        plan_result = get_plan(
+            instruction,
+            trace_id=trace_id,
+            log_event_fn=log_fn,
+            retry_context=retry_context,
+            state=state,
+        )
     if trace_id:
         log_fn(trace_id, "planner_decision", {"plan": plan_result})
 
@@ -720,6 +725,8 @@ def run_hierarchical(
         })
 
     if parent_plan["compatibility_mode"]:
+        phases = parent_plan.get("phases", [])
+        plan_from_parent = phases[0] if phases else None
         return run_deterministic(
             instruction,
             project_root,
@@ -728,6 +735,7 @@ def run_hierarchical(
             log_event_fn=log_fn,
             retry_context=retry_context,
             max_runtime_seconds=max_runtime_seconds,
+            plan_result=plan_from_parent,
         )
 
     phases = parent_plan.get("phases", [])
