@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from agent.meta.critic import Diagnosis
+from agent.prompt_system import get_registry
+from config.agent_runtime import RETRY_QUERY_MAX_LEN, RETRY_SUGGESTION_MAX_LEN
 
 if TYPE_CHECKING:
     from agent.meta.trajectory_memory import TrajectoryMemory
@@ -54,8 +56,13 @@ RETRY_STRATEGIES = frozenset({
     "retry_edit_with_different_patch",
     "search_symbol_dependencies",
 })
-# Model may output "rewrite_query"; treat as rewrite_retrieval_query
-STRATEGY_ALIASES = {"rewrite_query": "rewrite_retrieval_query"}
+# Prompt uses different names than code; alias model output -> canonical strategy
+STRATEGY_ALIASES = {
+    "rewrite_query": "rewrite_retrieval_query",
+    "retry_patch": "retry_edit_with_different_patch",
+    "expand_search": "expand_search_scope",
+    "search_dependencies": "search_symbol_dependencies",
+}
 FALLBACK_STRATEGY = "generate_new_plan"
 
 
@@ -104,23 +111,25 @@ def plan_retry(goal: str, diagnosis: Diagnosis) -> RetryHints:
     Returns:
         RetryHints with strategy, rewrite_query, plan_override, retrieve_files
     """
-    prompt = f"""Goal: {goal}
-Diagnosis:
-  failure_type: {diagnosis.failure_type}
-  affected_step: {diagnosis.affected_step}
-  suggestion: {diagnosis.suggestion}
-
-Produce retry hints as JSON."""
+    registry = get_registry()
+    user_prompt = registry.get_instructions(
+        "retry_planner_user",
+        variables={
+            "goal": goal,
+            "failure_type": diagnosis.failure_type or "",
+            "affected_step": diagnosis.affected_step or "",
+            "suggestion": diagnosis.suggestion or "",
+        },
+    )
+    system = registry.get_instructions("retry_planner")
 
     default_strategy = _strategy_from_diagnosis(diagnosis)
 
     try:
         from agent.models.model_client import call_reasoning_model
-        from agent.prompt_system import get_registry
 
-        system = get_registry().get_instructions("retry_planner")
         out = call_reasoning_model(
-            prompt,
+            user_prompt,
             system_prompt=system,
             task_name="retry_planning",
             max_tokens=1024,
@@ -141,7 +150,7 @@ Produce retry hints as JSON."""
                 if not rq and obj.get("rewrite_queries"):
                     rq_list = obj.get("rewrite_queries")
                     rq = rq_list[0] if isinstance(rq_list, list) and rq_list else ""
-                rewrite_query = str(rq)[:500]
+                rewrite_query = str(rq)[:RETRY_QUERY_MAX_LEN]
                 return RetryHints(
                     strategy=strategy,
                     rewrite_query=rewrite_query,
@@ -153,7 +162,7 @@ Produce retry hints as JSON."""
 
     return RetryHints(
         strategy=default_strategy,
-        rewrite_query=diagnosis.suggestion[:200] if diagnosis.suggestion else "",
+        rewrite_query=diagnosis.suggestion[:RETRY_SUGGESTION_MAX_LEN] if diagnosis.suggestion else "",
         plan_override=None,
         retrieve_files=[],
     )
