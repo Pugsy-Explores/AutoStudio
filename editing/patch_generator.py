@@ -5,14 +5,8 @@ import os
 import re
 from pathlib import Path
 
+from agent.edit.edit_proposal_generator import generate_edit_proposals
 from agent.retrieval.task_semantics import instruction_suggests_docs_consistency
-from editing.grounded_patch_generator import (
-    generate_grounded_candidates,
-    grounded_generation_telemetry,
-    select_best_candidate,
-    validate_grounded_candidate,
-    validate_semantic_grounded_candidate,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -205,9 +199,16 @@ def to_structured_patches(plan: dict, instruction: str, context: dict) -> dict:
     hints = _instruction_py_hints(instruction)
     raw_sorted = sorted(raw_changes, key=lambda c: _hint_sort_key(c, hints) if isinstance(c, dict) else (99, 99, ""))
     changes: list[dict] = []
-    # Stage 24: track grounded generation attempts for telemetry on empty plans
-    _grounded_attempt_count = 0
-    _grounded_success_count = 0
+    # Model-based edit proposals (replaces heuristic grounded generation)
+    model_changes: dict[str, dict] = {}
+    try:
+        proposals = generate_edit_proposals(context, instruction, project_root)
+        for c in proposals:
+            fn = (c.get("file") or "").replace("\\", "/")
+            if fn:
+                model_changes[fn] = c
+    except Exception as e:
+        logger.warning("[patch_generator] edit proposal generation failed: %s", e)
 
     seen_files: set[str] = set()
 
@@ -257,14 +258,11 @@ def to_structured_patches(plan: dict, instruction: str, context: dict) -> dict:
             seen_files.add(file_path.replace("\\", "/"))
             continue
 
-        # Stage 24: grounded patch construction layer.
-        # Try content-driven candidate generation BEFORE falling back to weak structured patches.
-        _grounded_attempt_count += 1
-        grounded_change = _try_grounded_generation(instruction, file_path, project_root)
-        if grounded_change is not None:
-            _grounded_success_count += 1
-            changes.append(grounded_change)
-            seen_files.add(file_path.replace("\\", "/"))
+        # Model-based edit proposal (replaces heuristic grounded generation)
+        file_norm = file_path.replace("\\", "/")
+        if file_norm in model_changes:
+            changes.append(model_changes[file_norm])
+            seen_files.add(file_norm)
             continue
 
         if hints and not _file_matches_instruction_hints(file_path, hints):
@@ -297,7 +295,7 @@ def to_structured_patches(plan: dict, instruction: str, context: dict) -> dict:
 
         changes.append({"file": file_path, "patch": structured_patch, "patch_strategy": "structured"})
 
-    # If everything was skipped (e.g. hint filter) but planner listed files, retry synthetic + grounded.
+    # If everything was skipped (e.g. hint filter) but planner listed files, retry synthetic + model.
     if not changes and raw_changes:
         for c in raw_sorted:
             if not isinstance(c, dict):
@@ -310,18 +308,16 @@ def to_structured_patches(plan: dict, instruction: str, context: dict) -> dict:
                 changes.append({"file": fp, "patch": syn, "patch_strategy": strat})
                 logger.info("[patch_generator] recovered empty plan via synthetic on %s", fp)
                 break
-            grounded = _try_grounded_generation(instruction, fp, project_root)
-            if grounded is not None:
-                changes.append(grounded)
-                logger.info("[patch_generator] recovered empty plan via grounded generation on %s", fp)
+            fp_norm = (fp or "").replace("\\", "/")
+            if fp_norm in model_changes:
+                changes.append(model_changes[fp_norm])
+                logger.info("[patch_generator] recovered empty plan via model proposal on %s", fp)
                 break
 
     out: dict = {"changes": changes}
     if raw_changes and not changes:
         out["patch_generation_reject"] = "weakly_grounded_patch"
-        # Stage 24: if grounded layer ran for all files but found no evidence, record it.
-        if _grounded_attempt_count > 0 and _grounded_success_count == 0:
-            out["generation_rejected_reason"] = "no_grounded_candidate_found"
+        out["generation_rejected_reason"] = "no_valid_patch_candidate"
     return out
 
 
@@ -399,81 +395,3 @@ def _first_symbol_from_context(file_path: str, context: dict) -> str:
     return ""
 
 
-def _try_grounded_generation(
-    instruction: str,
-    file_path: str,
-    project_root: str,
-) -> dict | None:
-    """
-    Stage 24 grounded generation layer.
-    Reads file content, generates evidence-backed candidates, validates the best one.
-    Returns a change dict (with patch_strategy + telemetry fields) or None.
-    """
-    if not file_path or not project_root:
-        return None
-    p = Path(file_path)
-    if not p.is_absolute():
-        p = Path(project_root) / file_path
-    if not p.is_file():
-        return None
-    try:
-        content = p.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-    candidates = generate_grounded_candidates(instruction, file_path, content, project_root)
-    best = select_best_candidate(candidates, instruction)
-    telem = grounded_generation_telemetry(candidates, best)
-
-    if best is None:
-        logger.info(
-            "[patch_generator:grounded] no candidates found for %s (instruction=%r...)",
-            file_path,
-            instruction[:60],
-        )
-        return None
-
-    ok, reject_reason = validate_grounded_candidate(best, content)
-    if not ok:
-        telem["generation_rejected_reason"] = reject_reason
-        telem["candidate_rejected_semantic_reason"] = None
-        logger.info(
-            "[patch_generator:grounded] candidate rejected for %s: strategy=%s reason=%s",
-            file_path,
-            best.strategy,
-            reject_reason,
-        )
-        return None
-
-    # Stage 26: semantic post-generation checks
-    sem_ok, sem_reject = validate_semantic_grounded_candidate(best, instruction)
-    if not sem_ok:
-        telem["generation_rejected_reason"] = sem_reject
-        telem["candidate_rejected_semantic_reason"] = sem_reject
-        logger.info(
-            "[patch_generator:grounded] candidate rejected (semantic) for %s: strategy=%s reason=%s",
-            file_path,
-            best.strategy,
-            sem_reject,
-        )
-        return None
-
-    telem["selected_candidate_out_of_n"] = len(candidates)
-    telem["candidate_semantic_match_score"] = best.extra.get("semantic_match_score")
-    telem["requested_symbol_name"] = best.extra.get("requested_symbol_name")
-    telem["requested_return_value"] = best.extra.get("requested_return_value")
-    telem["semantic_expectation_type"] = _infer_semantic_expectation_type(instruction)
-
-    logger.info(
-        "[patch_generator:grounded] candidate accepted for %s: strategy=%s evidence_type=%s",
-        file_path,
-        best.strategy,
-        best.evidence_type,
-    )
-    change: dict = {
-        "file": file_path,
-        "patch": best.patch,
-        "patch_strategy": f"grounded_{best.strategy}",
-    }
-    change.update(telem)
-    return change

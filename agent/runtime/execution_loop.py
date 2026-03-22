@@ -20,6 +20,16 @@ from config.agent_runtime import (
 from editing.diff_planner import plan_diff
 from editing.patch_executor import execute_patch
 from editing.patch_generator import to_structured_patches
+from editing.patch_verification import verify_patch_plan
+from editing.syntax_validation import validate_syntax_plan
+from editing.semantic_feedback import (
+    extract_semantic_feedback,
+    extract_previous_patch,
+    format_semantic_feedback_for_instruction,
+    format_previous_attempt_for_instruction,
+    check_structural_improvement,
+    patch_signature,
+)
 
 from agent.runtime.retry_guard import should_retry_strategy as _should_retry_strategy
 from agent.runtime.syntax_validator import validate_project
@@ -188,6 +198,9 @@ def run_edit_test_fix_loop(
                 logger.debug("[execution_loop] sandbox cleanup: %s", e)
 
 
+MAX_SEMANTIC_RETRIES = 2
+
+
 def _run_loop(
     instruction: str,
     context: dict,
@@ -198,6 +211,7 @@ def _run_loop(
 ) -> dict:
     last_error: str | None = None
     same_error_count = 0
+    semantic_retry_count = 0
 
     base_instruction = instruction
     current_instruction = base_instruction
@@ -246,8 +260,71 @@ def _run_loop(
             }
 
         snapshot = _snapshot_files(changes, project_root)
+        # Phase 1 (per-attempt): overwrite edit_file_snapshot with this attempt's file content
+        first_change_file = (changes[0].get("file") or "").strip() if changes else ""
+        if first_change_file:
+            first_path = _resolve_path(first_change_file, project_root)
+            context["edit_file_snapshot"] = snapshot.get(first_path)
+        else:
+            context["edit_file_snapshot"] = None
+
         patch_plan = to_structured_patches({"changes": changes}, current_instruction, context)
-        if patch_plan.get("patch_generation_reject") == "weakly_grounded_patch":
+
+        # Structural improvement check: retry must differ from previous and target same file/symbol
+        previous_patch = context.get("previous_patch")
+        binding = context.get("edit_binding") or {}
+        changed, same_target, reject_reason = check_structural_improvement(
+            patch_plan, previous_patch, binding
+        )
+        new_prev = extract_previous_patch(patch_plan)
+        prev_sig = patch_signature(previous_patch) if previous_patch else ""
+        new_sig = patch_signature(new_prev) if new_prev else ""
+        sem_iter = {
+            "attempt": attempt,
+            "previous_patch_hash": prev_sig[:64] if prev_sig else None,
+            "new_patch_hash": new_sig[:64] if new_sig else None,
+            "changed": changed,
+            "same_target": same_target,
+        }
+        context["semantic_iteration"] = sem_iter
+        logger.info(
+            "[semantic_iteration] attempt=%s previous_patch_hash=%s new_patch_hash=%s changed=%s",
+            attempt,
+            sem_iter.get("previous_patch_hash"),
+            sem_iter.get("new_patch_hash"),
+            changed,
+        )
+        structural_reject = previous_patch and (not changed or not same_target)
+
+        # Phase 2: Capture generated patch (first change's patch from patch_plan or raw changes)
+        pp_changes = patch_plan.get("changes") or []
+        if pp_changes:
+            _first_pp = pp_changes[0]
+            context["generated_patch"] = _first_pp.get("patch") if isinstance(_first_pp.get("patch"), dict) else _first_pp
+        elif changes:
+            _first_raw = changes[0]
+            context["generated_patch"] = _first_raw.get("patch") if isinstance(_first_raw.get("patch"), dict) else _first_raw
+        else:
+            context["generated_patch"] = None
+
+        # Phase 3: Capture validator inputs before execute_patch
+        context["validator_input"] = {
+            "file_snapshot": context.get("edit_file_snapshot"),
+            "patch": context.get("generated_patch"),
+        }
+
+        if structural_reject:
+            patch_result = {
+                "success": False,
+                "error": "patch_failed",
+                "reason": f"Structural improvement required: {reject_reason}",
+                "patch_parse_ok": True,
+                "patch_apply_ok": False,
+                "patch_reject_reason": reject_reason,
+                "failure_reason_code": reject_reason,
+                "patches_applied": 0,
+            }
+        elif patch_plan.get("patch_generation_reject") == "weakly_grounded_patch":
             _gen_reject_reason = patch_plan.get("generation_rejected_reason")
             patch_result = {
                 "success": False,
@@ -262,7 +339,68 @@ def _run_loop(
                 "generation_rejected_reason": _gen_reject_reason,
             }
         else:
-            patch_result = execute_patch(patch_plan, project_root)
+            # Syntax validation layer: reject invalid syntax before verification
+            syntax_ok, syntax_result = validate_syntax_plan(
+                patch_plan, snapshot, project_root
+            )
+            context["syntax_validation_result"] = syntax_result or {
+                "valid": True,
+                "error": None,
+                "error_type": None,
+                "file": "",
+            }
+            sv = context["syntax_validation_result"]
+            logger.info(
+                "[syntax_validation] valid=%s error=%s error_type=%s",
+                sv.get("valid"),
+                sv.get("error"),
+                sv.get("error_type"),
+            )
+            if not syntax_ok and syntax_result:
+                err_type = syntax_result.get("error_type") or "syntax_error"
+                patch_result = {
+                    "success": False,
+                    "error": "patch_failed",
+                    "reason": syntax_result.get("error", err_type),
+                    "patch_parse_ok": True,
+                    "patch_apply_ok": False,
+                    "patch_reject_reason": err_type,
+                    "failure_reason_code": err_type,
+                    "patches_applied": 0,
+                }
+            else:
+                # Patch verification layer: reject invalid patches before apply
+                verify_ok, verify_result = verify_patch_plan(
+                    patch_plan, snapshot, context, project_root
+                )
+                context["patch_verification_result"] = verify_result or {
+                    "valid": True,
+                    "reason": "ok",
+                    "checks": {"has_effect": True, "targets_correct_file": True, "is_local": True},
+                }
+                vr = context["patch_verification_result"]
+                checks = vr.get("checks", {})
+                logger.info(
+                    "[patch_verification] valid=%s has_effect=%s targets_correct_file=%s is_local=%s reason=%s",
+                    vr.get("valid"),
+                    checks.get("has_effect"),
+                    checks.get("targets_correct_file"),
+                    checks.get("is_local"),
+                    vr.get("reason"),
+                )
+                if not verify_ok and verify_result:
+                    patch_result = {
+                        "success": False,
+                        "error": "patch_failed",
+                        "reason": verify_result.get("reason", "patch_verification_failed"),
+                        "patch_parse_ok": True,
+                        "patch_apply_ok": False,
+                        "patch_reject_reason": verify_result.get("reason"),
+                        "failure_reason_code": verify_result.get("reason"),
+                        "patches_applied": 0,
+                    }
+                else:
+                    patch_result = execute_patch(patch_plan, project_root)
         def _merge_patch_telemetry(extra: dict | None = None) -> None:
             strategies = [c.get("patch_strategy") for c in (patch_plan.get("changes") or []) if c.get("patch_strategy")]
             pp_changes = patch_plan.get("changes") or []
@@ -299,6 +437,8 @@ def _run_loop(
                 if c.get("file"):
                     chosen_file = c.get("file", "")
                     break
+            if not chosen_file:
+                chosen_file = context.get("chosen_target_file") or ""
             base = {
                 "patch_parse_ok": patch_result.get("patch_parse_ok"),
                 "patch_apply_ok": patch_result.get("patch_apply_ok"),
@@ -342,6 +482,78 @@ def _run_loop(
             fr = patch_result.get("failure_reason_code")
             if fr:
                 context["edit_failure_reason"] = fr
+            # Phase 4: Capture patch_validation_debug for RCA (stale vs patch quality)
+            # System audit: STATE_INCONSISTENCY vs GENERATION_CONTRACT_MISMATCH
+            reject_reason = fr or patch_result.get("patch_reject_reason") or "patch_failed"
+            patch_for_debug = context.get("generated_patch")
+            file_snapshot = context.get("edit_file_snapshot")
+            old_snippet = None
+            if isinstance(patch_for_debug, dict) and patch_for_debug.get("action") == "text_sub":
+                old_snippet = patch_for_debug.get("old")
+            file_contains_old = (old_snippet in file_snapshot) if (file_snapshot is not None and old_snippet is not None) else None
+
+            # Step 2: Patch anchoring — compare OLD_SNIPPET vs evidence_span from EDIT_BINDING (verbatim)
+            binding = context.get("edit_binding") or {}
+            evidence_list = binding.get("evidence", []) if isinstance(binding, dict) else []
+            evidence_span = "\n".join(str(e) for e in evidence_list) if evidence_list else None
+            if old_snippet is None or evidence_span is None:
+                snippet_match = None
+            else:
+                snippet_match = (old_snippet in evidence_span) or (old_snippet.strip() in evidence_span)
+
+            # Step 3: Patch locality — patch modifies only evidence span (old must be in evidence)
+            locality = "unknown"
+            if old_snippet and evidence_span:
+                locality = "valid" if snippet_match else "invalid"
+
+            # Step 4: Classify failure (text_sub only; insert/symbol errors remain unclassified)
+            if patch_for_debug and patch_for_debug.get("action") == "text_sub":
+                if file_contains_old is False:
+                    failure_type = "STATE_INCONSISTENCY"
+                elif file_contains_old is True and snippet_match is False:
+                    failure_type = "GENERATION_CONTRACT_MISMATCH"
+                else:
+                    failure_type = None
+            else:
+                failure_type = None
+
+            vr = context.get("patch_verification_result") or {}
+            checks = vr.get("checks", {})
+            sv = context.get("syntax_validation_result") or {}
+            context["patch_validation_debug"] = {
+                "reason": reject_reason,
+                "file_contains_old_snippet": file_contains_old,
+                "old_snippet": old_snippet[:200] + "..." if (old_snippet and len(old_snippet) > 200) else old_snippet,
+                "evidence_span": evidence_span[:300] + "..." if (evidence_span and len(evidence_span) > 300) else evidence_span,
+                "snippet_match": snippet_match,
+                "locality": locality,
+                "failure_type": failure_type,
+                "syntax_validation": {
+                    "valid": sv.get("valid"),
+                    "error": sv.get("error"),
+                    "error_type": sv.get("error_type"),
+                    "file": sv.get("file"),
+                    "skipped": sv.get("skipped"),
+                    "language": sv.get("language"),
+                },
+                "patch_verification": {
+                    "valid": vr.get("valid"),
+                    "has_effect": checks.get("has_effect"),
+                    "targets_correct_file": checks.get("targets_correct_file"),
+                    "is_local": checks.get("is_local"),
+                    "reason": vr.get("reason"),
+                },
+                "semantic_feedback": context.get("semantic_feedback"),
+                "semantic_iteration": context.get("semantic_iteration"),
+            }
+            logger.info(
+                "[patch_debug] reason=%s old_present=%s snippet_match=%s locality=%s failure_type=%s",
+                reject_reason,
+                file_contains_old,
+                snippet_match,
+                locality,
+                failure_type,
+            )
             _rollback_snapshot(snapshot, project_root)
             _record_rollback(project_root)
             last_error, same_error_count = _update_same_error(last_error, same_error_count, err)
@@ -434,6 +646,39 @@ def _run_loop(
         stderr = test_result.get("stderr", "")
         reason = (stdout + "\n" + stderr).strip() or "tests failed"
         context["edit_failure_reason"] = "test_failure"
+
+        # Semantic feedback: extract structured failure for EDIT retry
+        semantic_feedback = extract_semantic_feedback(test_result)
+        context["semantic_feedback"] = semantic_feedback
+        fb_summary = semantic_feedback.get("failure_summary", "")
+        fb_count = len(semantic_feedback.get("failing_tests", []))
+        logger.info(
+            "[semantic_feedback] failure_summary=%s failing_tests_count=%s",
+            fb_summary[:100] + "..." if len(fb_summary) > 100 else fb_summary,
+            fb_count,
+        )
+
+        # Store previous attempt for improvement contract (change enforcement only)
+        context["previous_patch"] = extract_previous_patch(patch_plan)
+        context["previous_failure"] = {
+            "failure_summary": fb_summary,
+            "failing_tests": semantic_feedback.get("failing_tests", []),
+        }
+
+        # Bound semantic retries: max 2 per EDIT step
+        semantic_retry_count += 1
+        if semantic_retry_count > MAX_SEMANTIC_RETRIES:
+            _record_failure(project_root)
+            _merge_patch_telemetry({"semantic_feedback": semantic_feedback})
+            return {
+                "success": False,
+                "error": err,
+                "reason": reason[:500],
+                "attempt": attempt,
+                "failure_type": err,
+                "failure_reason_code": "test_failure",
+            }
+
         # RCA telemetry: capture before/after snippets before rollback (Stage 22)
         before_snippets = {}
         after_snippets = {}
@@ -454,9 +699,13 @@ def _run_loop(
         # Stage 25: import/env telemetry for validation failures
         import_telem = detect_likely_import_shadowing(reason)
         chosen_target = (changes[0].get("file") if changes else None) or ""
+        sem_iter = context.get("semantic_iteration") or {}
+        context["semantic_iteration"] = sem_iter
         _merge_patch_telemetry({
             "patch_reject_reason": "validation_tests_failed",
             "validation_command": test_cmd,
+            "semantic_feedback": semantic_feedback,
+            "semantic_iteration": sem_iter,
             "validation_failure_summary": reason[:500] if reason else None,
             "rollback_happened": True,
             "edit_rca_before_snippets": before_snippets,
@@ -493,6 +742,20 @@ def _run_loop(
         evaluation = _Eval(reason=reason, status="FAILURE")
         diagnosis, hints = _critic_and_retry(current_instruction, context, evaluation)
         _apply_hints(base_instruction, context, hints)
+        # Augment instruction with PREVIOUS_ATTEMPT and improvement constraint
+        prev_patch = context.get("previous_patch")
+        prev_failure = context.get("previous_failure")
+        if prev_patch and prev_failure:
+            fb_text = format_previous_attempt_for_instruction(prev_patch, prev_failure)
+        else:
+            fb_text = format_semantic_feedback_for_instruction(semantic_feedback)
+        if fb_text:
+            inst = (context.get("instruction", base_instruction)) + "\n\n" + fb_text
+            # Maintain same binding: do not change target file or symbol
+            binding = context.get("edit_binding") or {}
+            if binding.get("file") or binding.get("symbol"):
+                inst += f"\nMaintain same target: file={binding.get('file', '')}, symbol={binding.get('symbol', '')}."
+            context["instruction"] = inst.strip()
         if attempt >= max_attempts:
             _run_strategy_explorer(current_instruction, hints, trajectory_history, context, project_root)
         trajectory_history.append({"attempt": attempt, "failure_type": err, "reason": reason[:300]})
