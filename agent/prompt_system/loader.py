@@ -160,6 +160,9 @@ _LEGACY_MAP: dict[str, str] = {
     "context_interpreter": "context_interpreter",
     "patch_generator": "patch_generator",
     "bundle_selector": "bundle_selector",
+    "edit_proposal_system": "edit_proposal_system",
+    "edit_proposal_user": "edit_proposal_user",
+    "retry_planner_user": "retry_planner_user",
 }
 
 

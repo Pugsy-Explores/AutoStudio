@@ -36,6 +36,9 @@ _DEFAULT_REGISTRY: dict[str, tuple[ModelType, ...]] = {
     "context_interpreter": (ModelType.REASONING,),
     "patch_generator": (ModelType.REASONING,),
     "bundle_selector": (ModelType.SMALL,),
+    "edit_proposal_system": (ModelType.REASONING,),
+    "edit_proposal_user": (ModelType.REASONING,),
+    "retry_planner_user": (ModelType.REASONING,),
 }
 
 
