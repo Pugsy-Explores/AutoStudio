@@ -411,6 +411,21 @@ def resolve_edit_targets_for_plan(
         except (ValueError, OSError):
             pass
 
+    # EDIT_BINDING fallback: when ranked is empty, use edit_binding from ranked_context[0]
+    if not ranked:
+        binding = context.get("edit_binding")
+        if isinstance(binding, dict) and binding.get("file"):
+            root = Path(project_root).resolve()
+            fp = binding["file"]
+            p = Path(fp) if Path(fp).is_absolute() else root / fp
+            try:
+                if p.is_file():
+                    rel = str(p.relative_to(root)).replace("\\", "/")
+                    if not is_validation_script_path(rel):
+                        ranked = [(rel, 0, "edit_binding")]
+            except (ValueError, OSError):
+                pass
+
     # Stage 28: telemetry for source vs validator preference
     top_path = ranked[0][0] if ranked else ""
     source_preferred = (

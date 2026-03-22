@@ -393,6 +393,7 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
                 fp = str(item.get("file", "")).strip()
                 if fp and fp not in _samples:
                     _samples.append(fp)
+    binding = context.get("edit_binding")
     context["edit_grounding_telemetry"] = {
         "ranked_context_items": rc_n,
         "prior_phase_ranked_items": prc_n,
@@ -401,6 +402,8 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
         "plan_diff_changes": len(changes),
         "instruction_path_injects": rm.get("instruction_path_injects"),
         "context_file_sample": _samples[:6],
+        "edit_binding_file": (binding.get("file") if isinstance(binding, dict) else None),
+        "edit_binding_evidence_count": (len(binding.get("evidence", [])) if isinstance(binding, dict) else 0),
     }
 
     if changes:
@@ -483,6 +486,26 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
         groups = [changes]
     else:
         groups = resolve_result.get("sequential_groups", [changes])
+
+    # Phase 1: Capture file snapshot before EDIT execution (diagnostic for patch rejection RCA)
+    file_path = context.get("chosen_target_file") or context.get("edit_target_file")
+    if file_path and changes:
+        first_file = (changes[0].get("file") or "").strip() or file_path
+        root = Path(project_root).resolve()
+        p = Path(first_file)
+        if not p.is_absolute():
+            p = root / first_file
+        try:
+            p = p.resolve()
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as f:
+                    context["edit_file_snapshot"] = f.read()
+            else:
+                context["edit_file_snapshot"] = None
+        except Exception:
+            context["edit_file_snapshot"] = None
+    else:
+        context["edit_file_snapshot"] = None
 
     all_modified: list = []
     all_patches = 0
@@ -1203,6 +1226,19 @@ def dispatch(step: dict, state: AgentState) -> dict:
         return raw
 
     if action == Action.EDIT.value:
+        from agent.execution.edit_binding import build_edit_binding
+
+        binding = build_edit_binding(state)
+        state.context["edit_binding"] = binding
+        if binding:
+            state.context["chosen_target_file"] = binding.get("file") or ""
+            state.context["chosen_symbol"] = binding.get("symbol") or ""
+        logger.info(
+            "[edit_binding] file=%s symbol=%s evidence_count=%d",
+            binding.get("file") if binding else None,
+            binding.get("symbol") if binding else None,
+            len(binding.get("evidence", [])) if binding else 0,
+        )
         raw = _policy_engine.execute_with_policy(step, state)
         state.context["tool_node"] = chosen_tool
         return raw
