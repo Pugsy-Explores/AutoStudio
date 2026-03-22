@@ -16,6 +16,13 @@ import re
 from pathlib import Path
 
 from agent.models.model_client import call_reasoning_model
+from agent.prompt_system import get_registry
+from config.agent_runtime import SERENA_PROJECT_DIR
+from config.editing_config import (
+    EDIT_PROPOSAL_EVIDENCE_MAX,
+    EDIT_PROPOSAL_MAX_CONTENT,
+    EDIT_PROPOSAL_SYMBOL_BLOCK_MAX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +35,9 @@ def _extract_symbol_block_from_file(content: str, symbol: str) -> str:
     Returns a substring of content (file-derived, so always in content).
     """
     if not content.strip():
-        return content[:500] if content else ""
+        return content[:EDIT_PROPOSAL_SYMBOL_BLOCK_MAX] if content else ""
     if not symbol or not symbol.strip():
-        return content[:500]
+        return content[:EDIT_PROPOSAL_SYMBOL_BLOCK_MAX]
 
     lines = content.split("\n")
     start_idx = None
@@ -44,7 +51,7 @@ def _extract_symbol_block_from_file(content: str, symbol: str) -> str:
             break
 
     if start_idx is None:
-        return content[:500]
+        return content[:EDIT_PROPOSAL_SYMBOL_BLOCK_MAX]
 
     result = [lines[start_idx]]
     for i in range(start_idx + 1, len(lines)):
@@ -73,7 +80,7 @@ def _ensure_evidence_file_consistency(
     Returns evidence guaranteed to be a substring of full_content.
     """
     if not evidence_text or evidence_text.strip() == _NO_EVIDENCE_PLACEHOLDER:
-        return _extract_symbol_block_from_file(full_content, symbol) or full_content[:500]
+        return _extract_symbol_block_from_file(full_content, symbol) or full_content[:EDIT_PROPOSAL_SYMBOL_BLOCK_MAX]
 
     stripped = evidence_text.strip()
     if stripped and stripped in full_content:
@@ -84,20 +91,7 @@ def _ensure_evidence_file_consistency(
         "[edit_proposal] evidence not in file, refreshing from full_content (symbol=%s)",
         symbol or "(none)",
     )
-    return _extract_symbol_block_from_file(full_content, symbol) or full_content[:500]
-
-
-PATCH_SYSTEM_PROMPT = """You are editing code. Produce a minimal valid patch.
-
-Output exactly one JSON object with:
-- action: "text_sub" for string replacement, or "insert" for adding code at a symbol
-- For text_sub: "old" (exact substring to replace from the file), "new" (replacement)
-- For insert: "symbol" (function/class name), "target_node": "function_body_start", "code" (code to add)
-
-CRITICAL for text_sub: "old" must be an EXACT copy of text from the file. No placeholders.
-If unsure, copy the exact line(s) from the file content below.
-
-Output ONLY the JSON object, no markdown, no explanation."""
+    return _extract_symbol_block_from_file(full_content, symbol) or full_content[:EDIT_PROPOSAL_SYMBOL_BLOCK_MAX]
 
 
 def _build_proposal_from_binding(
@@ -140,10 +134,33 @@ def _build_proposal_from_binding(
     }
 
 
-def _parse_model_patch(raw: str) -> dict | None:
-    """Extract JSON patch from model output."""
+def _compute_edit_generation_debug(
+    patch: dict,
+    full_content: str,
+    target_file: str,
+) -> dict:
+    """Compute observability fields for patch_debug. No heuristics, pure checks."""
+    old_present = None
+    is_noop = None
+    grounded = None
+    if patch and patch.get("action") == "text_sub":
+        old_snippet = patch.get("old", "")
+        new_snippet = patch.get("new", "")
+        old_present = old_snippet in full_content if old_snippet else False
+        is_noop = (old_snippet == new_snippet) if (old_snippet and new_snippet is not None) else False
+        grounded = old_present
+    return {
+        "target_file": target_file,
+        "old_present": old_present,
+        "is_noop": is_noop,
+        "grounded": grounded,
+    }
+
+
+def _parse_model_patch(raw: str) -> tuple[dict | None, dict]:
+    """Extract JSON patch from model output. Returns (patch_dict | None, meta)."""
     if not raw or not raw.strip():
-        return None
+        return (None, {})
     text = raw.strip()
     # Strip markdown code block if present
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
@@ -152,74 +169,77 @@ def _parse_model_patch(raw: str) -> dict | None:
     try:
         obj = json.loads(text)
     except json.JSONDecodeError:
-        return None
+        return (None, {})
     if not isinstance(obj, dict):
-        return None
+        return (None, {})
+    meta: dict = {}
+    if "confident" in obj:
+        meta["confident"] = bool(obj["confident"])
     action = obj.get("action")
     if action == "text_sub":
         old = obj.get("old", "")
         new = obj.get("new", "")
         if not str(old).strip():
-            return None
-        return {"action": "text_sub", "old": str(old), "new": str(new)}
+            return (None, meta)
+        return ({"action": "text_sub", "old": str(old), "new": str(new)}, meta)
     if action == "insert":
         symbol = obj.get("symbol", "")
         code = obj.get("code", "")
         target_node = obj.get("target_node", "function_body_start")
         if not symbol or not str(code).strip():
-            return None
+            return (None, meta)
         valid_nodes = (
             "function_body_start", "function_body", "class_body_start", "class_body",
             "statement", "statement_after", "if_block", "try_block", "with_block", "for_block",
         )
         if target_node not in valid_nodes:
             target_node = "function_body_start"
-        return {
+        return ({
             "action": "insert",
             "symbol": symbol,
             "target_node": target_node,
             "code": str(code).strip(),
-        }
-    return None
+        }, meta)
+    return (None, meta)
 
 
-def _generate_patch_via_model(proposal: dict) -> dict | None:
-    """Call reasoning model to produce a patch. Returns patch dict or None."""
+def _generate_patch_via_model(proposal: dict) -> tuple[dict | None, dict]:
+    """Call reasoning model to produce a patch. Returns (patch dict | None, meta)."""
     instruction = proposal.get("instruction", "")
     full_content = proposal.get("full_content", "")
     evidence = proposal.get("evidence", "")
     symbol = proposal.get("symbol", "")
 
     # Truncate file content to avoid token limits; keep enough for context
-    max_content = 8000
-    if len(full_content) > max_content:
-        full_content = full_content[:max_content] + "\n\n... (truncated)"
+    if len(full_content) > EDIT_PROPOSAL_MAX_CONTENT:
+        full_content = full_content[:EDIT_PROPOSAL_MAX_CONTENT] + "\n\n... (truncated)"
+    evidence_truncated = evidence[:EDIT_PROPOSAL_EVIDENCE_MAX]
 
-    prompt = f"""Instruction:
-{instruction}
+    target_file = proposal.get("file", "")
+    symbol_display = symbol or "(any)"
 
-Target file: {proposal.get("file", "")}
-Symbol: {symbol or "(any)"}
-
-Relevant context:
-{evidence[:1500]}
-
-Full file content:
-```
-{full_content}
-```
-
-Produce a minimal valid patch (JSON only):"""
+    registry = get_registry()
+    system_prompt = registry.get_instructions("edit_proposal_system")
+    user_prompt = registry.get_instructions(
+        "edit_proposal_user",
+        variables={
+            "instruction": instruction,
+            "target_file": target_file,
+            "symbol": symbol_display,
+            "evidence": evidence_truncated,
+            "full_content": full_content,
+        },
+    )
 
     try:
         response = call_reasoning_model(
-            prompt,
-            system_prompt=PATCH_SYSTEM_PROMPT,
+            user_prompt,
+            system_prompt=system_prompt,
             task_name="planner",
         )
     except Exception as e:
         logger.warning("[edit_proposal_generator] model call failed: %s", e)
-        return None
+        return (None, {})
 
     return _parse_model_patch(response)
 
@@ -234,7 +254,7 @@ def generate_edit_proposals(context: dict, instruction: str, project_root: str |
     root = (
         project_root
         or context.get("project_root")
-        or os.environ.get("SERENA_PROJECT_DIR")
+        or SERENA_PROJECT_DIR
         or os.getcwd()
     )
     binding = context.get("edit_binding")
@@ -253,16 +273,29 @@ def generate_edit_proposals(context: dict, instruction: str, project_root: str |
     if not proposal:
         return []
 
-    patch = _generate_patch_via_model(proposal)
+    patch, meta = _generate_patch_via_model(proposal)
     if not patch:
         logger.info("[edit_proposal_generator] no valid patch from model for %s", proposal.get("file"))
         return []
 
     file_path = proposal.get("file", "")
+    full_content = proposal.get("full_content", "")
+    edit_generation_debug = _compute_edit_generation_debug(patch, full_content, file_path)
+    if "confident" in meta:
+        edit_generation_debug["confident"] = meta["confident"]
+    logger.info(
+        "[edit_generation] target_file=%s old_present=%s is_noop=%s grounded=%s confident=%s",
+        edit_generation_debug.get("target_file"),
+        edit_generation_debug.get("old_present"),
+        edit_generation_debug.get("is_noop"),
+        edit_generation_debug.get("grounded"),
+        edit_generation_debug.get("confident"),
+    )
     return [
         {
             "file": file_path,
             "patch": patch,
             "patch_strategy": "model_generated",
+            "edit_generation_debug": edit_generation_debug,
         }
     ]
