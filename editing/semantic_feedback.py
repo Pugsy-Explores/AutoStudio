@@ -13,6 +13,7 @@ _MAX_FAILING_TESTS = 5
 _MAX_ERROR_LEN = 200
 _MAX_EXPECTED_LEN = 100
 _MAX_ACTUAL_LEN = 100
+_FAILURE_EXPLANATION_MAX = 400
 
 
 def extract_semantic_feedback(test_result: dict) -> dict:
@@ -144,6 +145,121 @@ def format_semantic_feedback_for_instruction(semantic_feedback: dict) -> str:
     return "\n".join(lines)
 
 
+# --- Causal failure feedback (constraint-level, no solution hints) ---
+
+def derive_failure_explanation(
+    context: dict,
+    *,
+    patch_result: dict | None = None,
+    semantic_feedback: dict | None = None,
+) -> str:
+    """
+    Derive short factual failure_explanation from existing signals.
+    No heuristics, no solution hints. Only what failed and why (constraint-level).
+    """
+    pvd = context.get("patch_validation_debug") or {}
+    reject_reason = (
+        (patch_result or {}).get("patch_reject_reason")
+        or (patch_result or {}).get("failure_reason_code")
+        or pvd.get("reason")
+        or ""
+    )
+    reject_reason = str(reject_reason).strip().lower()
+
+    # Patch reject reasons (pre-apply)
+    if reject_reason == "patch_unchanged" or reject_reason == "patch_unchanged_repeat":
+        return "Your patch did not modify the file (old == new)."
+    if reject_reason == "no_progress_repeat":
+        return "You repeated a previously attempted patch. Produce a different change."
+    if reject_reason == "no_effect_change":
+        return "Your patch did not modify the file (old == new)."
+    if reject_reason == "patch_apply_failed":
+        return "The OLD snippet does not exist in the current file content."
+    if reject_reason == "wrong_target_file":
+        return "The patch targeted a different file than the intended edit target."
+    if reject_reason == "weakly_grounded_patch":
+        return "The patch is not grounded in the provided file content."
+    if reject_reason in ("target_not_found", "no_meaningful_diff"):
+        return "The OLD snippet does not exist in the current file content."
+
+    # Syntax validation
+    sv = pvd.get("syntax_validation") or context.get("syntax_validation_result") or {}
+    if not sv.get("valid") and sv.get("error"):
+        err = str(sv.get("error", ""))[:200]
+        return f"The patch produces invalid syntax: {err}"
+
+    # Verification checks
+    pv = pvd.get("patch_verification") or {}
+    if not pv.get("valid") and pv.get("reason"):
+        return f"The patch failed verification: {pv.get('reason', '')}"[:_FAILURE_EXPLANATION_MAX]
+
+    # Test failure (semantic_feedback)
+    if semantic_feedback and not semantic_feedback.get("tests_passed", True):
+        summary = semantic_feedback.get("failure_summary", "")
+        if summary:
+            s = str(summary)[:_FAILURE_EXPLANATION_MAX - 20]
+            return f"Tests failed: {s}"
+        return "Tests failed."
+
+    # Fallback from reject_reason
+    if reject_reason:
+        return f"The patch was rejected: {reject_reason}."
+
+    return "The previous patch failed."
+
+
+def format_stateful_feedback_for_retry(
+    failures: list[str],
+    attempted_actions: list[str],
+    stagnation_count: int,
+) -> str:
+    """
+    Format FAILURE_STATE block for retry. Exposes accumulated state, no solution hints.
+    Uses action summaries (human-readable) for previous attempts.
+    """
+    last_failures = failures[-3:] if len(failures) > 3 else failures
+    last_attempts = attempted_actions[-3:] if len(attempted_actions) > 3 else attempted_actions
+    fail_lines = ["  - " + (f[:200] + "..." if len(f) > 200 else f) for f in last_failures] if last_failures else ["  (none)"]
+    attempt_lines = ["  - " + s for s in last_attempts] if last_attempts else ["  (none)"]
+    return "\n\n".join([
+        "FAILURE_STATE:",
+        "- Known failures:",
+        "\n".join(fail_lines),
+        "- Previous attempts:",
+        "\n".join(attempt_lines),
+        f"- Stagnation count: {stagnation_count}",
+        "",
+        "REQUIREMENT:",
+        "- You MUST produce a patch that is different from previous attempts.",
+        "- You MUST address at least one of the known failures.",
+        "- Avoid identical patches; modifying same location is allowed if needed.",
+    ])
+
+
+def format_causal_feedback_for_retry(previous_patch: dict, failure_explanation: str) -> str:
+    """
+    Format causal feedback block for retry. Single source of delta.
+    Prepended to instruction. No solution hints.
+    """
+    old_val = (previous_patch.get("old") or "")[:150]
+    new_val = (previous_patch.get("new") or "")[:150]
+    if old_val or new_val:
+        patch_summary = f"old: {old_val!r} -> new: {new_val!r}"
+    else:
+        patch_summary = "(patch summary unavailable)"
+    exp = (failure_explanation or "The previous patch failed.")[:_FAILURE_EXPLANATION_MAX]
+    return "\n\n".join([
+        "PREVIOUS_ATTEMPT:",
+        f"- Patch: {patch_summary}",
+        f"- Failure: {exp}",
+        "",
+        "REQUIREMENT:",
+        "- You MUST produce a DIFFERENT patch.",
+        "- You MUST resolve the above failure.",
+        "- Do NOT repeat or trivially modify the previous patch.",
+    ])
+
+
 # --- Semantic iteration (generalized improvement contract) ---
 
 def extract_previous_patch(patch_plan: dict) -> dict | None:
@@ -175,6 +291,25 @@ def extract_previous_patch(patch_plan: dict) -> dict | None:
         "file": file_path,
         "symbol": symbol or None,
     }
+
+
+_ACTION_SUMMARY_SNIPPET_LEN = 40
+
+
+def summarize_patch_action(patch: dict | None) -> str:
+    """
+    Human-readable summary of what was tried. No AST, no symbol inference beyond existing data.
+    Single source of truth for action-level representation in retry prompt.
+    """
+    if not patch or not isinstance(patch, dict):
+        return "(no patch)"
+    file_path = (patch.get("file") or "").strip()
+    symbol = (patch.get("symbol") or "").strip()
+    old = (patch.get("old") or "").strip()
+    new = (patch.get("new") or "").strip()
+    if symbol:
+        return f"Edited {symbol} in {file_path}: {old[:_ACTION_SUMMARY_SNIPPET_LEN]} → {new[:_ACTION_SUMMARY_SNIPPET_LEN]}"
+    return f"Edited code in {file_path}: {old[:_ACTION_SUMMARY_SNIPPET_LEN]} → {new[:_ACTION_SUMMARY_SNIPPET_LEN]}"
 
 
 def patch_signature(prev: dict | None) -> str:
@@ -230,22 +365,29 @@ def check_structural_improvement(
     new_patch_plan: dict,
     previous_patch: dict | None,
     binding: dict | None,
+    attempted_patches: list[str] | None = None,
 ) -> tuple[bool, bool, str]:
     """
     Check that retry patch is structurally different and targets same file/symbol.
     Returns (changed, same_target, reject_reason).
     reject_reason is non-empty when check fails.
+    If attempted_patches provided and new_sig in it, returns no_progress_repeat.
     """
-    if not previous_patch:
-        return True, True, ""
     new_prev = extract_previous_patch(new_patch_plan)
     if not new_prev:
         return True, True, ""  # No previous from new plan, allow
 
     new_sig = patch_signature(new_prev)
+
+    # Stateful: reject if new patch was already attempted
+    if attempted_patches and new_sig in attempted_patches:
+        return False, True, "no_progress_repeat"
+
+    if not previous_patch:
+        return True, True, ""
     old_sig = patch_signature(previous_patch)
     if new_sig == old_sig:
-        return False, True, "patch_unchanged"
+        return False, True, "patch_unchanged_repeat"
 
     # Same target check: new plan must target binding.file and binding.symbol
     binding_file = (binding or {}).get("file") or ""

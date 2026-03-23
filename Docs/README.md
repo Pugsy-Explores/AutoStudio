@@ -4,6 +4,8 @@
 
 | Document | Description |
 |----------|--------------|
+| [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md) | **Primary:** ReAct flow, tools, schema, EDIT path. |
+| [REACT_QUICK_START.md](REACT_QUICK_START.md) | Quick start for ReAct mode. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Authoritative system architecture: pipeline diagram, component descriptions, data flow, config sections. |
 | [OBSERVABILITY.md](OBSERVABILITY.md) | Telemetry fields, trace logging, retrieval metrics, UX metrics, failure mining metrics. |
 | [PROMPT_ARCHITECTURE.md](PROMPT_ARCHITECTURE.md) | Prompt layer: PromptRegistry (Phase 13), versioning, all prompts, pipeline position, design philosophy, safety risks, testing. |

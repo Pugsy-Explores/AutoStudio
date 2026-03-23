@@ -1,11 +1,12 @@
 # Orchestrator Subsystem (`agent/orchestrator/`)
 
-Top-level agent coordination for the deterministic pipeline: controller, main agent loop, plan resolution (router + planner), replanning, and step validation. This is where "instruction → plan → execute" is assembled and wrapped with attempt-level retries.
+Top-level agent coordination. **Primary:** run_controller → run_hierarchical → execution_loop (ReAct). See [Docs/REACT_ARCHITECTURE.md](../../Docs/REACT_ARCHITECTURE.md). **Legacy (REACT_MODE=0):** plan resolution, replanning.
 
 ## Responsibilities
 
-- **Controller**: `run_controller(...)` is the main programmatic entrypoint; it sets up traces, optional bootstraps, memory hooks, and returns a task summary.
-- **Plan resolution**: `get_plan()` / `get_parent_plan()` consume `RoutedIntent` from `route_production_instruction`; branch on primary intent (DOC, SEARCH, EXPLAIN, INFRA → short-circuit; EDIT, VALIDATE, AMBIGUOUS, COMPOUND-flat → planner).
+- **Controller**: `run_controller(...)` — main entrypoint; traces, bootstraps, memory hooks.
+- **ReAct**: `run_hierarchical()` → `execution_loop()`; model chooses actions.
+- **Plan resolution (legacy)**: `get_plan()` / `get_parent_plan()` consume `RoutedIntent`; branch on intent.
 - **Two-phase**: `get_parent_plan` builds hierarchical two-phase parent plans for COMPOUND + two_phase_docs_code.
 - **Agent loop**: execute planned steps deterministically.
 - **Replanning**: adjust plan on failures within bounded limits.

@@ -37,6 +37,9 @@ from agent.retrieval.result_contract import (
 )
 from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline
 from agent.tools import build_context, list_files, read_file, run_command, search_candidates, search_code
+from agent.tools.run_tests import run_tests
+from agent.tools.validation_scope import resolve_inner_loop_validation
+from config.agent_runtime import REACT_MODE
 from config.retrieval_config import (
     ANSWER_EVAL_SAMPLE_RATE,
     ENABLE_ANSWER_EVAL,
@@ -337,33 +340,15 @@ def _search_fn(query: str, state: AgentState):
 
 
 def _edit_fn(step: dict, state: AgentState) -> dict:
-    """Dispatch-style: { success, output, error }. Pipeline: plan_diff -> resolve_conflicts -> run_edit_test_fix_loop (single repair path)."""
+    """Dispatch-style: { success, output, error }. Unified pipeline: _edit_react (generate_patch_once -> execute -> validate -> tests)."""
     try:
-        from config.agent_runtime import MAX_EDIT_ATTEMPTS
-        from config.editing_config import MAX_FILES_EDITED, MAX_PATCH_SIZE
-        from editing.conflict_resolver import resolve_conflicts
-        from editing.diff_planner import plan_diff
-        from agent.runtime.execution_loop import run_edit_test_fix_loop
-        from repo_graph.change_detector import RISK_HIGH, detect_change_impact
         from repo_index.indexer import update_index_for_file
+        from repo_graph.repo_map_updater import update_repo_map_for_file
     except ImportError:
-        path = state.context.get("edit_path")
-        if path:
-            print("  [read_file] path:", path)
-            content = read_file(path)
-            out = {"path": path, "content_preview": content[:500] + "..." if len(content) > 500 else content}
-        else:
-            print("  [list_files] cwd (no edit_path)")
-            listing = list_files(".")
-            out = {"message": "No path in context; listed cwd", "files": listing}
-        return {"success": True, "output": out}
+        pass
 
-    instruction = step.get("description") or ""
     context = state.context
-    project_root = context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
-    context["project_root"] = project_root
-    context["instruction"] = instruction
-    # Symbol-retry hints (from mutation_strategies.symbol_retry)
+    context["instruction"] = step.get("description") or ""
     if step.get("edit_target_file_override"):
         context["edit_target_file_override"] = step["edit_target_file_override"]
     if step.get("edit_target_level"):
@@ -371,181 +356,31 @@ def _edit_fn(step: dict, state: AgentState) -> dict:
     if step.get("edit_target_symbol_short"):
         context["edit_target_symbol_short"] = step["edit_target_symbol_short"]
 
-    diff_plan = plan_diff(instruction, context)
-    changes = diff_plan.get("changes", [])
-    context["edit_target_file"] = changes[0].get("file") if changes else None
-    context["edit_target_symbol"] = changes[0].get("symbol") if changes else None
-    context["edit_failure_reason"] = None
-
-    prc = context.get("prior_phase_ranked_context")
-    prc_n = len(prc) if isinstance(prc, list) else 0
-    rc = context.get("ranked_context")
-    rc_n = len(rc) if isinstance(rc, list) else 0
-    stc = context.get("search_target_candidates")
-    stc_n = len(stc) if isinstance(stc, list) else 0
-    rs = context.get("retrieved_symbols")
-    rs_n = len(rs) if isinstance(rs, list) else 0
-    rm = context.get("retrieval_metrics") or {}
-    _samples: list[str] = []
-    for key in ("ranked_context", "prior_phase_ranked_context"):
-        for item in (context.get(key) or [])[:12]:
-            if isinstance(item, dict) and item.get("file"):
-                fp = str(item.get("file", "")).strip()
-                if fp and fp not in _samples:
-                    _samples.append(fp)
-    binding = context.get("edit_binding")
-    context["edit_grounding_telemetry"] = {
-        "ranked_context_items": rc_n,
-        "prior_phase_ranked_items": prc_n,
-        "search_target_candidates": stc_n,
-        "retrieved_symbols_items": rs_n,
-        "plan_diff_changes": len(changes),
-        "instruction_path_injects": rm.get("instruction_path_injects"),
-        "context_file_sample": _samples[:6],
-        "edit_binding_file": (binding.get("file") if isinstance(binding, dict) else None),
-        "edit_binding_evidence_count": (len(binding.get("evidence", [])) if isinstance(binding, dict) else 0),
-    }
-
-    if changes:
-        root = Path(project_root).resolve()
-        for c in changes[:2]:
-            fp = (c.get("file") or "").strip()
-            if not fp:
-                continue
-            p = Path(fp)
-            if not p.is_absolute():
-                p = root / fp
-            try:
-                p = p.resolve()
-            except OSError:
-                context["edit_failure_reason"] = "patch_anchor_not_found"
-                return {
-                    "success": False,
-                    "output": {"failure_reason_code": "patch_anchor_not_found", "planned_changes": changes},
-                    "error": "edit target path invalid",
-                }
-            try:
-                p.relative_to(root)
-            except ValueError:
-                context["edit_failure_reason"] = "patch_anchor_not_found"
-                return {
-                    "success": False,
-                    "output": {"failure_reason_code": "patch_anchor_not_found", "planned_changes": changes},
-                    "error": "edit target outside project root",
-                }
-            if not p.exists():
-                context["edit_failure_reason"] = "patch_anchor_not_found"
-                return {
-                    "success": False,
-                    "output": {"failure_reason_code": "patch_anchor_not_found", "planned_changes": changes},
-                    "error": f"edit target not found: {p}",
-                }
-            if p.is_dir():
-                context["edit_failure_reason"] = "target_is_directory"
-                return {
-                    "success": False,
-                    "output": {"failure_reason_code": "target_is_directory", "planned_changes": changes},
-                    "error": f"edit target is a directory: {p}",
-                }
-
-    if not changes:
-        context["edit_failure_reason"] = "empty_patch"
-        return {
-            "success": False,
-            "output": {"planned_changes": [], "failure_reason_code": "empty_patch"},
-            "error": "no_changes_planned",
-        }
-
-    # Safety limits
-    if len(changes) > MAX_FILES_EDITED:
-        return {
-            "success": False,
-            "output": {"error": "max_files_exceeded"},
-            "error": f"max files exceeded ({len(changes)} > {MAX_FILES_EDITED})",
-        }
-    for c in changes:
-        patch_text = c.get("patch", "")
-        if isinstance(patch_text, str) and patch_text.count("\n") >= MAX_PATCH_SIZE:
-            return {
-                "success": False,
-                "output": {"error": "max_patch_size_exceeded"},
-                "error": "max patch size exceeded",
-            }
-
-    # Change detection (before apply) for risk assessment
-    edited_symbols = [(c.get("file", ""), c.get("symbol", "")) for c in changes]
-    impact = detect_change_impact(edited_symbols, project_root)
-    trace_id = context.get("trace_id")
-    if impact.get("risk_level") == RISK_HIGH and trace_id:
-        from agent.observability.trace_logger import log_event
-        log_event(trace_id, "high_risk_edit", {"impact": impact})
-
-    # Conflict resolution (informational; execution loop re-plans each attempt)
-    resolve_result = resolve_conflicts(diff_plan)
-    if resolve_result.get("valid"):
-        groups = [changes]
-    else:
-        groups = resolve_result.get("sequential_groups", [changes])
-
-    # Phase 1: Capture file snapshot before EDIT execution (diagnostic for patch rejection RCA)
-    file_path = context.get("chosen_target_file") or context.get("edit_target_file")
-    if file_path and changes:
-        first_file = (changes[0].get("file") or "").strip() or file_path
-        root = Path(project_root).resolve()
-        p = Path(first_file)
-        if not p.is_absolute():
-            p = root / first_file
-        try:
-            p = p.resolve()
-            if p.exists():
-                with open(p, "r", encoding="utf-8") as f:
-                    context["edit_file_snapshot"] = f.read()
-            else:
-                context["edit_file_snapshot"] = None
-        except Exception:
-            context["edit_file_snapshot"] = None
-    else:
-        context["edit_file_snapshot"] = None
-
-    all_modified: list = []
-    all_patches = 0
-    for group in groups:
-        if not group:
-            continue
-        loop_result = run_edit_test_fix_loop(
-            instruction, context, project_root, max_attempts=MAX_EDIT_ATTEMPTS
-        )
-        if not loop_result.get("success"):
-            fr = loop_result.get("failure_reason_code") or loop_result.get("failure_type")
-            context["edit_failure_reason"] = fr
-            return {
-                "success": False,
-                "output": {
-                    "error": loop_result.get("error"),
-                    "reason": loop_result.get("reason"),
-                    "failure_reason_code": fr,
-                },
-                "error": loop_result.get("reason", loop_result.get("error")),
-            }
-        all_modified.extend(loop_result.get("files_modified", []))
-        all_patches += loop_result.get("patches_applied", 0)
+    raw = _edit_react(step, state)
+    if not raw.get("success"):
+        context["edit_failure_reason"] = raw.get("output", {}).get("failure_reason_code")
+        return raw
 
     context["edit_failure_reason"] = None
-    for file_path in all_modified:
-        update_index_for_file(file_path, project_root)
-        try:
-            from repo_graph.repo_map_updater import update_repo_map_for_file
-            update_repo_map_for_file(file_path, project_root)
-        except Exception:
-            pass
+    all_modified = raw.get("output", {}).get("files_modified", [])
+    try:
+        for file_path in all_modified:
+            update_index_for_file(file_path, context.get("project_root", ""))
+            try:
+                update_repo_map_for_file(file_path, context.get("project_root", ""))
+            except Exception:
+                pass
+    except NameError:
+        pass
 
     return {
         "success": True,
         "output": {
             "files_modified": list(dict.fromkeys(all_modified)),
-            "patches_applied": all_patches,
-            "planned_changes": changes,
+            "patches_applied": raw.get("output", {}).get("patches_applied", 0),
+            "planned_changes": raw.get("output", {}).get("planned_changes", []),
         },
+        "executed": raw.get("executed", True),
     }
 
 
@@ -1070,11 +905,332 @@ _policy_engine = ExecutionPolicyEngine(
 )
 
 
+def _search_react(query: str, state: AgentState) -> dict:
+    """
+    ReAct-only search: search_candidates + search_code fallback. No filter_and_rank.
+    Returns more raw results; model decides relevance.
+    """
+    project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    state.context.setdefault("project_root", project_root)
+    results: list = []
+    try:
+        out = search_candidates(query, state, artifact_mode="code")
+        results = out.get("candidates") or []
+    except Exception as e:
+        logger.debug("[react_search] search_candidates failed: %s", e)
+    if not results:
+        try:
+            out = search_code(query)
+            results = out.get("results") or []
+        except Exception as e:
+            logger.debug("[react_search] search_code fallback failed: %s", e)
+    return {"results": results[:25], "query": query}
+
+
+def _persist_react_search_to_context(results: list, state: AgentState, query: str) -> None:
+    """
+    Persist ReAct search results into state.context so EDIT has grounding.
+    Populates ranked_context and search_target_candidates (fix for ReAct SEARCH→EDIT context bug).
+    """
+    if not results:
+        return
+    ctx = state.context
+    ranked: list[dict] = []
+    files_seen: set[str] = set()
+    for r in results[:25]:
+        if not isinstance(r, dict):
+            continue
+        f = (r.get("file") or r.get("path") or "").strip()
+        if not f:
+            continue
+        snippet = r.get("snippet") or r.get("content") or ""
+        ranked.append({
+            "file": f,
+            "symbol": str(r.get("symbol") or ""),
+            "snippet": snippet[:600] if snippet else "",
+            "content": snippet[:600] if snippet else "",
+        })
+        if f not in files_seen:
+            files_seen.add(f)
+    ctx["ranked_context"] = ranked
+    ctx["search_target_candidates"] = list(files_seen)[:40]
+
+
+def _generate_patch_once(instruction: str, context: dict, project_root: str) -> dict:
+    """
+    Instruction-driven patch generation. No plan_diff.
+    Uses edit_binding only. ReAct: model must specify path (no system guessing).
+    Deterministic: uses build_edit_binding from ranked_context; fallback to hints only when not react_mode.
+    Returns patch_plan {changes: [...], already_correct?: bool} for execute_patch.
+    """
+    from agent.edit.edit_proposal_generator import generate_edit_proposals
+
+    binding = context.get("edit_binding")
+    react_mode = context.get("react_mode", False)
+    if not binding or not isinstance(binding, dict) or not binding.get("file"):
+        if react_mode:
+            return {"changes": [], "already_correct": False}
+        root_path = Path(project_root).resolve()
+        candidates = list(context.get("search_target_candidates") or [])
+        candidates.extend(re.findall(r"[\w./\\]+\.py\b", instruction or ""))
+        seen: set[str] = set()
+        hints = [x for x in candidates if x and x not in seen and not seen.add(x)]
+        for h in hints:
+            p = Path(h) if Path(h).is_absolute() else root_path / h
+            try:
+                resolved = p.resolve()
+                if resolved.is_file():
+                    try:
+                        rel = str(resolved.relative_to(root_path)).replace("\\", "/")
+                    except ValueError:
+                        rel = str(resolved)
+                    binding = {"file": rel, "symbol": "", "evidence": []}
+                    context["edit_binding"] = binding
+                    context["chosen_target_file"] = binding["file"]
+                    break
+            except OSError:
+                continue
+    if not binding or not binding.get("file"):
+        return {"changes": [], "already_correct": False}
+
+    try:
+        proposals = generate_edit_proposals(context, instruction, project_root)
+    except Exception as e:
+        logger.warning("[react_edit] generate_edit_proposals failed: %s", e)
+        return {"changes": [], "already_correct": False}
+
+    if not proposals:
+        return {"changes": [], "already_correct": False}
+
+    out = {"changes": []}
+    for p in proposals:
+        if p.get("already_correct"):
+            out["already_correct"] = True
+            continue
+        patch = p.get("patch")
+        if patch:
+            out["changes"].append({"file": p.get("file", ""), "patch": patch})
+    return out
+
+
+def _edit_react(step: dict, state: AgentState) -> dict:
+    """
+    Simplified ReAct edit: generate_patch_once → execute_patch → run_tests.
+    No nested loops, no critic, no retry_planner. Failures become observations.
+    """
+    from agent.execution.edit_binding import build_edit_binding
+    from agent.runtime.execution_loop import _rollback_snapshot, _snapshot_files
+    from editing.patch_executor import execute_patch
+
+    instruction = (step.get("description") or "").strip()
+    context = state.context
+    project_root = context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    context["project_root"] = project_root
+    context["instruction"] = instruction
+
+    explicit_path = (step.get("path") or step.get("edit_target_path") or "").strip()
+    if explicit_path:
+        context["edit_target_path"] = explicit_path
+        binding = {"file": explicit_path, "symbol": "", "evidence": []}
+        context["edit_binding"] = binding
+        context["chosen_target_file"] = explicit_path
+        context["chosen_symbol"] = ""
+    else:
+        binding = build_edit_binding(state)
+        context["edit_binding"] = binding
+        if binding:
+            context["chosen_target_file"] = binding.get("file") or ""
+            context["chosen_symbol"] = binding.get("symbol") or ""
+
+    patch_plan = _generate_patch_once(instruction, context, project_root)
+    changes = patch_plan.get("changes") or []
+
+    if patch_plan.get("already_correct") and not changes:
+        val_scope = resolve_inner_loop_validation(project_root, context)
+        test_result = run_tests(project_root, timeout=120, test_cmd=val_scope.get("test_cmd"))
+        passed = test_result.get("passed", False)
+        return {
+            "success": passed,
+            "output": {"passed": passed, "stdout": test_result.get("stdout", ""), "stderr": test_result.get("stderr", "")},
+            "error": None if passed else "tests_failed",
+            "executed": False,
+        }
+
+    if not changes:
+        return {
+            "success": False,
+            "output": {"failure_reason_code": "empty_patch", "planned_changes": [], "target_files": []},
+            "error": "no_changes_planned",
+            "executed": False,
+        }
+
+    snapshot = _snapshot_files(changes, project_root)
+    patch_result = execute_patch(patch_plan, project_root)
+    attempted_files = [c.get("file", "") for c in changes if c.get("file")]
+    if not patch_result.get("success"):
+        _rollback_snapshot(snapshot, project_root)
+        return {
+            "success": False,
+            "output": {
+                "failure_reason_code": patch_result.get("failure_reason_code", "patch_apply_failed"),
+                "reason": patch_result.get("reason", "patch apply failed"),
+                "error": patch_result.get("error"),
+                "patch_applied": False,
+                "files_modified": [],
+                "target_files": attempted_files,
+            },
+            "error": patch_result.get("reason", patch_result.get("error")),
+            "executed": True,
+        }
+
+    from agent.runtime.syntax_validator import validate_project
+
+    files_modified = patch_result.get("files_modified") or attempted_files
+    syn = validate_project(project_root, files_modified)
+    if not syn.get("valid"):
+        _rollback_snapshot(snapshot, project_root)
+        syntax_err = syn.get("error", "syntax check failed")
+        return {
+            "success": False,
+            "output": {
+                "failure_reason_code": "syntax_error",
+                "reason": syntax_err,
+                "syntax_error": syntax_err,
+                "patch_applied": True,
+                "files_modified": files_modified,
+                "target_files": attempted_files,
+            },
+            "error": f"Syntax error: {syntax_err}",
+            "executed": True,
+        }
+
+    val_scope = resolve_inner_loop_validation(project_root, context)
+    test_result = run_tests(project_root, timeout=120, test_cmd=val_scope.get("test_cmd"))
+    passed = test_result.get("passed", False)
+    if not passed:
+        _rollback_snapshot(snapshot, project_root)
+        return {
+            "success": False,
+            "output": {
+                "patch_applied": True,
+                "tests_passed": False,
+                "passed": False,
+                "stdout": test_result.get("stdout", ""),
+                "stderr": test_result.get("stderr", ""),
+                "failure_reason_code": "tests_failed",
+                "files_modified": files_modified,
+                "target_files": attempted_files,
+            },
+            "error": test_result.get("error_type", "test_failure"),
+            "executed": True,
+        }
+
+    changes = [{"file": c.get("file", ""), "symbol": c.get("patch", {}).get("symbol", "")} for c in changes if c.get("file")]
+    return {
+        "success": True,
+        "output": {
+            "patch_applied": True,
+            "tests_passed": True,
+            "files_modified": patch_result.get("files_modified", []),
+            "patches_applied": patch_result.get("patches_applied", 0),
+            "planned_changes": changes,
+            "passed": True,
+            "stdout": test_result.get("stdout", ""),
+            "stderr": test_result.get("stderr", ""),
+        },
+        "executed": True,
+    }
+
+
+def _dispatch_react(step: dict, state: AgentState) -> dict:
+    """
+    ReAct mode: direct tool execution, no policy_engine. Pure functions only.
+    Never blocks; all failures become observations (RETRYABLE, never FATAL).
+    """
+    action = (step.get("action") or "EXPLAIN").upper()
+    project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+
+    def _obs(err: str) -> dict:
+        """Return failure as observation; model decides next action."""
+        return {
+            "success": False,
+            "output": {},
+            "error": err,
+            "classification": ResultClassification.RETRYABLE_FAILURE.value,
+        }
+
+    if action == Action.SEARCH.value:
+        query = (step.get("query") or step.get("description") or "").strip()
+        if not query:
+            return _obs("SEARCH requires non-empty query. Use Args: {\"query\": \"<search terms>\"}")
+        try:
+            raw = _search_react(query, state)
+            results = raw.get("results") or []
+            _persist_react_search_to_context(results, state, query)
+            return {
+                "success": True,
+                "output": raw,
+                "classification": ResultClassification.SUCCESS.value,
+            }
+        except Exception as e:
+            return _obs(f"Search failed: {e}")
+
+    if action == Action.READ.value:
+        path = step.get("path") or step.get("description") or step.get("file") or ""
+        if not path or not str(path).strip():
+            return _obs("READ requires path. Use Args: {\"path\": \"<file path>\"}")
+        try:
+            full_path = Path(path) if Path(path).is_absolute() else Path(project_root) / path
+            content = read_file(str(full_path.resolve()))
+            return {"success": True, "output": content, "classification": ResultClassification.SUCCESS.value}
+        except Exception as e:
+            return _obs(str(e))
+
+    if action == Action.EDIT.value:
+        instruction = (step.get("description") or "").strip()
+        if not instruction:
+            return _obs("EDIT requires non-empty instruction. Use Args: {\"instruction\": \"<what to change>\"}")
+        try:
+            raw = _edit_react(step, state)
+            return {
+                "success": raw.get("success", False),
+                "output": raw.get("output", {}),
+                "error": raw.get("error"),
+                "executed": raw.get("executed", True),
+                "classification": ResultClassification.RETRYABLE_FAILURE.value if not raw.get("success") else ResultClassification.SUCCESS.value,
+            }
+        except Exception as e:
+            return _obs(str(e))
+
+    if action == Action.RUN_TEST.value:
+        try:
+            val_scope = resolve_inner_loop_validation(project_root, state.context)
+            test_cmd = val_scope.get("test_cmd")
+            test_result = run_tests(project_root, timeout=120, test_cmd=test_cmd)
+            passed = test_result.get("passed", False)
+            stdout = test_result.get("stdout", "") or ""
+            stderr = test_result.get("stderr", "") or ""
+            return {
+                "success": passed,
+                "output": {"passed": passed, "stdout": stdout, "stderr": stderr},
+                "error": None if passed else (test_result.get("error_type") or "test_failure"),
+                "classification": ResultClassification.SUCCESS.value if passed else ResultClassification.RETRYABLE_FAILURE.value,
+            }
+        except Exception as e:
+            return _obs(str(e))
+
+    return _obs(f"Unknown action for ReAct: {action}. Use search, open_file, edit, run_tests, or finish.")
+
+
 def dispatch(step: dict, state: AgentState) -> dict:
     """
     Map step action to tool call. ToolGraph restricts tools; Router chooses (with fallback); PolicyEngine runs.
     Returns dict with success, output, error (optional).
     """
+    # ReAct mode: bypass policy_engine entirely. Direct tool execution only.
+    if REACT_MODE and (state.context or {}).get("react_mode"):
+        return _dispatch_react(step, state)
+
     try:
         validate_step_input(step)
     except InvalidStepError as e:
@@ -1153,6 +1309,55 @@ def dispatch(step: dict, state: AgentState) -> dict:
         except Exception as e:
             return {"success": False, "output": {}, "error": str(e)}
 
+    if action == Action.READ.value:
+        path = step.get("description") or step.get("path") or step.get("file") or ""
+        if not path or not path.strip():
+            return {
+                "success": False,
+                "output": "",
+                "error": "READ requires path. Use Args: {\"path\": \"<file path>\"}",
+                "classification": ResultClassification.RETRYABLE_FAILURE.value,
+            }
+        try:
+            project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+            full_path = Path(path) if Path(path).is_absolute() else Path(project_root) / path
+            content = read_file(str(full_path.resolve()))
+            state.context["tool_node"] = chosen_tool
+            return {"success": True, "output": content}
+        except Exception as e:
+            state.context["tool_node"] = chosen_tool
+            return {
+                "success": False,
+                "output": "",
+                "error": str(e),
+                "classification": ResultClassification.RETRYABLE_FAILURE.value,
+            }
+
+    if action == Action.RUN_TEST.value:
+        try:
+            project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+            val_scope = resolve_inner_loop_validation(project_root, state.context)
+            test_cmd = val_scope.get("test_cmd")
+            test_result = run_tests(project_root, timeout=120, test_cmd=test_cmd)
+            stdout = test_result.get("stdout", "") or ""
+            stderr = test_result.get("stderr", "") or ""
+            output = stdout + ("\n" + stderr if stderr else "")
+            state.context["tool_node"] = chosen_tool
+            return {
+                "success": test_result.get("passed", False),
+                "output": {"passed": test_result.get("passed"), "stdout": stdout, "stderr": stderr},
+                "error": None if test_result.get("passed") else (test_result.get("error_type") or "test_failure"),
+                "classification": ResultClassification.SUCCESS.value if test_result.get("passed") else ResultClassification.RETRYABLE_FAILURE.value,
+            }
+        except Exception as e:
+            state.context["tool_node"] = chosen_tool
+            return {
+                "success": False,
+                "output": {"stdout": "", "stderr": str(e)},
+                "error": str(e),
+                "classification": ResultClassification.RETRYABLE_FAILURE.value,
+            }
+
     if action == Action.SEARCH.value:
         if artifact_mode == "docs":
             return {
@@ -1225,6 +1430,8 @@ def dispatch(step: dict, state: AgentState) -> dict:
                 logger.debug("[SEARCH] search_quality_audit skipped: %s", e)
         return raw
 
+    # ReAct: EDIT bypasses policy_engine — ALWAYS go to execution. No pre-execution decision layer.
+    # Planner → Execution → Critic (critic only after patch/test failure, inside execution_loop)
     if action == Action.EDIT.value:
         from agent.execution.edit_binding import build_edit_binding
 
@@ -1239,8 +1446,26 @@ def dispatch(step: dict, state: AgentState) -> dict:
             binding.get("symbol") if binding else None,
             len(binding.get("evidence", [])) if binding else 0,
         )
-        raw = _policy_engine.execute_with_policy(step, state)
+        raw = _edit_fn(step, state)
         state.context["tool_node"] = chosen_tool
+        # Hard invariant: EDIT must have reached execution (executed or precondition prevented)
+        executed = raw.get("executed", True)
+        if not executed:
+            out = raw.get("output") or {}
+            err = str(raw.get("error") or "")
+            fr = (out.get("failure_reason_code") if isinstance(out, dict) else None) or ""
+            preconditions = {
+                "patch_anchor_not_found", "empty_patch", "no_changes_planned",
+                "target_is_directory", "max_files_exceeded", "max_patch_size_exceeded",
+                "no_changes",
+            }
+            is_precondition = (
+                fr in preconditions
+                or "edit target" in err.lower()
+                or "target not found" in err.lower()
+                or "target is a directory" in err.lower()
+            )
+            assert is_precondition, "EDIT never executed"
         return raw
 
     if action == Action.INFRA.value:

@@ -1,0 +1,56 @@
+{
+  "failed_step": {
+    "id": 4,
+    "action": "EXPLAIN",
+    "description": "explain how the app starts",
+    "reason": "r"
+  },
+  "error": "EXPLAIN received non-substantive context: only stubs/placeholders, no implementation bodies",
+  "failure_context": {
+    "failed_action": "EXPLAIN",
+    "reason_code": "insufficient_substantive_context",
+    "error_signal": "insufficient_substantive_context",
+    "search_quality": "weak",
+    "recent_searches": [
+      "find entry point",
+      "find entry point application startup"
+    ],
+    "dominant_artifact_mode": "code",
+    "build_context_empty": false,
+    "failed_step_description": "explain how the app starts",
+    "same_failure_count": 1,
+    "same_recovery_mode_count": 1,
+    "recovery_mode": "need_implementation_search",
+    "recovery_hint": "Search: Where does the application start? Identify main, CLI, or run entry.. explain how the app starts. Search implementation code (not tests): modules under src/, definitions, bodies, and wiring. Prioritize entrypoints: __main__, package __init__, cli/main, settings load or initialization, constructors, and import chains. Related terms: Where, does, the, application, start, Identify."
+  },
+  "recovery_mode": "need_implementation_search",
+  "recovery_hint": "Search: Where does the application start? Identify main, CLI, or run entry.. explain how the app starts. Search implementation code (not tests): modules under src/, definitions, bodies, and wiring. Prioritize entrypoints: __main__, package __init__, cli/main, settings load or initialization, constructors, and import chains. Related terms: Where, does, the, application, start, Identify.",
+  "search_quality": "weak",
+  "retrieval_intent": "need_implementation_bodies",
+  "recent_steps": [
+    {
+      "action": "SEARCH",
+      "success": true,
+      "description": "{'query': 'find entry point'}",
+      "reason_code": null
+    },
+    {
+      "action": "SEARCH",
+      "success": true,
+      "description": "{'query': 'find entry point application startup'}",
+      "reason_code": null
+    },
+    {
+      "action": "BUILD_CONTEXT",
+      "success": true,
+      "description": "{'context_blocks': [{'path': 'app/main.py', 'snippet': 'def main():\\n    ...'}]}",
+      "reason_code": null
+    },
+    {
+      "action": "EXPLAIN",
+      "success": false,
+      "description": "",
+      "reason_code": "insufficient_substantive_context"
+    }
+  ]
+}

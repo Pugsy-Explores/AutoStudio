@@ -1,20 +1,22 @@
 """
-Shared execution loop used by run_agent() and run_deterministic().
+ReAct execution loop for AutoStudio Mode 2 (autonomous).
 
-Phase 3: Single implementation for iteration limits, tool execution, validation,
-replan, and state.record. Behavior is controlled by mode (ExecutionLoopMode) so
-only valid combinations exist and future extensions add new enum values.
+The model selects the next action each iteration via _react_get_next_action().
+Observations are appended to react_history. Execution respects limits from
+agent_config (max steps, tool calls, runtime, iterations).
 """
 
+import json
 import logging
+import re
 import time
 from dataclasses import dataclass
-from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
+from agent.execution.react_schema import validate_action
+from agent.prompt_system.registry import get_registry
 from config.agent_config import (
     MAX_LOOP_ITERATIONS,
-    MAX_REPLAN_ATTEMPTS,
     MAX_STEP_TIMEOUT_SECONDS,
     MAX_STEPS,
     MAX_TASK_RUNTIME_SECONDS,
@@ -22,35 +24,19 @@ from config.agent_config import (
 )
 from agent.execution.executor import StepExecutor
 from agent.execution.policy_engine import ResultClassification
-from agent.models.model_client import GuardrailError
+from agent.models.model_client import GuardrailError, call_reasoning_model
 from agent.memory.state import AgentState
 from agent.memory.step_result import StepResult
-from agent.orchestrator.goal_evaluator import GoalEvaluator
-from agent.orchestrator.replanner import replan
-from agent.orchestrator.validator import validate_step
 
 logger = logging.getLogger(__name__)
-
-# Step retries before replan (run_agent only; deterministic does not retry same step).
-MAX_STEP_RETRIES = 2
-
-
-class ExecutionLoopMode(str, Enum):
-    """
-    Execution loop mode. Avoids separate booleans so no invalid combination
-    (e.g. goal_evaluator + step_retries both True) can be passed.
-    """
-
-    DETERMINISTIC = "deterministic"  # Goal evaluator on plan exhaustion; no step retries; returns loop_output.
-    AGENT = "agent"  # No goal evaluator; step retries before replan; loop_output is None.
 
 
 @dataclass
 class LoopResult:
-    """Result of execution_loop. state always set; loop_output is None when not in deterministic mode."""
+    """Result of execution_loop."""
 
     state: AgentState
-    loop_output: dict | None
+    loop_output: dict | None  # completed_steps, patches_applied, files_modified, errors_encountered, tool_calls, plan_result, start_time, react_history, edit_telemetry
 
 
 def _output_summary(output) -> str:
@@ -62,148 +48,278 @@ def _output_summary(output) -> str:
     return "output=" + (s[:80] + "..." if len(s) > 80 else s)
 
 
+_REACT_TO_STEP = {
+    "search": "SEARCH",
+    "open_file": "READ",
+    "edit": "EDIT",
+    "run_tests": "RUN_TEST",
+}
+
+
+def _react_parse_response(text: str) -> tuple[str | None, str | None, dict | None]:
+    """Parse strict JSON from model output. Returns (thought, action, args) or (None, None, None)."""
+    text = (text or "").strip()
+    if "```" in text:
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if m:
+            text = m.group(1).strip()
+    try:
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            return None, None, None
+        thought = data.get("thought", "") or ""
+        action = (data.get("action") or "").strip().lower()
+        args = data.get("args")
+        if not isinstance(args, dict):
+            args = {}
+        if not action:
+            return None, None, None
+        return thought, action, args
+    except (json.JSONDecodeError, TypeError):
+        return None, None, None
+
+
+def _format_react_error(action: str, error: str) -> str:
+    """Format tool/validation error for observation (clear, actionable)."""
+    return f"""Tool: {action}
+
+Result: failed
+
+Error:
+{error}
+
+Fix your input and try again."""
+
+
+def _format_react_history(history: list) -> str:
+    """Format react_history for prompt injection."""
+    if not history:
+        return "(none yet)"
+    lines = []
+    for entry in history:
+        lines.append(f"Thought: {entry.get('thought', '')}")
+        lines.append(f"Action: {entry.get('action', '')}")
+        lines.append(f"Args: {json.dumps(entry.get('args', {}))}")
+        obs = entry.get("observation", "")
+        lines.append(f"Observation: {obs}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _react_get_next_action(instruction: str, state: AgentState, *, retried: bool = False) -> dict | None:
+    """Call LLM to get next ReAct step. Returns step dict or None (finish)."""
+    history = state.context.setdefault("react_history", [])
+    react_history_str = _format_react_history(history)
+    prompt = get_registry().get_instructions(
+        "react_action",
+        variables={"instruction": instruction, "react_history": react_history_str},
+    )
+    out = call_reasoning_model(prompt, task_name="REACT_ACTION")
+    thought, action_raw, args = _react_parse_response(out)
+
+    if thought is None and action_raw is None:
+        if not retried:
+            history.append({
+                "thought": "(parse failed)",
+                "action": "unknown",
+                "args": {},
+                "observation": _format_react_error("unknown", "Parse error: output must be valid JSON with thought, action, args. No markdown."),
+            })
+            return _react_get_next_action(instruction, state, retried=True)
+        return None
+
+    valid, err = validate_action(action_raw or "", args or {})
+    if not valid:
+        if not retried:
+            history.append({
+                "thought": thought or "",
+                "action": action_raw or "",
+                "args": args or {},
+                "observation": _format_react_error(action_raw or "unknown", err or "Invalid action."),
+            })
+            return _react_get_next_action(instruction, state, retried=True)
+        return None
+
+    if action_raw == "finish":
+        state.context["react_finish"] = True
+        return None
+
+    step_action = _REACT_TO_STEP[action_raw]
+    step = {"id": len(history) + 1, "action": step_action, "artifact_mode": "code", "_react_thought": thought, "_react_action_raw": action_raw, "_react_args": args or {}}
+
+    if action_raw == "search":
+        step["query"] = args["query"]
+        step["description"] = step["query"]
+    elif action_raw == "open_file":
+        step["path"] = args["path"]
+        step["description"] = step["path"]
+    elif action_raw == "edit":
+        step["description"] = args["instruction"]
+        step["path"] = args.get("path", "")
+        step["edit_target_path"] = args.get("path", "")
+    elif action_raw == "run_tests":
+        step["description"] = ""
+    return step
+
+
+def _build_react_observation(step: dict, result, action: str) -> str:
+    """Build readable observation for react_history. No heavy nested JSON."""
+    success = getattr(result, "success", result.get("success") if isinstance(result, dict) else True)
+    err = getattr(result, "error", None) or (result.get("error", "") if isinstance(result, dict) else "")
+
+    def _fail_obs(tool_name: str, msg: str) -> str:
+        return _format_react_error(tool_name, msg)
+
+    if action == "SEARCH":
+        if not success and err:
+            return _fail_obs(step.get("_react_action_raw", "search"), err)
+        out = result.output if hasattr(result, "output") else result.get("output", {})
+        if isinstance(out, dict):
+            results = out.get("results") or out.get("candidates") or []
+            lines = [f"Found {len(results)} result(s)."]
+            for r in results[:12]:
+                if isinstance(r, dict):
+                    f = r.get("file", "")
+                    s = (r.get("snippet") or r.get("content") or "")[:300].replace("\n", " ")
+                    lines.append(f"  {f}: {s}...")
+            return "\n".join(lines)
+        return str(out)[:2000]
+    if action == "READ":
+        if not success and err:
+            return _fail_obs(step.get("_react_action_raw", "open_file"), err)
+        content = result.output if hasattr(result, "output") else result.get("output", "")
+        return str(content)[:8000] if content else ""
+    if action == "EDIT":
+        out = result.output if hasattr(result, "output") else result.get("output", {})
+        if isinstance(out, dict):
+            files = out.get("files_modified") or out.get("target_files") or []
+            files_str = ", ".join(str(f) for f in files[:5] if f) if files else "—"
+            test_out = (
+                (out.get("stdout") or "")
+                + "\n"
+                + (out.get("stderr") or "")
+            ).strip() or (out.get("reason") or "") or (out.get("test_output") or "")
+            fr = out.get("failure_reason_code", "")
+            patch_applied = out.get("patch_applied", False)
+            tests_passed = out.get("tests_passed", True)
+
+            if success:
+                return f"Patch applied successfully.\nModified file(s): {files_str}\nTests passed.\n{str(test_out)[:500]}".strip()
+            if fr == "syntax_error":
+                syn_err = out.get("syntax_error") or out.get("reason") or err
+                return f"Syntax error:\n{syn_err}\n\nModified file(s) before rollback: {files_str}"
+            if patch_applied and not tests_passed:
+                return f"Patch applied successfully.\nModified file(s): {files_str}\n\nTests failed:\n\n{test_out[:2000]}"
+            return f"Edit failed: {err or 'unknown'}.\nTarget file(s): {files_str}\n\nOutput: {str(test_out)[:1500]}"
+        if not success and err:
+            return _fail_obs(step.get("_react_action_raw", "edit"), err)
+        return f"Edit {'succeeded' if success else 'failed'}: {str(out)[:500]}"
+    if action == "RUN_TEST":
+        out = result.output if hasattr(result, "output") else result.get("output", {})
+        if isinstance(out, dict):
+            raw = (out.get("stdout") or "") + "\n" + (out.get("stderr") or "")
+        else:
+            raw = str(out)[:5000]
+        if success:
+            return (f"All tests passed. If task is complete, call finish.\n\n{raw}".strip() if raw
+                    else "All tests passed. If task is complete, call finish.")
+        return f"Tests failed:\n\n{raw}\n\nUse this to fix the issue."
+    return f"Result: success={success}, error={err}" + (f", output={str(result)[:500]}" if result else "")
+
+
+def _repeated_action_guard(history: list, action: str, threshold: int = 3) -> str | None:
+    """If same action repeated > threshold, return warning to inject into observation."""
+    if len(history) < threshold:
+        return None
+    recent = [h.get("action") for h in history[-threshold:] if isinstance(h, dict)]
+    if len(recent) >= threshold and all(a == action for a in recent):
+        return "You are repeating the same action. Try a different approach."
+    return None
+
+
+def _should_stop_loop(
+    state: AgentState,
+    iteration: int,
+    tool_call_count: int,
+    start_time: float,
+    execution_limits: dict,
+) -> tuple[bool, str | None]:
+    """Check if loop should stop due to limits. Returns (should_stop, limit_reason)."""
+    if iteration > MAX_LOOP_ITERATIONS:
+        return True, "max_loop_iterations"
+    max_runtime = execution_limits.get("max_runtime_seconds", MAX_TASK_RUNTIME_SECONDS)
+    if time.perf_counter() - start_time > max_runtime:
+        return True, "max_task_runtime_exceeded"
+    if len(state.completed_steps) >= MAX_STEPS:
+        return True, "max_steps"
+    if tool_call_count >= MAX_TOOL_CALLS:
+        return True, "max_tool_calls"
+    return False, None
+
+
 def execution_loop(
     state: AgentState,
     instruction: str,
     *,
     trace_id=None,
     log_event_fn=None,
-    retry_context=None,
-    mode: ExecutionLoopMode = ExecutionLoopMode.AGENT,
+    max_runtime_seconds: int | None = None,
 ) -> LoopResult:
     """
-    Shared step-execution loop. Used by run_agent and run_deterministic.
+    ReAct execution loop. Model selects next action via _react_get_next_action.
 
-    - mode=DETERMINISTIC: goal evaluator when plan exhausted; no step retries;
-      loop_output populated.
-    - mode=AGENT: no goal evaluator; step retries before replan; loop_output None.
+    Args:
+        state: AgentState with instruction, plan, context.
+        instruction: Task instruction for the model.
+        trace_id: Optional trace ID for logging.
+        log_event_fn: Optional (trace_id, event, payload) callback.
+        max_runtime_seconds: Override max task runtime (default: MAX_TASK_RUNTIME_SECONDS).
 
-    Returns LoopResult(state, loop_output). loop_output is None when mode is AGENT;
-    otherwise dict with completed_steps, patches_applied, files_modified,
-    errors_encountered, tool_calls, plan_result, start_time.
+    Returns:
+        LoopResult with state and loop_output (completed_steps, patches_applied,
+        files_modified, errors_encountered, tool_calls, plan_result, start_time,
+        react_history, edit_telemetry).
     """
-    _ = retry_context  # Reserved for future use; get_plan(retry_context) is caller's responsibility.
-    enable_goal_evaluator = mode == ExecutionLoopMode.DETERMINISTIC
-    enable_step_retries = mode == ExecutionLoopMode.AGENT
-
     log_fn = log_event_fn or (lambda *args, **kwargs: None)
     start_time = time.perf_counter()
-    replan_count = 0
-    step_retry_count = 0
     iteration = 0
     tool_call_count = 0
-    errors_encountered: list = [] if enable_goal_evaluator else None  # Only collect in deterministic mode.
+    errors_encountered: list = []
     executor = StepExecutor()
-    goal_evaluator = GoalEvaluator() if enable_goal_evaluator else None
 
-    state.context.setdefault("execution_limits", {})
-    state.context["execution_limits"].update({
+    execution_limits = state.context.setdefault("execution_limits", {})
+    execution_limits.update({
         "max_steps": MAX_STEPS,
         "max_tool_calls": MAX_TOOL_CALLS,
-        "max_runtime_seconds": MAX_TASK_RUNTIME_SECONDS,
+        "max_runtime_seconds": max_runtime_seconds if max_runtime_seconds is not None else MAX_TASK_RUNTIME_SECONDS,
         "max_step_timeout_seconds": MAX_STEP_TIMEOUT_SECONDS,
-        "max_replan_attempts": MAX_REPLAN_ATTEMPTS,
-        "max_step_retries": MAX_STEP_RETRIES,
     })
     if trace_id:
-        log_fn(trace_id, "execution_limits", state.context["execution_limits"])
+        log_fn(trace_id, "execution_limits", execution_limits)
 
-    while not state.is_finished():
+    state.context.setdefault("react_history", [])
+    state.context["react_finish"] = False
+    state.context["react_mode"] = True
+
+    while not state.context.get("react_finish", False):
         iteration += 1
-        # Propagate plan degraded flag from fallback plans into context for observability
-        plan = state.current_plan or {}
-        state.context["plan_degraded"] = plan.get("degraded", False)
-        if iteration > MAX_LOOP_ITERATIONS:
-            logger.warning("[execution_loop] max iterations exceeded, stopping")
-            if errors_encountered is not None:
-                errors_encountered.append("max_loop_iterations")
+        should_stop, limit_reason = _should_stop_loop(
+            state, iteration, tool_call_count, start_time, execution_limits
+        )
+        if should_stop and limit_reason:
+            errors_encountered.append(limit_reason)
+            logger.warning("[execution_loop] %s, stopping", limit_reason)
             if trace_id:
-                log_fn(trace_id, "limit_reached", {"type": "max_loop_iterations"})
-            break
-        if time.perf_counter() - start_time > MAX_TASK_RUNTIME_SECONDS:
-            logger.warning("[execution_loop] max task runtime exceeded, stopping")
-            if errors_encountered is not None:
-                errors_encountered.append("max_task_runtime_exceeded")
-            if trace_id:
-                log_fn(trace_id, "error", {"type": "max_task_runtime_exceeded"})
-            break
-        if len(state.completed_steps) >= MAX_STEPS:
-            logger.warning("[execution_loop] max steps (%s) exceeded, stopping", MAX_STEPS)
-            if errors_encountered is not None:
-                errors_encountered.append("max_steps")
-            if trace_id:
-                log_fn(trace_id, "limit_reached", {"type": "max_steps"})
-            break
-        if tool_call_count >= MAX_TOOL_CALLS:
-            logger.warning("[execution_loop] max tool calls (%s) exceeded, stopping", MAX_TOOL_CALLS)
-            if errors_encountered is not None:
-                errors_encountered.append("max_tool_calls")
-            if trace_id:
-                log_fn(trace_id, "limit_reached", {"type": "max_tool_calls"})
+                log_fn(trace_id, "limit_reached" if "runtime" not in limit_reason else "error", {"type": limit_reason})
             break
 
-        step = state.next_step()
+        step = _react_get_next_action(instruction, state)
         if step is None:
-            if enable_goal_evaluator and goal_evaluator is not None:
-                goal_met = goal_evaluator.evaluate(instruction, state)
-                current_plan_id = state.current_plan_id
-                if trace_id:
-                    log_fn(
-                        trace_id,
-                        "goal_evaluation",
-                        {
-                            "plan_id": current_plan_id,
-                            "goal_met": goal_met,
-                            "completed_steps": len(state.completed_steps),
-                            "instruction_preview": (instruction or "")[:200],
-                        },
-                    )
-                if goal_met:
-                    if trace_id:
-                        log_fn(
-                            trace_id,
-                            "goal_completed",
-                            {"plan_id": current_plan_id, "completed_steps": len(state.completed_steps)},
-                        )
-                    break
-                errors_encountered.append("goal_not_satisfied")
-                replan_count += 1
-                if replan_count >= MAX_REPLAN_ATTEMPTS:
-                    logger.warning("[execution_loop] goal unresolved after max replan attempts")
-                    if trace_id:
-                        log_fn(
-                            trace_id,
-                            "goal_unresolved",
-                            {
-                                "plan_id": current_plan_id,
-                                "replan_count": replan_count,
-                                "completed_steps": len(state.completed_steps),
-                            },
-                        )
-                    break
-                if trace_id:
-                    log_fn(trace_id, "goal_not_satisfied", {"replan_count": replan_count})
-                replan_result = replan(state, failed_step=None, error="goal_not_satisfied")
-                if isinstance(replan_result, dict):
-                    term = replan_result.get("terminal")
-                    if term == "NOT_FOUND":
-                        logger.info("[execution_loop] NOT_FOUND termination (goal_not_satisfied path)")
-                        state.context["termination_reason"] = "NOT_FOUND"
-                        state.context["terminal_output"] = replan_result.get("output", "")
-                        break
-                    if term == "LOOP_PROTECTION":
-                        logger.info("[execution_loop] LOOP_PROTECTION termination (goal_not_satisfied path)")
-                        state.context["termination_reason"] = "LOOP_PROTECTION"
-                        state.context["terminal_output"] = replan_result.get("output", "")
-                        break
-                state.update_plan(replan_result)
-                continue
             break
 
         step_id = step.get("id", "?")
         action = (step.get("action") or "EXPLAIN").upper()
-        description = (step.get("description") or "")[:80]
-        current_plan_id = state.current_plan_id
+        description = (step.get("description") or "")
         logger.info("[execution_loop] step_id=%s action=%s %s", step_id, action, description)
 
         state.context["current_step_id"] = step.get("id")
@@ -215,7 +331,7 @@ def execution_loop(
                 result = future.result(timeout=MAX_STEP_TIMEOUT_SECONDS)
             except GuardrailError as e:
                 err_msg = str(e)
-                logger.error("[control] guardrail failure: %s", err_msg)
+                logger.error("[execution_loop] guardrail failure: %s", err_msg)
                 result = StepResult(
                     step_id=step.get("id", 0),
                     action=action,
@@ -225,15 +341,19 @@ def execution_loop(
                     error="guardrail_failure",
                     classification=ResultClassification.FATAL_FAILURE.value,
                 )
-                if errors_encountered is not None:
-                    errors_encountered.append(err_msg)
+                errors_encountered.append(err_msg)
                 if trace_id:
-                    log_fn(
-                        trace_id,
-                        "guardrail_failure",
-                        {"plan_id": current_plan_id, "step_id": step_id, "action": action, "error": err_msg},
-                    )
-                break
+                    log_fn(trace_id, "guardrail_failure", {"step_id": step_id, "action": action, "error": err_msg})
+                entry = {
+                    "thought": step.get("_react_thought", ""),
+                    "action": step.get("_react_action_raw", action.lower()),
+                    "args": step.get("_react_args", {}),
+                    "observation": _format_react_error(step.get("_react_action_raw", action.lower()), err_msg),
+                }
+                state.context["react_history"].append(entry)
+                if trace_id:
+                    log_fn(trace_id, "react_step", {"step_id": step_id, "json_action": {"thought": entry["thought"], "action": entry["action"], "args": entry["args"]}, "success": False})
+                continue
             except FuturesTimeoutError:
                 logger.warning(
                     "[execution_loop] step %s timed out after %ss", step_id, MAX_STEP_TIMEOUT_SECONDS
@@ -248,31 +368,17 @@ def execution_loop(
                     classification=ResultClassification.RETRYABLE_FAILURE.value,
                 )
                 if trace_id:
-                    log_fn(
-                        trace_id,
-                        "step_timeout",
-                        {"plan_id": current_plan_id, "step_id": step_id, "action": action},
-                    )
-
-        classification = result.classification or ResultClassification.SUCCESS.value
-        if isinstance(classification, ResultClassification):
-            classification = classification.value
-        chosen_tool = state.context.get("chosen_tool", "")
+                    log_fn(trace_id, "step_timeout", {"step_id": step_id, "action": action})
 
         if trace_id:
             log_fn(
                 trace_id,
                 "step_executed",
                 {
-                    "plan_id": current_plan_id,
                     "step_id": step_id,
                     "action": action,
-                    "tool": chosen_tool,
                     "success": result.success,
                     "error": getattr(result, "error", None),
-                    "classification": classification,
-                    "dominant_artifact_mode": state.context.get("dominant_artifact_mode", "code"),
-                    "step_artifact_mode": step.get("artifact_mode") if isinstance(step, dict) else None,
                 },
             )
 
@@ -285,190 +391,67 @@ def execution_loop(
             out_summary,
         )
 
-        if classification == ResultClassification.FATAL_FAILURE.value:
-            err = result.error or "fatal failure"
-            if errors_encountered is not None:
-                errors_encountered.append(err)
-            if trace_id:
-                log_fn(
-                    trace_id,
-                    "fatal_failure",
-                    {"plan_id": current_plan_id, "step_id": step_id, "action": action, "error": str(err)},
-                )
-            logger.warning(
-                "[execution_loop] FATAL_FAILURE, stopping (step_id=%s action=%s)",
-                step_id,
-                action,
-            )
-            break
+        obs = _build_react_observation(step, result, action)
+        warn = _repeated_action_guard(
+            state.context["react_history"],
+            step.get("_react_action_raw", action.lower()),
+        )
+        if warn:
+            obs = (obs or "") + "\n" + warn
+        entry = {
+            "thought": step.get("_react_thought", ""),
+            "action": step.get("_react_action_raw", action.lower()),
+            "args": step.get("_react_args", {}),
+            "observation": obs,
+        }
+        state.context["react_history"].append(entry)
+        if trace_id:
+            log_fn(trace_id, "react_step", {"step_id": step_id, "json_action": {"thought": entry["thought"], "action": entry["action"], "args": entry["args"]}, "success": result.success})
 
-        if not result.success:
-            if enable_step_retries and step_retry_count < MAX_STEP_RETRIES:
-                step_retry_count += 1
-                logger.info(
-                    "[execution_loop] step failed, retrying (%s/%s)",
-                    step_retry_count,
-                    MAX_STEP_RETRIES,
-                )
-                continue
-            step_retry_count = 0
-            if errors_encountered is not None:
-                errors_encountered.append(result.error or "unknown")
-            if trace_id:
-                log_fn(
-                    trace_id,
-                    "error",
-                    {
-                        "plan_id": current_plan_id,
-                        "step_id": step_id,
-                        "action": action,
-                        "error": str(result.error or ""),
-                        "classification": classification,
-                    },
-                )
-            replan_count += 1
-            if replan_count >= MAX_REPLAN_ATTEMPTS:
-                logger.warning("[execution_loop] max replan attempts exceeded, stopping")
-                if trace_id:
-                    log_fn(trace_id, "error", {"type": "max_replan_attempts_exceeded"})
-                break
-            error_msg = result.error or str(result.output)[:300] if result.output else "Step failed"
-            replan_result = replan(state, failed_step=step, error=error_msg)
-            if isinstance(replan_result, dict):
-                term = replan_result.get("terminal")
-                if term == "NOT_FOUND":
-                    logger.info("[execution_loop] NOT_FOUND termination (step failure path)")
-                    state.context["termination_reason"] = "NOT_FOUND"
-                    state.context["terminal_output"] = replan_result.get("output", "")
-                    break
-                if term == "LOOP_PROTECTION":
-                    logger.info("[execution_loop] LOOP_PROTECTION termination (step failure path)")
-                    state.context["termination_reason"] = "LOOP_PROTECTION"
-                    state.context["terminal_output"] = replan_result.get("output", "")
-                    break
-            state.update_plan(replan_result)
-            continue
-
-        if result.success and enable_goal_evaluator:
-            out = result.output
-            if isinstance(out, dict):
-                pm = getattr(result, "patch_size", None) or out.get("patches_applied")
-                files_mod = getattr(result, "files_modified", None) or out.get("files_modified", []) or []
-                if (pm or files_mod) and trace_id:
-                    log_fn(
-                        trace_id,
-                        "patch_result",
-                        {
-                            "plan_id": current_plan_id,
-                            "step_id": step_id,
-                            "patches_applied": (
-                                pm
-                                if isinstance(pm, int)
-                                else len(pm)
-                                if isinstance(pm, list)
-                                else 0
-                            ),
-                            "files_modified": files_mod,
-                        },
-                    )
-
-        valid, validation_feedback = validate_step(step, result, state=state)
-        if not valid:
-            if enable_step_retries and step_retry_count < MAX_STEP_RETRIES:
-                step_retry_count += 1
-                logger.info(
-                    "[execution_loop] validation failed, retrying (%s/%s)",
-                    step_retry_count,
-                    MAX_STEP_RETRIES,
-                )
-                continue
-            step_retry_count = 0
-            replan_count += 1
-            if replan_count >= MAX_REPLAN_ATTEMPTS:
-                logger.warning("[execution_loop] max replan attempts exceeded, stopping")
-                if trace_id:
-                    log_fn(trace_id, "error", {"type": "max_replan_attempts_exceeded"})
-                break
-            error_msg = (
-                result.error
-                or validation_feedback
-                or (str(result.output)[:300] if result.output else "Validation failed")
-            )
-            replan_result = replan(state, failed_step=step, error=error_msg)
-            if isinstance(replan_result, dict):
-                term = replan_result.get("terminal")
-                if term == "NOT_FOUND":
-                    logger.info("[execution_loop] NOT_FOUND termination (validation failure path)")
-                    state.context["termination_reason"] = "NOT_FOUND"
-                    state.context["terminal_output"] = replan_result.get("output", "")
-                    break
-                if term == "LOOP_PROTECTION":
-                    logger.info("[execution_loop] LOOP_PROTECTION termination (validation failure path)")
-                    state.context["termination_reason"] = "LOOP_PROTECTION"
-                    state.context["terminal_output"] = replan_result.get("output", "")
-                    break
-            state.update_plan(replan_result)
-            continue
-
+        # ReAct: never block on failure. Record and continue; model decides next action.
         state.record(step, result)
-        replan_count = 0
-        step_retry_count = 0
 
     state.context["execution_counts"] = {
         "steps_completed": len(state.completed_steps),
         "tool_calls": tool_call_count,
-        "replan_count": replan_count,
     }
     if trace_id:
         log_fn(trace_id, "execution_counts", state.context["execution_counts"])
 
-    loop_output = None
-    if enable_goal_evaluator and errors_encountered is not None:
-        completed_steps = list(state.completed_steps)
-        patch_count = 0
-        files_modified: list = []
-        for sr in state.step_results:
-            pm = getattr(sr, "patch_size", None)
-            if isinstance(pm, int):
-                patch_count += pm
-            elif isinstance(pm, list):
-                patch_count += len(pm)
-            fm = getattr(sr, "files_modified", None) or []
-            if isinstance(fm, list):
-                files_modified.extend(fm)
-        fm_distinct = [x for x in dict.fromkeys(files_modified) if isinstance(x, str)]
-        loop_output = {
-            "completed_steps": completed_steps,
-            "patches_applied": patch_count,
-            "files_modified": files_modified,
-            "errors_encountered": errors_encountered,
-            "tool_calls": tool_call_count,
-            "plan_result": state.current_plan,
-            "start_time": start_time,
-        }
-        term_reason = state.context.get("termination_reason")
-        if term_reason in ("NOT_FOUND", "LOOP_PROTECTION"):
-            loop_output["terminal"] = term_reason
-            loop_output["output"] = state.context.get("terminal_output", "")
-        loop_output["edit_telemetry"] = {
-            "attempted_target_files": state.context.get("search_target_candidates"),
-            "chosen_target_file": state.context.get("edit_target_file"),
-            "chosen_symbol": state.context.get("edit_target_symbol"),
-            "edit_failure_reason": state.context.get("edit_failure_reason"),
-            "search_viable_file_hits": state.context.get("search_viable_file_hits"),
-            "search_viable_raw_hits": state.context.get("search_viable_raw_hits"),
-            "patches_applied": patch_count,
-            "changed_files_count": len(fm_distinct),
-            **(state.context.get("edit_patch_telemetry") or {}),
-            "bm25_available": state.context.get("bm25_available"),
-            "reranker_failed": state.context.get("reranker_failed"),
-            "reranker_failed_fallback_used": state.context.get("reranker_failed_fallback_used"),
-            "grounding": state.context.get("edit_grounding_telemetry"),
-        }
-        # Prefer last patch attempt count when step-level patch_count is zero (EDIT telemetry gap).
-        et = loop_output["edit_telemetry"]
-        pa_alt = et.get("patches_applied_this_attempt")
-        if isinstance(pa_alt, int) and pa_alt > 0 and (not et.get("patches_applied")):
-            et["patches_applied"] = pa_alt
+    completed_steps = list(state.completed_steps)
+    patch_count = 0
+    files_modified: list = []
+    for sr in state.step_results:
+        pm = getattr(sr, "patch_size", None)
+        if isinstance(pm, int):
+            patch_count += pm
+        elif isinstance(pm, list):
+            patch_count += len(pm)
+        fm = getattr(sr, "files_modified", None) or []
+        if isinstance(fm, list):
+            files_modified.extend(fm)
+    fm_distinct = [x for x in dict.fromkeys(files_modified) if isinstance(x, str)]
+
+    loop_output = {
+        "completed_steps": completed_steps,
+        "patches_applied": patch_count,
+        "files_modified": files_modified,
+        "errors_encountered": errors_encountered,
+        "tool_calls": tool_call_count,
+        "plan_result": state.current_plan,
+        "start_time": start_time,
+        "react_history": state.context.get("react_history", []),
+    }
+    loop_output["edit_telemetry"] = {
+        "attempted_target_files": state.context.get("search_target_candidates"),
+        "chosen_target_file": state.context.get("edit_target_file"),
+        "chosen_symbol": state.context.get("edit_target_symbol"),
+        "edit_failure_reason": state.context.get("edit_failure_reason"),
+        "patches_applied": patch_count,
+        "changed_files_count": len(fm_distinct),
+        **(state.context.get("edit_patch_telemetry") or {}),
+    }
+    if trace_id:
+        log_fn(trace_id, "react_history_full", {"react_history": state.context.get("react_history", [])})
 
     return LoopResult(state=state, loop_output=loop_output)

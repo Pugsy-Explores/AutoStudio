@@ -39,6 +39,7 @@ _DEFAULT_REGISTRY: dict[str, tuple[ModelType, ...]] = {
     "edit_proposal_system": (ModelType.REASONING,),
     "edit_proposal_user": (ModelType.REASONING,),
     "retry_planner_user": (ModelType.REASONING,),
+    "react_action": (ModelType.REASONING,),
 }
 
 

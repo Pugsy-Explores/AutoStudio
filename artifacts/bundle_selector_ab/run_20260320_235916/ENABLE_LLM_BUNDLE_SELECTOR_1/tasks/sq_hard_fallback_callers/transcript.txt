@@ -1,0 +1,194 @@
+task_id=sq_hard_fallback_callers success=True validation_passed=True failure_bucket=None
+
+{
+  "completed_steps": [
+    [
+      "plan_1827389a",
+      1
+    ],
+    [
+      "plan_e9eeb2a1",
+      1
+    ],
+    [
+      "plan_36dc4c25",
+      1
+    ],
+    [
+      "plan_52f29581",
+      1
+    ],
+    [
+      "plan_4925940c",
+      1
+    ],
+    [
+      "plan_58de6eee",
+      1
+    ],
+    [
+      "plan_079959fa",
+      1
+    ],
+    [
+      "plan_c3725627",
+      1
+    ],
+    [
+      "plan_66cbeafa",
+      1
+    ],
+    [
+      "plan_0f379b4a",
+      1
+    ],
+    [
+      "plan_843ccf15",
+      1
+    ],
+    [
+      "plan_bfc44c1b",
+      1
+    ],
+    [
+      "plan_a9f8b5b3",
+      1
+    ],
+    [
+      "plan_ca9aea4e",
+      1
+    ],
+    [
+      "plan_715c240b",
+      1
+    ],
+    [
+      "plan_bdd07e22",
+      1
+    ],
+    [
+      "plan_1823e777",
+      1
+    ],
+    [
+      "plan_205a7fcb",
+      1
+    ],
+    [
+      "plan_fb19f760",
+      1
+    ],
+    [
+      "plan_4818d805",
+      1
+    ],
+    [
+      "plan_b8cb8166",
+      1
+    ],
+    [
+      "plan_2d0c6fcb",
+      1
+    ],
+    [
+      "plan_18947f1b",
+      1
+    ],
+    [
+      "plan_933a520d",
+      1
+    ],
+    [
+      "plan_1c1c4cf7",
+      1
+    ],
+    [
+      "plan_d1cfefa4",
+      1
+    ],
+    [
+      "plan_083bdec9",
+      1
+    ],
+    [
+      "plan_e9858c3f",
+      1
+    ],
+    [
+      "plan_3c942fa0",
+      1
+    ],
+    [
+      "plan_8a41f0df",
+      1
+    ],
+    [
+      "plan_3c18674b",
+      1
+    ],
+    [
+      "plan_eba38550",
+      1
+    ],
+    [
+      "plan_dfb1819d",
+      1
+    ],
+    [
+      "plan_91b0ca2f",
+      1
+    ],
+    [
+      "plan_11235b6f",
+      1
+    ],
+    [
+      "plan_479f70da",
+      1
+    ]
+  ],
+  "patches_applied": 0,
+  "files_modified": [],
+  "errors_encountered": [
+    "max_task_runtime_exceeded"
+  ],
+  "tool_calls": 73,
+  "plan_result": {
+    "steps": [
+      {
+        "id": 1,
+        "action": "SEARCH",
+        "description": "Search: Where is the fallback guard when the engine errors, and which callers reach that path?. Target implementation source: function/class body, callsites, and imports in non-test modules. Prioritize entrypoints: __main__, package __init__, cli/main, settings load or initialization, constructors, and import chains. Related terms: Where, the, fallback, guard, when, engine.",
+        "reason": "Target implementation source: function/class body, callsites, and imports in non-test modules. Prioritize entrypoints: __main__, package __init__, cli/main, settings load or initialization, constructors, and import chains. Related terms: Where, the, fallback, guard, when, engine."
+      },
+      {
+        "id": 2,
+        "action": "EXPLAIN",
+        "description": "Where is the fallback guard when the engine errors, and which callers reach that path?",
+        "reason": "Routed by unified production router"
+      }
+    ],
+    "plan_id": "plan_fbaf241d"
+  },
+  "start_time": 390792.016888125,
+  "edit_telemetry": {
+    "attempted_target_files": [
+      "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_1/workspaces/sq_hard_fallback_callers/src/flowkit/engine.py",
+      "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_1/workspaces/sq_hard_fallback_callers/src/flowkit/settings.py",
+      "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_1/workspaces/sq_hard_fallback_callers/src/flowkit/dispatch.py",
+      "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_1/workspaces/sq_hard_fallback_callers/tests/test_smoke.py",
+      "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_1/workspaces/sq_hard_fallback_callers/tests/conftest.py"
+    ],
+    "chosen_target_file": null,
+    "chosen_symbol": null,
+    "edit_failure_reason": null,
+    "search_viable_file_hits": 10,
+    "search_viable_raw_hits": 10,
+    "patches_applied": 0,
+    "changed_files_count": 0,
+    "bm25_available": true,
+    "reranker_failed": false,
+    "reranker_failed_fallback_used": false,
+    "grounding": null
+  }
+}

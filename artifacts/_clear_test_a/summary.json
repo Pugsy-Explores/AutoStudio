@@ -1,0 +1,62 @@
+{
+  "suite": "search_stack_offline",
+  "run_dir": "/Users/shang/my_work/AutoStudio/artifacts/_clear_test_a",
+  "timestamp": "20260320_220118",
+  "duration_seconds": 5.4131739139556885,
+  "execution_mode": "offline",
+  "total_tasks": 1,
+  "success_count": 1,
+  "validation_pass_count": 1,
+  "structural_success_count": 1,
+  "task_ids": [
+    "sq_entrypoint_arch"
+  ],
+  "failure_bucket_histogram": {},
+  "patch_reject_reason_histogram": {},
+  "validation_scope_kind_histogram": {},
+  "first_failing_stage_histogram": {},
+  "patches_applied_total": 0,
+  "files_modified_total": 0,
+  "attempts_total_aggregate": 0,
+  "retries_used_aggregate": 0,
+  "replans_used_aggregate": 0,
+  "live_model_task_count": 0,
+  "tasks_with_model_calls": 0,
+  "tasks_without_model_calls": 0,
+  "integrity_failure_count": 0,
+  "integrity_failure_histogram": {},
+  "used_offline_stubs_count": 1,
+  "used_plan_injection_count": 1,
+  "run_valid_for_live_eval": false,
+  "invalid_live_model_task_count": 0,
+  "zero_model_call_task_count": 1,
+  "offline_stubbed_task_count": 1,
+  "explain_stubbed_task_count": 0,
+  "plan_injection_task_count": 1,
+  "model_call_count_total": 0,
+  "small_model_call_count_total": 0,
+  "reasoning_model_call_count_total": 0,
+  "task_type_histogram": {},
+  "instruction_explicit_path_count": 0,
+  "semantic_rca_cause_histogram": {},
+  "per_task_outcomes": [
+    {
+      "task_id": "sq_entrypoint_arch",
+      "success": true,
+      "validation_passed": true,
+      "structural_success": true,
+      "attempts_total": null,
+      "retries_used": null,
+      "replans_used": 0,
+      "failure_bucket": null,
+      "first_failing_stage": null,
+      "files_modified": [
+        ".symbol_graph/embeddings/chroma.sqlite3"
+      ],
+      "patch_reject_reason": null,
+      "validation_scope_kind": null,
+      "changed_files_count": 0,
+      "patches_applied": 0
+    }
+  ]
+}

@@ -28,7 +28,7 @@ if str(_ROOT) not in sys.path:
 
 from agent.memory.state import AgentState
 from agent.observability.trace_logger import add_event_listener, finish_trace, log_event, remove_event_listener, start_trace
-from agent.orchestrator.execution_loop import ExecutionLoopMode, execution_loop
+from agent.orchestrator.execution_loop import execution_loop
 from agent.orchestrator.replanner import replan
 from planner.planner_utils import normalize_actions, validate_plan
 
@@ -106,7 +106,7 @@ def run(project_root: str) -> dict[str, Any]:
             "agent.execution.step_dispatcher.call_reasoning_model",
             return_value="This is a sufficiently long explanation output for acceptance validation.",
         ):
-            execution_loop(state_docs, "docs", trace_id=trace_docs, log_event_fn=log_event, mode=ExecutionLoopMode.AGENT)
+            execution_loop(state_docs, "docs", trace_id=trace_docs, log_event_fn=log_event)
         finish_trace(trace_docs)
         step_events_docs = [e for e in (events.get(trace_docs) or []) if e["type"] == "step_executed"]
         report["checks"]["docs_task_lane_consistent"] = (
@@ -140,7 +140,7 @@ def run(project_root: str) -> dict[str, Any]:
         )
         with patch("agent.execution.step_dispatcher.ensure_context_before_explain", return_value=(True, None)):
             with patch("agent.execution.step_dispatcher.call_reasoning_model", return_value="This is a sufficiently long explanation output for acceptance validation."):
-                execution_loop(state_code, "code", trace_id=trace_code, log_event_fn=log_event, mode=ExecutionLoopMode.AGENT)
+                execution_loop(state_code, "code", trace_id=trace_code, log_event_fn=log_event)
         finish_trace(trace_code)
         step_events_code = [e for e in (events.get(trace_code) or []) if e["type"] == "step_executed"]
         report["checks"]["code_task_lane_consistent"] = (

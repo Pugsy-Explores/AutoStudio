@@ -2,6 +2,8 @@
 
 The planner converts a user instruction into a **sequence of atomic steps**. Each step corresponds to exactly one action category used by the router: **EDIT**, **SEARCH**, **EXPLAIN**, or **INFRA**.
 
+> **Legacy path only.** When `REACT_MODE=1` (default), the primary flow is ReAct: run_hierarchical → execution_loop. The planner is not used. See [Docs/REACT_ARCHITECTURE.md](../Docs/REACT_ARCHITECTURE.md).
+
 ## Architecture
 
 1. **Input**: A single user instruction (e.g. “Find the login handler and update JWT validation”).

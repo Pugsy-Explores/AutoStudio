@@ -65,7 +65,7 @@ from config.retrieval_config import (
 
 logger = logging.getLogger(__name__)
 
-SEARCH_CANDIDATES_TOP_K = 20
+SEARCH_CANDIDATES_TOP_K = 50
 
 
 def _rows_have_implementation_body(rows: list | None) -> bool:

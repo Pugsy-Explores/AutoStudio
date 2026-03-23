@@ -1,0 +1,61 @@
+{
+  "total_searches": 13,
+  "bad_or_weak_rate": 0.38461538461538464,
+  "effective_search_avg": 5.615384615384615,
+  "red_flag_counts": {
+    "generic_template_used": 9,
+    "too_vague": 5,
+    "missing_relationships": 2,
+    "too_narrow": 1
+  },
+  "sample_bad_count": 3,
+  "sample_bad": [
+    {
+      "grounding": 2,
+      "specificity": 1,
+      "implementation_bias": 2,
+      "structural_intent": 0,
+      "result_quality": 0,
+      "red_flags": [
+        "generic_template_used",
+        "too_vague"
+      ],
+      "verdict": "weak",
+      "explanation": "The query is partially grounded as it relates to the instruction but lacks specificity. It uses a generic template and could be more precise about what kind of settings or config files are being referred to, which would improve its chances of retrieving relevant implementation code.",
+      "effective_search": 5,
+      "is_weak_or_bad": true,
+      "_line": 2
+    },
+    {
+      "grounding": 1,
+      "specificity": 2,
+      "implementation_bias": 2,
+      "structural_intent": 0,
+      "result_quality": 0,
+      "red_flags": [
+        "too_vague"
+      ],
+      "verdict": "weak",
+      "explanation": "The query is somewhat related to the instruction but lacks specificity. It does not clearly identify a particular engine or context, making it vague and likely to retrieve irrelevant results.",
+      "effective_search": 5,
+      "is_weak_or_bad": true,
+      "_line": 4
+    },
+    {
+      "grounding": 2,
+      "specificity": 2,
+      "implementation_bias": 2,
+      "structural_intent": 3,
+      "result_quality": 0,
+      "red_flags": [
+        "generic_template_used",
+        "too_vague"
+      ],
+      "verdict": "weak",
+      "explanation": "The query is partially grounded as it relates to the instruction but lacks specificity. It targets implementation details, which is good, and aims for strong structural intent by asking about loading and passing a config object into runtime execution paths. However, due to its vagueness ('config object', 'runtime execution path'), it likely won't produce useful context (result_quality: 0). The generic template used makes the query too broad.",
+      "effective_search": 6,
+      "is_weak_or_bad": true,
+      "_line": 5
+    }
+  ]
+}

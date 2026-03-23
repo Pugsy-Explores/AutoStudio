@@ -16,4 +16,5 @@ prompt: |
   {full_content}
   ```
 
-  Produce a minimal valid patch (JSON only). For text_sub: "old" must be an exact copy from the file above. If unsure, propose a minimal change that moves the code toward satisfying the instruction.
+  Produce a minimal valid patch (JSON only). For text_sub: "old" must be an exact copy from the file above.
+  If the instruction does not specify what to change (e.g. "fix bug"), do not guess. Return already_correct or a minimal safe change.

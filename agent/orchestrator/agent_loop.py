@@ -18,7 +18,7 @@ from pathlib import Path
 
 from agent.memory.state import AgentState
 from agent.observability.trace_logger import finish_trace, log_event, start_trace
-from agent.orchestrator.execution_loop import ExecutionLoopMode, execution_loop
+from agent.orchestrator.execution_loop import execution_loop
 from agent.orchestrator.plan_resolver import get_plan
 from planner.planner_utils import is_explicit_docs_lane_by_structure
 
@@ -72,8 +72,6 @@ def run_agent(instruction: str) -> AgentState:
             instruction,
             trace_id=trace_id,
             log_event_fn=log_event,
-            retry_context=None,
-            mode=ExecutionLoopMode.AGENT,
         )
         return result.state
     finally:

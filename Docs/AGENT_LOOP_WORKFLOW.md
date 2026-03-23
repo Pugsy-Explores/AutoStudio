@@ -1,22 +1,12 @@
 # Agent Loop Workflow Diagram
 
-End-to-end flow of the AutoStudio agent (Mode 1, Phase 5): **run_attempt_loop** wraps each task; per attempt: get_plan(retry_context) → plan → execute steps → validate → optional replan → **GoalEvaluator** → record in **TrajectoryMemory** → if not goal_met: **Critic** + **RetryPlanner** → next attempt; else return state.
+**Primary (ReAct, REACT_MODE=1 default):** run_controller → run_hierarchical → execution_loop (ReAct). Model chooses actions (search, open_file, edit, run_tests, finish). No planner, Critic, or RetryPlanner. See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md) and [REACT_QUICK_START.md](REACT_QUICK_START.md).
 
-## Retrieval Pipeline (Stabilized)
+**Legacy (REACT_MODE=0):** run_attempt_loop wraps each task; per attempt: get_plan(retry_context) → plan → execute steps → validate → **GoalEvaluator** → if not goal_met: **Critic** + **RetryPlanner** → next attempt. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
 
-```
-SEARCH_CANDIDATES
-        ↓
-BUILD_CONTEXT
-        ↓
-EXECUTOR
-```
+---
 
-Preferred flow for locate-then-edit: SEARCH_CANDIDATES (with query) → BUILD_CONTEXT → EDIT. Includes details on model routing, query rewriting, policy-engine retries, fallbacks, and heuristics.
-
-**Architecture (phase.md):** router decides, planner plans, dispatcher executes.
-
-**Instruction routing (Stage 38/39):** `route_production_instruction` returns `RoutedIntent`; plan_resolver consumes it. Enabled by default (`ENABLE_INSTRUCTION_ROUTER=1`). Order: docs-artifact (DOC) → two-phase docs+code (COMPOUND) → legacy router. DOC/SEARCH/EXPLAIN/INFRA short-circuit; EDIT/AMBIGUOUS/COMPOUND-flat use planner. Telemetry: `resolver_consumption`. Set to 0 to disable.
+Retrieval: SEARCH_CANDIDATES → BUILD_CONTEXT → EDIT. Full pipeline: [RETRIEVAL_ARCHITECTURE.md](RETRIEVAL_ARCHITECTURE.md). Instruction routing (legacy): [ROUTING_ARCHITECTURE_REPORT.md](ROUTING_ARCHITECTURE_REPORT.md).
 
 ---
 

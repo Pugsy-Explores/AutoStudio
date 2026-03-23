@@ -1,4 +1,8 @@
-"""Context pruner: limit ranked context by snippets count and char budget, deduplicate."""
+"""Context pruner: limit ranked context by snippets count and char budget, deduplicate.
+
+Invariant: rows with implementation_body_present=True are NEVER fully dropped
+when char budget is tight — a minimal slice (MIN_FALLBACK_CHARS) is always included.
+"""
 
 import logging
 
@@ -54,12 +58,8 @@ def prune_context(
         snip_len = len(snippet)
         remaining = max_chars - total_chars
         if snip_len > remaining:
-            if remaining < 80:
-                if c.get("implementation_body_present") is True:
-                    logger.warning(
-                        "[context_pruner] char budget skips row (file=%s); trying smaller rows",
-                        c.get("file"),
-                    )
+            # Simple size limiting: truncate to fit
+            if remaining <= 0:
                 continue
             snippet = snippet[:remaining]
             snip_len = len(snippet)

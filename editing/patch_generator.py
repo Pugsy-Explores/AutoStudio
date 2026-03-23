@@ -315,6 +315,17 @@ def to_structured_patches(plan: dict, instruction: str, context: dict) -> dict:
                 break
 
     out: dict = {"changes": changes}
+    # Propagate already_correct signal from model proposals
+    any_already_correct = any(
+        c.get("already_correct") is True for c in (changes or [])
+    ) or (
+        any(c.get("already_correct") is True for c in model_changes.values())
+        if model_changes else False
+    )
+    if any_already_correct:
+        out["already_correct"] = True
+        if not changes:
+            return out
     if raw_changes and not changes:
         out["patch_generation_reject"] = "weakly_grounded_patch"
         out["generation_rejected_reason"] = "no_valid_patch_candidate"

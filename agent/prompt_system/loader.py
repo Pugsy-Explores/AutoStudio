@@ -163,6 +163,7 @@ _LEGACY_MAP: dict[str, str] = {
     "edit_proposal_system": "edit_proposal_system",
     "edit_proposal_user": "edit_proposal_user",
     "retry_planner_user": "retry_planner_user",
+    "react_action": "react_action",
 }
 
 

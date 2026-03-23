@@ -1,0 +1,14 @@
+{
+  "attempted_target_files": null,
+  "chosen_target_file": null,
+  "chosen_symbol": null,
+  "edit_failure_reason": null,
+  "search_viable_file_hits": 10,
+  "search_viable_raw_hits": 10,
+  "patches_applied": 0,
+  "changed_files_count": 0,
+  "bm25_available": true,
+  "reranker_failed": false,
+  "reranker_failed_fallback_used": false,
+  "grounding": null
+}

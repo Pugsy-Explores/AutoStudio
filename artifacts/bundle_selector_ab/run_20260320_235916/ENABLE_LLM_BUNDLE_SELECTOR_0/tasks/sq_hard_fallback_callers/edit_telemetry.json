@@ -1,0 +1,20 @@
+{
+  "attempted_target_files": [
+    "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_fallback_callers/src/flowkit/engine.py",
+    "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_fallback_callers/src/flowkit/settings.py",
+    "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_fallback_callers/src/flowkit/dispatch.py",
+    "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_fallback_callers/tests/test_smoke.py",
+    "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235916/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_fallback_callers/tests/conftest.py"
+  ],
+  "chosen_target_file": null,
+  "chosen_symbol": null,
+  "edit_failure_reason": null,
+  "search_viable_file_hits": 10,
+  "search_viable_raw_hits": 10,
+  "patches_applied": 0,
+  "changed_files_count": 0,
+  "bm25_available": true,
+  "reranker_failed": false,
+  "reranker_failed_fallback_used": false,
+  "grounding": null
+}

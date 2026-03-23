@@ -1,0 +1,157 @@
+{
+  "suite": "search_stack_offline",
+  "run_dir": "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260321_000227/ENABLE_LLM_BUNDLE_SELECTOR_1",
+  "timestamp": "20260321_000256",
+  "duration_seconds": 28.47310519218445,
+  "execution_mode": "offline",
+  "total_tasks": 6,
+  "success_count": 6,
+  "validation_pass_count": 6,
+  "structural_success_count": 6,
+  "task_ids": [
+    "sq_hard_entrypoint_settings",
+    "sq_hard_config_runtime",
+    "sq_hard_fallback_callers",
+    "sq_hard_dispatch_executor",
+    "sq_hard_impl_not_tests",
+    "sq_hard_2hop_arch"
+  ],
+  "failure_bucket_histogram": {},
+  "patch_reject_reason_histogram": {},
+  "validation_scope_kind_histogram": {},
+  "first_failing_stage_histogram": {},
+  "patches_applied_total": 0,
+  "files_modified_total": 0,
+  "attempts_total_aggregate": 0,
+  "retries_used_aggregate": 0,
+  "replans_used_aggregate": 0,
+  "live_model_task_count": 0,
+  "tasks_with_model_calls": 0,
+  "tasks_without_model_calls": 0,
+  "integrity_failure_count": 0,
+  "integrity_failure_histogram": {},
+  "used_offline_stubs_count": 6,
+  "used_plan_injection_count": 6,
+  "run_valid_for_live_eval": false,
+  "invalid_live_model_task_count": 0,
+  "zero_model_call_task_count": 6,
+  "offline_stubbed_task_count": 6,
+  "explain_stubbed_task_count": 0,
+  "plan_injection_task_count": 6,
+  "model_call_count_total": 0,
+  "small_model_call_count_total": 0,
+  "reasoning_model_call_count_total": 0,
+  "task_type_histogram": {},
+  "instruction_explicit_path_count": 0,
+  "semantic_rca_cause_histogram": {},
+  "per_task_outcomes": [
+    {
+      "task_id": "sq_hard_entrypoint_settings",
+      "success": true,
+      "validation_passed": true,
+      "structural_success": true,
+      "attempts_total": null,
+      "retries_used": null,
+      "replans_used": 0,
+      "failure_bucket": null,
+      "first_failing_stage": null,
+      "files_modified": [
+        ".symbol_graph/embeddings/chroma.sqlite3"
+      ],
+      "patch_reject_reason": null,
+      "validation_scope_kind": null,
+      "changed_files_count": 0,
+      "patches_applied": 0
+    },
+    {
+      "task_id": "sq_hard_config_runtime",
+      "success": true,
+      "validation_passed": true,
+      "structural_success": true,
+      "attempts_total": null,
+      "retries_used": null,
+      "replans_used": 0,
+      "failure_bucket": null,
+      "first_failing_stage": null,
+      "files_modified": [
+        ".symbol_graph/embeddings/chroma.sqlite3"
+      ],
+      "patch_reject_reason": null,
+      "validation_scope_kind": null,
+      "changed_files_count": 0,
+      "patches_applied": 0
+    },
+    {
+      "task_id": "sq_hard_fallback_callers",
+      "success": true,
+      "validation_passed": true,
+      "structural_success": true,
+      "attempts_total": null,
+      "retries_used": null,
+      "replans_used": 0,
+      "failure_bucket": null,
+      "first_failing_stage": null,
+      "files_modified": [
+        ".symbol_graph/embeddings/chroma.sqlite3"
+      ],
+      "patch_reject_reason": null,
+      "validation_scope_kind": null,
+      "changed_files_count": 0,
+      "patches_applied": 0
+    },
+    {
+      "task_id": "sq_hard_dispatch_executor",
+      "success": true,
+      "validation_passed": true,
+      "structural_success": true,
+      "attempts_total": null,
+      "retries_used": null,
+      "replans_used": 0,
+      "failure_bucket": null,
+      "first_failing_stage": null,
+      "files_modified": [
+        ".symbol_graph/embeddings/chroma.sqlite3"
+      ],
+      "patch_reject_reason": null,
+      "validation_scope_kind": null,
+      "changed_files_count": 0,
+      "patches_applied": 0
+    },
+    {
+      "task_id": "sq_hard_impl_not_tests",
+      "success": true,
+      "validation_passed": true,
+      "structural_success": true,
+      "attempts_total": null,
+      "retries_used": null,
+      "replans_used": 0,
+      "failure_bucket": null,
+      "first_failing_stage": null,
+      "files_modified": [
+        ".symbol_graph/embeddings/chroma.sqlite3"
+      ],
+      "patch_reject_reason": null,
+      "validation_scope_kind": null,
+      "changed_files_count": 0,
+      "patches_applied": 0
+    },
+    {
+      "task_id": "sq_hard_2hop_arch",
+      "success": true,
+      "validation_passed": true,
+      "structural_success": true,
+      "attempts_total": null,
+      "retries_used": null,
+      "replans_used": 0,
+      "failure_bucket": null,
+      "first_failing_stage": null,
+      "files_modified": [
+        ".symbol_graph/embeddings/chroma.sqlite3"
+      ],
+      "patch_reject_reason": null,
+      "validation_scope_kind": null,
+      "changed_files_count": 0,
+      "patches_applied": 0
+    }
+  ]
+}

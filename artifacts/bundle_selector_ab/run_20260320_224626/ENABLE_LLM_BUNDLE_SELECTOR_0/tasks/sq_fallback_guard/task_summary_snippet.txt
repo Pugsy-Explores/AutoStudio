@@ -1,0 +1,1 @@
+task_id=sq_fallback_guard success=True validation_passed=True failure_bucket=None

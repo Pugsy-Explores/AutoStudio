@@ -8,6 +8,8 @@ from agent.execution.policy_engine import (
     ExecutionPolicyEngine,
     InvalidStepError,
     POLICIES,
+    ResultClassification,
+    classify_result,
     _MAX_REWRITE_QUERIES_PER_SEARCH_ATTEMPT,
     _is_valid_search_result,
     _normalize_rewrite_query_list,
@@ -18,6 +20,7 @@ from agent.retrieval.result_contract import RETRIEVAL_RESULT_TYPE_SYMBOL_BODY
 from agent.memory.state import AgentState
 
 
+@patch("agent.execution.policy_engine.REACT_MODE", False)
 class TestStage44RewriteQueryCap(unittest.TestCase):
     """Stage 44: rewriter query lists capped, deduped, stripped on attempts 2+."""
 
@@ -127,6 +130,7 @@ class TestStage44RewriteQueryCap(unittest.TestCase):
         self.assertEqual(calls[1], "fallback_desc")
 
 
+@patch("agent.execution.policy_engine.REACT_MODE", False)
 class TestStage43FileSearchHonesty(unittest.TestCase):
     """Stage 43: file_search directory-listing fallback is not valid retrieval success."""
 
@@ -172,6 +176,7 @@ class TestStage43FileSearchHonesty(unittest.TestCase):
         self.assertEqual(calls, ["q", "rewritten_query"])
 
 
+@patch("agent.execution.policy_engine.REACT_MODE", False)
 class TestStage45ListDirHonesty(unittest.TestCase):
     """Stage 45: list_dir directory entries are not valid semantic SEARCH success."""
 
@@ -266,6 +271,7 @@ def _identity_rewrite(description: str, user_request: str, attempt_history: list
     return (description or "").strip() or description
 
 
+@patch("agent.execution.policy_engine.REACT_MODE", False)
 class TestExecutionPolicyEngineSearch(unittest.TestCase):
     """Policy engine SEARCH: retries with context-aware rewrite until success or exhausted."""
 
@@ -677,6 +683,40 @@ class TestSearchResultQuality(unittest.TestCase):
         out = r["output"]
         self.assertEqual(out.get("search_quality"), "weak")
         self.assertEqual(state.context.get("search_quality"), "weak")
+
+
+class TestClassifyResultContextAware(unittest.TestCase):
+    """Context-related failures classified as RETRYABLE, not FATAL."""
+
+    def test_retryable_on_missing_context(self):
+        """Edit failed after retries with patch_anchor_not_found -> RETRYABLE."""
+        result = {
+            "success": False,
+            "output": {"failure_reason_code": "patch_anchor_not_found"},
+            "error": "edit failed after retries",
+        }
+        c = classify_result("EDIT", result)
+        self.assertEqual(c, ResultClassification.RETRYABLE_FAILURE)
+
+    def test_retryable_on_weakly_grounded_patch(self):
+        """Edit failed with weakly_grounded_patch -> RETRYABLE."""
+        result = {
+            "success": False,
+            "output": {"failure_reason_code": "weakly_grounded_patch"},
+            "error": "edit failed after retries",
+        }
+        c = classify_result("EDIT", result)
+        self.assertEqual(c, ResultClassification.RETRYABLE_FAILURE)
+
+    def test_fatal_when_non_context_failure_after_retries(self):
+        """Edit failed after retries with test_failure -> FATAL (not context-related)."""
+        result = {
+            "success": False,
+            "output": {"failure_reason_code": "test_failure"},
+            "error": "edit failed after retries",
+        }
+        c = classify_result("EDIT", result)
+        self.assertEqual(c, ResultClassification.FATAL_FAILURE)
 
 
 class TestPolicies(unittest.TestCase):

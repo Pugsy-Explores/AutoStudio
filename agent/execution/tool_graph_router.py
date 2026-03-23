@@ -11,7 +11,9 @@ ACTION_TO_PREFERRED_TOOL: dict[str, str] = {
     "EDIT": "edit",
     "INFRA": "list_dir",
     "EXPLAIN": "explain",
+    "READ": "read_file",
     "READ_FILE": "read_file",
+    "RUN_TEST": "run_tests",
     "FIND_REFERENCES": "find_referencing_symbols",
     "BUILD_CONTEXT": "build_context",
 }

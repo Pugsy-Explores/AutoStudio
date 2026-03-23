@@ -1,0 +1,28 @@
+task_id=sq_entrypoint_arch success=True validation_passed=True failure_bucket=None
+
+{
+  "completed_steps": [],
+  "patches_applied": 0,
+  "files_modified": [],
+  "errors_encountered": [],
+  "tool_calls": 1,
+  "plan_result": {
+    "steps": [],
+    "plan_id": "plan_6e9db84f"
+  },
+  "start_time": 382575.481136458,
+  "edit_telemetry": {
+    "attempted_target_files": null,
+    "chosen_target_file": null,
+    "chosen_symbol": null,
+    "edit_failure_reason": null,
+    "search_viable_file_hits": 0,
+    "search_viable_raw_hits": 10,
+    "patches_applied": 0,
+    "changed_files_count": 0,
+    "bm25_available": true,
+    "reranker_failed": false,
+    "reranker_failed_fallback_used": false,
+    "grounding": null
+  }
+}

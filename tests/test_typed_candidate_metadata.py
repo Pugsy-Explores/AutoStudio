@@ -69,6 +69,30 @@ def test_prune_context_preserves_metadata():
     assert out[0].get("candidate_kind") == "symbol"
 
 
+def test_pruner_keeps_minimum_context():
+    """Large impl-body row near budget -> still partially included (MIN_FALLBACK_CHARS)."""
+    # First row exhausts most budget; second has implementation_body_present.
+    # Sort: symbol before file, so both symbol → order by index.
+    big_snippet = "x" * 5000
+    impl_snippet = "def create():\n    pass\n" + "y" * 3000
+    rows = [
+        {"file": "other.py", "snippet": big_snippet, "candidate_kind": "symbol"},
+        {
+            "file": "sessions.py",
+            "symbol": "create",
+            "snippet": impl_snippet,
+            "implementation_body_present": True,
+            "candidate_kind": "symbol",
+        },
+    ]
+    # Budget 5050: first row uses 5000, remaining=50. 50 < 80, impl_body -> include min(50,40)=40
+    out = prune_context(rows, max_snippets=10, max_chars=5050)
+    assert len(out) >= 2
+    impl_in_out = next((r for r in out if r.get("file") == "sessions.py"), None)
+    assert impl_in_out is not None, "impl-body row must not be fully dropped"
+    assert len(impl_in_out.get("snippet", "")) >= 1, "minimal slice must be included"
+
+
 def test_code_explain_grounding_ready_typed_symbol_body():
     st = AgentState(
         instruction="t",

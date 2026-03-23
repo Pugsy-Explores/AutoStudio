@@ -1,0 +1,8 @@
+[model_client] attempt 1/5 failed (APIConnectionError); retrying in 1.00 seconds
+[model_client] attempt 2/5 failed (APIConnectionError); retrying in 2.00 seconds
+[model_client] attempt 3/5 failed (APIConnectionError); retrying in 4.00 seconds
+[model_client] attempt 4/5 failed (APIConnectionError); retrying in 8.00 seconds
+[instruction_router] model call failed: Connection error., defaulting to GENERAL
+[model_client] attempt 1/5 failed (APIConnectionError); retrying in 1.00 seconds
+[model_client] attempt 2/5 failed (APIConnectionError); retrying in 2.00 seconds
+[model_client] attempt 3/5 failed (APIConnectionError); retrying in 4.00 seconds

@@ -2,6 +2,8 @@
 
 Runtime safety layer for the EDIT path: single repair mechanism with snapshot rollback, syntax validation, and deterministic stop conditions.
 
+**ReAct mode:** EDIT uses `_run_edit_once` (generate_patch_once → execute_patch → run_tests). Single attempt per edit action. **Legacy / test repair:** `run_edit_test_fix_loop` provides the full retry loop with critic and retry_planner.
+
 ## Purpose
 
 - **No git dependency:** Rollback is file-snapshot based; works in CI, zip archives, and non-git repos.

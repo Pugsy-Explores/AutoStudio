@@ -6,6 +6,17 @@ from typing import Any, Callable
 
 from planner.planner_utils import ALLOWED_ACTIONS
 
+try:
+    from config.agent_runtime import (
+        ENABLE_MINIMAL_EDIT_PIPELINE,
+        ENABLE_ULTRA_MINIMAL_EDIT_PIPELINE,
+        REACT_MODE,
+    )
+except ImportError:
+    ENABLE_MINIMAL_EDIT_PIPELINE = False
+    ENABLE_ULTRA_MINIMAL_EDIT_PIPELINE = False
+    REACT_MODE = False
+
 from agent.execution.mutation_strategies import (
     get_initial_search_variants,
     retry_same,
@@ -151,21 +162,70 @@ FAILURE_RECOVERY_DISPATCH = {
 }
 
 
+# Indicators that a failure is context-related (missing/weak retrieval) rather than
+# a hard unrecoverable error.  When these appear in an "exhausted retries" error the
+# failure should be RETRYABLE so the agent_loop can replan with better context rather
+# than giving up.
+_CONTEXT_RELATED_INDICATORS = (
+    "weak grounding",
+    "missing context",
+    "symbol not found",
+    "symbol_not_found",
+    "empty",
+    "low-content",
+    "insufficient",
+    "no context",
+    "patch_anchor_not_found",
+    "weakly_grounded",
+    "no_changes_planned",
+    "empty_patch",
+)
+
+# Failure reason codes that indicate the failure is context-related
+_CONTEXT_RELATED_REASON_CODES = frozenset({
+    "patch_anchor_not_found",
+    "weakly_grounded_patch",
+    "empty_patch",
+    "no_changes",
+})
+
+
+def _is_context_related_failure(error: str, output: Any) -> bool:
+    """Return True when the failure appears to be caused by missing/weak context."""
+    for indicator in _CONTEXT_RELATED_INDICATORS:
+        if indicator in error:
+            return True
+    if isinstance(output, dict):
+        frc = str(output.get("failure_reason_code") or "").lower()
+        if frc in _CONTEXT_RELATED_REASON_CODES:
+            return True
+    return False
+
+
 def classify_result(action: str, result: dict[str, Any] | None) -> ResultClassification:
     """
     Classify step result for recovery policy. Every step result must be classified.
     RETRYABLE_FAILURE: agent_loop may replan/retry. FATAL_FAILURE: stop without replan.
+
+    Context-aware: failures caused by missing/weak context are RETRYABLE even after
+    retries are exhausted, so the agent can replan with better retrieval.
     """
     if result is None or not isinstance(result, dict):
         return ResultClassification.FATAL_FAILURE
     if result.get("success") is True:
         return ResultClassification.SUCCESS
+    # Minimal / ultra-minimal pipeline: never FATAL for EDIT (isolation mode)
+    if (ENABLE_MINIMAL_EDIT_PIPELINE or ENABLE_ULTRA_MINIMAL_EDIT_PIPELINE) and action.upper() == "EDIT":
+        return ResultClassification.RETRYABLE_FAILURE
 
     error = (result.get("error") or "").lower()
     output = result.get("output") or {}
 
-    # Exhausted retries -> FATAL (policy engine already tried recovery)
+    # Exhausted retries — context-aware: if failure is due to missing context,
+    # classify as RETRYABLE so agent_loop can replan, not give up.
     if "exhausted" in error or "after retries" in error:
+        if _is_context_related_failure(error, output):
+            return ResultClassification.RETRYABLE_FAILURE
         return ResultClassification.FATAL_FAILURE
     if isinstance(output, dict) and output.get("attempt_history"):
         # Policy engine returned attempt_history; check if we exhausted
@@ -173,6 +233,8 @@ def classify_result(action: str, result: dict[str, Any] | None) -> ResultClassif
         max_attempts = policy.get("max_attempts", 1)
         history = output.get("attempt_history", [])
         if len(history) >= max_attempts:
+            if _is_context_related_failure(error, output):
+                return ResultClassification.RETRYABLE_FAILURE
             return ResultClassification.FATAL_FAILURE
 
     # Empty results (retrieval) -> RETRYABLE (query rewrite in policy engine)
@@ -193,6 +255,10 @@ def classify_result(action: str, result: dict[str, Any] | None) -> ResultClassif
 
     # Task 8: Tool failure, timeout -> RETRYABLE (retry + fallback, do not terminate)
     if "timeout" in error or "tool" in error or "fallback" in error:
+        return ResultClassification.RETRYABLE_FAILURE
+
+    # Context-related failure codes in output -> RETRYABLE
+    if _is_context_related_failure(error, output):
         return ResultClassification.RETRYABLE_FAILURE
 
     # Unknown/unhandled -> FATAL to avoid infinite retry loops
@@ -315,6 +381,9 @@ class ExecutionPolicyEngine:
         # Actions that skip policy (single attempt, no retry)
         if action == "EXPLAIN" or max_attempts < 1:
             return self._run_once(step, state, action)
+        # Minimal / ultra-minimal pipeline: single attempt, no retry for EDIT
+        if (ENABLE_MINIMAL_EDIT_PIPELINE or ENABLE_ULTRA_MINIMAL_EDIT_PIPELINE) and action == "EDIT":
+            return self._run_once(step, state, action)
 
         attempt_history: list[dict[str, Any]] = []
 
@@ -386,7 +455,8 @@ class ExecutionPolicyEngine:
 
         for attempt_num in range(1, max_attempts + 1):
             # Stage 42: attempt 1 only — bounded deterministic variants, no LLM rewriter
-            if attempt_num == 1:
+            # REACT_MODE: disable query_variants; use model output as-is (execution decides)
+            if attempt_num == 1 and not REACT_MODE:
                 initial = get_initial_search_variants(retrieval_input, max_total=3)
                 initial = [q for q in (initial or []) if isinstance(q, str) and (q or "").strip()]
                 use_initial = bool(initial)
@@ -395,6 +465,9 @@ class ExecutionPolicyEngine:
 
             if use_initial:
                 queries_to_try = initial
+            elif REACT_MODE:
+                # REACT_MODE: no query rewriting; use model output as-is
+                queries_to_try = [retrieval_input or ""]
             elif self._rewrite_query_fn is not None:
                 attempt_slice: list[SearchAttempt] = [
                     {
@@ -511,31 +584,23 @@ class ExecutionPolicyEngine:
         mutation: str | None,
         attempt_history: list[dict[str, Any]],
     ) -> dict:
-        steps_to_try = symbol_retry(step, state)[:max_attempts]
-        for attempt_num, st in enumerate(steps_to_try, start=1):
-            logger.info("[policy] EDIT attempt %s", attempt_num)
-            try:
-                raw = self._edit_fn(st, state)
-            except Exception as e:
-                attempt_history.append({"attempt": attempt_num, "error": str(e)})
-                continue
-            attempt_history.append({"attempt": attempt_num, "success": raw.get("success")})
-            if not _is_failure("EDIT", retry_on, raw):
-                out = raw.get("output") if isinstance(raw.get("output"), dict) else {}
-                out = dict(out)
-                out["attempt_history"] = attempt_history
-                _append_tool_memory(
-                    state,
-                    {"tool": "edit", "path": out.get("path"), "success": True},
-                )
-                logger.info("[policy] EDIT success")
-                return _with_classification({"success": True, "output": out, "error": raw.get("error")}, "EDIT")
+        # ReAct: EDIT always executes. No conditional routing, no symbol_retry, no critic before execution.
+        # (Main dispatch bypasses policy_engine for EDIT; this path exists for any alternate callers.)
+        try:
+            raw = self._edit_fn(step, state)
+        except Exception as e:
+            attempt_history.append({"attempt": 1, "error": str(e)})
+            return _with_classification(
+                {"success": False, "output": {"attempt_history": attempt_history}, "error": str(e)},
+                "EDIT",
+            )
+        r = raw if isinstance(raw, dict) else {"success": False, "output": {}, "error": "edit failed"}
+        attempt_history.append({"attempt": 1, "success": r.get("success")})
+        out = r.get("output") if isinstance(r.get("output"), dict) else {}
+        out = dict(out)
+        out["attempt_history"] = attempt_history
         return _with_classification(
-            {
-                "success": False,
-                "output": {"attempt_history": attempt_history},
-                "error": "edit failed after retries",
-            },
+            {"success": r.get("success", False), "output": out, "error": r.get("error"), "executed": r.get("executed", True)},
             "EDIT",
         )
 

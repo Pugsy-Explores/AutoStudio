@@ -27,7 +27,7 @@ if str(_ROOT) not in sys.path:
 
 from agent.memory.state import AgentState
 from agent.observability.trace_logger import add_event_listener, remove_event_listener, start_trace, finish_trace
-from agent.orchestrator.execution_loop import ExecutionLoopMode, execution_loop
+from agent.orchestrator.execution_loop import execution_loop
 from planner.planner import plan as planner_plan
 
 
@@ -199,9 +199,9 @@ def main() -> int:
                         "agent.execution.step_dispatcher.call_reasoning_model",
                         return_value="This is a sufficiently long explanation output for acceptance validation.",
                     ):
-                        result = execution_loop(state, sc.instruction, trace_id=trace_id, mode=ExecutionLoopMode.AGENT)
+                        result = execution_loop(state, sc.instruction, trace_id=trace_id)
                 except Exception:
-                    result = execution_loop(state, sc.instruction, trace_id=trace_id, mode=ExecutionLoopMode.AGENT)
+                    result = execution_loop(state, sc.instruction, trace_id=trace_id)
                 trace_path = finish_trace(trace_id)
                 row["execution"] = {
                     "steps_completed": len(result.state.completed_steps),

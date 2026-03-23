@@ -1,0 +1,150 @@
+{
+  "task_id": "sq_hard_2hop_arch",
+  "success": true,
+  "validation_passed": true,
+  "retries_used": null,
+  "replans_used": 0,
+  "attempts_total": null,
+  "failure_class": null,
+  "files_changed": [
+    ".symbol_graph/embeddings/chroma.sqlite3"
+  ],
+  "diff_stat": {
+    "insertions": 0,
+    "deletions": 0
+  },
+  "unrelated_files_changed": [
+    ".symbol_graph/embeddings/chroma.sqlite3"
+  ],
+  "bad_edit_patterns": [],
+  "retrieval_miss_signals": [],
+  "notes": "",
+  "_audit": {
+    "structural_success": true,
+    "grading_mode": "validation_exit_code",
+    "exception": null,
+    "index": {
+      "ok": true,
+      "symbol_count": 10,
+      "index_sqlite": "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235155/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_2hop_arch/.symbol_graph/index.sqlite",
+      "symbol_graph_dir": "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235155/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_2hop_arch/.symbol_graph",
+      "symbols_json": "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235155/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_2hop_arch/.symbol_graph/symbols.json"
+    },
+    "failure_bucket": null,
+    "first_failing_stage": null,
+    "execution_mode": "offline",
+    "model_call_count": 0,
+    "small_model_call_count": 0,
+    "reasoning_model_call_count": 0,
+    "used_offline_stubs": true,
+    "used_plan_injection": true,
+    "used_explain_stub": false,
+    "integrity_valid": false,
+    "integrity_failure_reason": "offline_mode_uses_stubs",
+    "retrieval_telemetry": null,
+    "edit_telemetry": {
+      "attempted_target_files": null,
+      "chosen_target_file": null,
+      "chosen_symbol": null,
+      "edit_failure_reason": null,
+      "search_viable_file_hits": 10,
+      "search_viable_raw_hits": 10,
+      "patches_applied": 0,
+      "changed_files_count": 0,
+      "bm25_available": true,
+      "reranker_failed": false,
+      "reranker_failed_fallback_used": false,
+      "grounding": null
+    },
+    "patch_reject_reason": null,
+    "validation_scope_kind": null,
+    "changed_files_count": 0,
+    "patches_applied": 0,
+    "files_modified": [
+      ".symbol_graph/embeddings/chroma.sqlite3"
+    ],
+    "retrieval_fallback_flags": [],
+    "target_selection_telemetry": {
+      "attempted_target_files": null,
+      "chosen_target_file": null,
+      "search_viable_file_hits": 10
+    },
+    "selected_validation_command": "python3 -m pytest tests/test_smoke.py -q",
+    "plan_resolution_telemetry": {
+      "plan_injection_used": true
+    }
+  },
+  "retrieval_quality": {
+    "task_id": "sq_hard_2hop_arch",
+    "tags": [
+      "search_stack",
+      "retrieval_quality",
+      "architecture",
+      "selector_hard"
+    ],
+    "has_symbol_or_region_body": true,
+    "has_non_test_implementation": true,
+    "relation_count": 6,
+    "all_kinds_typed": true,
+    "retrieval_intent": "generic",
+    "replanner_fired": false,
+    "query": "How does flow from the CLI entry point connect through the engine to the dispatch handler?",
+    "explain_step_ok": true,
+    "symbol_body_present": true,
+    "impl_bias_ok": true,
+    "relation_ok": true,
+    "final_context_count": 6,
+    "final_context_chars": 4316,
+    "replanner_triggered": false,
+    "replan_count": 0,
+    "candidate_kind_counts": {
+      "symbol": 2,
+      "localization": 4
+    },
+    "retrieval_result_type_counts": {
+      "symbol_body": 2
+    },
+    "implementation_body_present_count": 2,
+    "linked_row_count": 4,
+    "symbol_body_count": 2,
+    "file_header_count": 0,
+    "region_body_count": 0,
+    "test_file_row_count": 0,
+    "impl_file_row_count": 6,
+    "distinct_impl_file_count": 3,
+    "top_files": [
+      "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235155/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_2hop_arch/src/flowkit/engine.py",
+      "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235155/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_2hop_arch/src/flowkit/dispatch.py",
+      "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_235155/ENABLE_LLM_BUNDLE_SELECTOR_0/workspaces/sq_hard_2hop_arch/src/flowkit/settings.py"
+    ],
+    "prune_loss_proxy": 14,
+    "bundle_selector_used": false,
+    "bundle_selector_skip_reason": "flag_disabled",
+    "selected_id_count": 0,
+    "selected_impl_body_count": 0,
+    "selected_linked_row_count": 0,
+    "selected_test_row_count": 0,
+    "selected_top_files": [],
+    "bundle_selector_dropped_id_count": 0,
+    "final_answer_context_from_selected_rows_only": false,
+    "selector_integrity_ok": true,
+    "bundle_selector_observability": {
+      "used": false,
+      "skip_reason": "flag_disabled",
+      "keep_ids": [],
+      "dropped_ids_count": 0,
+      "selected_id_count": 0,
+      "selected_impl_body_count": 0,
+      "selected_linked_row_count": 0,
+      "selected_test_row_count": 0,
+      "final_answer_context_from_selected_rows_only": false
+    },
+    "architecture_linked_ok": true,
+    "architecture_substantive_impl_ok": true,
+    "architecture_not_test_dominated": true,
+    "architecture_multi_file_ok": true,
+    "architecture_ok": true,
+    "architecture_answer_ready": true,
+    "architecture_safe_selection": null
+  }
+}

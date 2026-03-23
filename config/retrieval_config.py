@@ -28,12 +28,12 @@ def _bool_env(name: str, default: str) -> bool:
     return os.getenv(name, default).lower() in ("1", "true", "yes")
 
 
-MAX_CONTEXT_SNIPPETS = int(os.getenv("MAX_CONTEXT_SNIPPETS", "6"))
-DEFAULT_MAX_SNIPPETS = int(os.getenv("DEFAULT_MAX_SNIPPETS", "6"))
-DEFAULT_MAX_CHARS = int(os.getenv("DEFAULT_MAX_CHARS", "8000"))
-DEFAULT_MAX_CONTEXT_CHARS = int(os.getenv("DEFAULT_MAX_CONTEXT_CHARS", "16000"))
+MAX_CONTEXT_SNIPPETS = int(os.getenv("MAX_CONTEXT_SNIPPETS", "20"))
+DEFAULT_MAX_SNIPPETS = int(os.getenv("DEFAULT_MAX_SNIPPETS", "20"))
+DEFAULT_MAX_CHARS = int(os.getenv("DEFAULT_MAX_CHARS", "20000"))
+DEFAULT_MAX_CONTEXT_CHARS = int(os.getenv("DEFAULT_MAX_CONTEXT_CHARS", "20000"))
 
-MAX_SEARCH_RESULTS = int(os.getenv("MAX_SEARCH_RESULTS", "20"))
+MAX_SEARCH_RESULTS = int(os.getenv("MAX_SEARCH_RESULTS", "50"))
 MAX_SYMBOL_EXPANSION = int(os.getenv("MAX_SYMBOL_EXPANSION", "10"))
 GRAPH_EXPANSION_DEPTH = int(os.getenv("GRAPH_EXPANSION_DEPTH", "2"))
 
@@ -136,7 +136,7 @@ RETRIEVAL_AUTO_DETECT_SERVICE_DIRS = _bool_env(
     "RETRIEVAL_AUTO_DETECT_SERVICE_DIRS",
     "0",
 )  # detect src/, lib/, app/, services/
-RETRIEVAL_TEST_DOWNWEIGHT = float(os.getenv("RETRIEVAL_TEST_DOWNWEIGHT", "0.2"))
+RETRIEVAL_TEST_DOWNWEIGHT = float(os.getenv("RETRIEVAL_TEST_DOWNWEIGHT", "0.8"))
 
 # Kind-aware expansion: choose read_symbol_body vs read_file from candidate_kind when set (default OFF for safe rollout).
 ENABLE_KIND_AWARE_EXPANSION = _bool_env("ENABLE_KIND_AWARE_EXPANSION", "0")

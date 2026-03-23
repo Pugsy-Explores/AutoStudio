@@ -158,7 +158,13 @@ def _compute_edit_generation_debug(
 
 
 def _parse_model_patch(raw: str) -> tuple[dict | None, dict]:
-    """Extract JSON patch from model output. Returns (patch_dict | None, meta)."""
+    """Extract JSON patch from model output. Returns (patch_dict | None, meta).
+
+    Handles three action types:
+    - text_sub: string replacement patch
+    - insert: code insertion at symbol
+    - already_correct: model signals code already satisfies instruction (no patch needed)
+    """
     if not raw or not raw.strip():
         return (None, {})
     text = raw.strip()
@@ -176,6 +182,10 @@ def _parse_model_patch(raw: str) -> tuple[dict | None, dict]:
     if "confident" in obj:
         meta["confident"] = bool(obj["confident"])
     action = obj.get("action")
+    # Handle already_correct signal: model determined no change is needed
+    if action == "already_correct" or obj.get("already_correct") is True:
+        meta["already_correct"] = True
+        return (None, meta)
     if action == "text_sub":
         old = obj.get("old", "")
         new = obj.get("new", "")
@@ -274,6 +284,17 @@ def generate_edit_proposals(context: dict, instruction: str, project_root: str |
         return []
 
     patch, meta = _generate_patch_via_model(proposal)
+
+    # Handle already_correct signal: model determined code already satisfies instruction
+    if not patch and meta.get("already_correct"):
+        logger.info("[edit_proposal_generator] model signals already_correct for %s", proposal.get("file"))
+        return [{
+            "file": proposal.get("file", ""),
+            "patch": None,
+            "patch_strategy": "already_correct",
+            "already_correct": True,
+        }]
+
     if not patch:
         logger.info("[edit_proposal_generator] no valid patch from model for %s", proposal.get("file"))
         return []

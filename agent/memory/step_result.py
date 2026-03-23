@@ -16,4 +16,5 @@ class StepResult:
     files_modified: list[str] | None = None  # For EDIT steps: paths touched
     patch_size: int | None = None  # For EDIT steps: lines changed
     reason_code: str | None = None  # From dispatch (e.g. insufficient_grounding) for replanner recovery
+    executed: bool = True  # EDIT: True iff execute_patch was attempted; assert when False (no precondition)
 

@@ -1,0 +1,40 @@
+task_id=sq_hard_2hop_arch success=True validation_passed=True failure_bucket=None
+
+{
+  "completed_steps": [
+    [
+      "plan_da150287",
+      1
+    ]
+  ],
+  "patches_applied": 0,
+  "files_modified": [],
+  "errors_encountered": [],
+  "tool_calls": 1,
+  "plan_result": {
+    "steps": [
+      {
+        "id": 1,
+        "action": "EXPLAIN",
+        "description": "How does flow from the CLI entry point connect through the engine to the dispatch handler?",
+        "reason": "Routed by unified production router"
+      }
+    ],
+    "plan_id": "plan_da150287"
+  },
+  "start_time": 391778.494092,
+  "edit_telemetry": {
+    "attempted_target_files": null,
+    "chosen_target_file": null,
+    "chosen_symbol": null,
+    "edit_failure_reason": null,
+    "search_viable_file_hits": 10,
+    "search_viable_raw_hits": 10,
+    "patches_applied": 0,
+    "changed_files_count": 0,
+    "bm25_available": true,
+    "reranker_failed": false,
+    "reranker_failed_fallback_used": false,
+    "grounding": null
+  }
+}

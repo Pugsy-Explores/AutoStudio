@@ -28,7 +28,7 @@ The largest module, containing all runtime orchestration:
 
 | Subdirectory | Role |
 |-------------|------|
-| `orchestrator/` | **Entry points**: `agent_controller.py` (run_controller, run_attempt_loop), `deterministic_runner.py`, `plan_resolver.py`, `replanner.py`, `goal_evaluator.py`, `validator.py` |
+| `orchestrator/` | **Entry points**: `agent_controller.py` (run_controller), `deterministic_runner.py` (run_hierarchical → ReAct execution_loop), `plan_resolver.py`, `replanner.py`, `goal_evaluator.py`, `validator.py` — ReAct primary; plan-based path via REACT_MODE=0 |
 | `execution/` | **Step dispatch**: `StepExecutor`, `step_dispatcher.py` (routes SEARCH/EDIT/INFRA/EXPLAIN), `tool_graph.py`, `policy_engine.py`, `explain_gate.py`, `mutation_strategies.py` |
 | `retrieval/` | **Hybrid retrieval pipeline**: `search_pipeline.py` (BM25 + graph + vector + grep in parallel), `retrieval_pipeline.py` (anchor → expand → rerank → prune), `query_rewriter.py`, `context_builder.py`, `context_ranker.py`, `context_pruner.py`, `reranker/`, `localization/` |
 | `tools/` | **Tool adapters**: filesystem, terminal, Serena MCP, reference lookup, context7 |

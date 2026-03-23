@@ -1,0 +1,38 @@
+{
+  "completed_steps": [
+    [
+      "plan_e4b4ad86",
+      1
+    ]
+  ],
+  "patches_applied": 0,
+  "files_modified": [],
+  "errors_encountered": [],
+  "tool_calls": 1,
+  "plan_result": {
+    "steps": [
+      {
+        "id": 1,
+        "action": "INFRA",
+        "description": "Where is the config object loaded and how is it passed into the runtime execution path?",
+        "reason": "Routed by unified production router"
+      }
+    ],
+    "plan_id": "plan_e4b4ad86"
+  },
+  "start_time": 390787.250991208,
+  "edit_telemetry": {
+    "attempted_target_files": null,
+    "chosen_target_file": null,
+    "chosen_symbol": null,
+    "edit_failure_reason": null,
+    "search_viable_file_hits": null,
+    "search_viable_raw_hits": null,
+    "patches_applied": 0,
+    "changed_files_count": 0,
+    "bm25_available": null,
+    "reranker_failed": null,
+    "reranker_failed_fallback_used": null,
+    "grounding": null
+  }
+}

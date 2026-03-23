@@ -27,9 +27,29 @@ class StepExecutor:
             output = raw.get("output", "")
             files_modified = None
             patch_size = None
-            if action == "EDIT" and isinstance(output, dict):
-                files_modified = output.get("files_modified")
-                patch_size = output.get("patches_applied")
+            executed = True
+            if action == "EDIT":
+                if isinstance(output, dict):
+                    files_modified = output.get("files_modified")
+                    patch_size = output.get("patches_applied")
+                executed = raw.get("executed", True)
+                # Fix 5: Fail loudly if EDIT never executed (unless precondition prevented it)
+                if not executed:
+                    out = raw.get("output") or {}
+                    err = str(raw.get("error") or "")
+                    fr = (out.get("failure_reason_code") if isinstance(out, dict) else None) or ""
+                    preconditions = {
+                        "patch_anchor_not_found", "empty_patch", "no_changes_planned",
+                        "target_is_directory", "max_files_exceeded", "max_patch_size_exceeded",
+                        "no_changes",
+                    }
+                    is_precondition = (
+                        fr in preconditions
+                        or "edit target" in err.lower()
+                        or "target not found" in err.lower()
+                        or "target is a directory" in err.lower()
+                    )
+                    assert executed or is_precondition, "EDIT step never executed"
             elif action == "WRITE_ARTIFACT" and isinstance(output, dict):
                 files_modified = output.get("files_modified")
             rc = raw.get("reason_code")
@@ -46,6 +66,7 @@ class StepExecutor:
                 files_modified=files_modified,
                 patch_size=patch_size,
                 reason_code=rc if isinstance(rc, str) else None,
+                executed=executed,
             )
         except Exception as e:
             elapsed = time.perf_counter() - start
@@ -62,12 +83,21 @@ class StepExecutor:
             )
 
     def execute_plan(self, plan: dict, state: AgentState) -> list[StepResult]:
-        """Run all steps in order; append results to state; return step_results."""
+        """Run all steps in order; append results to state; return step_results.
+
+        STOP CONDITION: after a successful EDIT (patch applied + validation passed),
+        terminate early — do not execute further planned steps.  This prevents
+        oscillation where the system keeps modifying already-correct code.
+        """
         steps = plan.get("steps", [])
         for step in steps:
             result = self.execute_step(step, state)
             state.record(step, result)
             _print_step_result(result)
+            # STOP after successful EDIT: goal satisfied, no further steps needed
+            if result.action == "EDIT" and result.success:
+                logger.info("[execution_loop] STOP: goal satisfied after EDIT")
+                break
         return state.step_results
 
 
