@@ -9,15 +9,20 @@
 ```
 User instruction
     → run_controller
-    → run_hierarchical
-    → execution_loop (ReAct)
-        → _react_get_next_action (LLM: thought, action, args)
-        → validate_action (strict schema)
-        → StepExecutor.execute_step
-        → dispatch (SEARCH / READ / EDIT / RUN_TEST)
-        → _build_react_observation
-        → append to react_history
-        → repeat until finish or limits
+        → start_trace
+        → ensure_retrieval_daemon (optional)
+        → build_repo_map
+        → search_similar_tasks (optional)
+        → run_hierarchical
+            → execution_loop (ReAct)
+                → _react_get_next_action (LLM: thought, action, args)
+                → validate_action (strict schema)
+                → StepExecutor.execute_step → dispatch (SEARCH/READ/EDIT/RUN_TEST)
+                → _build_react_observation
+                → append to react_history
+                → repeat until finish or limits
+        → save_task
+        → finish_trace
 ```
 
 ---
@@ -27,7 +32,8 @@ User instruction
 ```mermaid
 flowchart TB
     User[User instruction] --> RC[run_controller]
-    RC --> RH[run_hierarchical]
+    RC --> Setup[start_trace, build_repo_map, search_similar_tasks]
+    Setup --> RH[run_hierarchical]
     RH --> EL[execution_loop - ReAct]
     EL --> RGA[_react_get_next_action]
     RGA --> LLM[LLM: thought, action, args]
@@ -39,7 +45,7 @@ flowchart TB
     DISP -->|open_file| READ[READ: read file]
     DISP -->|edit| EDIT[EDIT: generate_patch_once → execute_patch → validate → run_tests]
     DISP -->|run_tests| TEST[RUN_TEST]
-    DISP -->|finish| DONE[Return state]
+    DISP -->|finish| DONE[Exit loop; controller saves task]
     SEARCH --> OBS2[Build observation]
     READ --> OBS2
     EDIT --> OBS2

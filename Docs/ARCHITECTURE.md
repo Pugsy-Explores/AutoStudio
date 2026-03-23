@@ -20,7 +20,9 @@ ReAct pipeline diagram: [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
 
 ---
 
-## Legacy Pipeline (REACT_MODE=0)
+## Legacy Pipeline (Design Reference — Not in Current Code)
+
+> **Note:** `run_attempt_loop` is not implemented in the current codebase. The controller always calls `run_hierarchical` (ReAct). This diagram preserves the original Phase 5 design for reference.
 
 ```mermaid
 flowchart TD

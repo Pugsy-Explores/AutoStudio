@@ -1,6 +1,6 @@
 # Agent Controller — Full Pipeline
 
-The **agent controller** (`run_controller`) orchestrates the development workflow. **Primary (ReAct, default):** instruction → run_hierarchical → execution_loop; model selects actions (search, open_file, edit, run_tests, finish). EDIT uses `_edit_react` → `_generate_patch_once` → execute_patch → run_tests. See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md). **Legacy (REACT_MODE=0):** plan → retrieval → edit → conflict resolution → patch execution → test repair. Mode routing: `deterministic` (default), `autonomous`, or `multi_agent`.
+The **agent controller** (`run_controller`) orchestrates the development workflow: instruction → build_repo_map → run_hierarchical → execution_loop (ReAct) → save_task. Model selects actions (search, open_file, edit, run_tests, finish). EDIT uses `_edit_react` → `_generate_patch_once` → execute_patch → run_tests. See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
 
 ---
 
@@ -18,13 +18,12 @@ from agent.orchestrator.agent_controller import run_controller
 result = run_controller(
     instruction="Add a retry decorator to the fetch function",
     project_root="/path/to/repo",
-    mode="deterministic",  # default; use "autonomous" or "multi_agent" for other modes
 )
 # Returns: {
 #   task_id,
 #   instruction,
 #   state,                    # AgentState (for backward compatibility with run_agent() callers)
-#   completed_steps,          # len(AgentState.completed_steps); step identity is (plan_id, step_id) (Phase 4)
+#   completed_steps,          # len(AgentState.completed_steps)
 #   files_modified,           # derived from AgentState.step_results
 #   patches_applied,          # integer count of all applied patches in this attempt
 #   errors,
@@ -32,39 +31,30 @@ result = run_controller(
 # }
 ```
 
-**CLI entrypoints (Phase 1):** Both `python -m agent` and `python -m agent.cli.run_agent` invoke `run_controller(instruction)`. **ReAct (default):** CLI → `run_controller` → `run_hierarchical` → **execution_loop** (ReAct). **Legacy (REACT_MODE=0):** run_attempt_loop → run_deterministic → step loop. See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md) and [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md).
+**CLI entrypoints:** `python -m agent` and `python -m agent.cli.run_agent` invoke `run_controller(instruction)` → `run_hierarchical` → **execution_loop** (ReAct). See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
 
 ---
 
 ## Pipeline Flow
 
-**Mode routing:** `mode="deterministic"` (default) runs the loop below; `mode="autonomous"` delegates to `run_autonomous`; `mode="multi_agent"` delegates to `run_multi_agent`.
-
-**ReAct (default, REACT_MODE=1):** instruction → build_repo_map → run_hierarchical → **execution_loop** (ReAct). Model chooses actions; no planner, Critic, or RetryPlanner. See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
-
-**Legacy (REACT_MODE=0) — Phase 5 attempt loop:** run_attempt_loop; each attempt: run_deterministic → GoalEvaluator → Critic → RetryPlanner → next attempt. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+**Current implementation:** The controller has no mode parameter. It always runs the ReAct path:
 
 ```
 instruction
-  → [if mode != deterministic] _run_controller_by_mode → run_autonomous or run_multi_agent
+  → start_trace()
+  → ensure_retrieval_daemon() (if RERANKER/EMBEDDING_USE_DAEMON)
   → build_repo_map() — spec format {modules, symbols, calls} → repo_map.json
   → search_similar_tasks() — vector index of past tasks (optional)
-  → [REACT_MODE=1] run_hierarchical → execution_loop (ReAct)
-  → [REACT_MODE=0] run_attempt_loop(instruction, project_root, trace_id, similar_tasks)
-       for attempt in range(MAX_AGENT_ATTEMPTS):
-            run_deterministic(instruction, project_root, trace_id, similar_tasks, retry_context=retry_context)
-                 → get_plan(instruction, retry_context=retry_context)
-                      → [router or planner] planner.plan(instruction, retry_context) when CODE_EDIT/GENERAL
-                 → AgentState (plan with plan_id; completed_steps as (plan_id, step_id)); while not state.is_finished(): step → execute_step → validate → record
-            goal_met = GoalEvaluator.evaluate(instruction, state)
-            TrajectoryMemory.record_attempt(attempt_data)
-            if goal_met: return (state, loop_output)
-            critic_feedback = Critic.analyze(instruction, attempt_data)   # hybrid: deterministic + LLM strategy_hint
-            retry_context = RetryPlanner.build_retry_context(instruction, trajectory_memory, critic_feedback)
+  → run_hierarchical(instruction, root, trace_id, similar_tasks)
+       → execution_loop(state, instruction)  # ReAct: model selects actions
   → save_task() — persist to .agent_memory/tasks/
   → finish_trace()
   → return task summary
 ```
+
+See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md) for the execution_loop flow.
+
+**Legacy design (not in code):** run_attempt_loop, get_plan, GoalEvaluator, Critic, RetryPlanner. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
 
 ---
 

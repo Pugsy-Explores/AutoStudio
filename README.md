@@ -49,7 +49,7 @@ AutoStudio converts natural-language instructions into executable plans, runs co
 
 **Primary (ReAct, default, REACT_MODE=1):** Instruction → **run_controller** → **run_hierarchical** → **execution_loop** (ReAct). The model selects actions (search, open_file, edit, run_tests, finish) each step. No planner. No Critic/RetryPlanner. See [Docs/REACT_ARCHITECTURE.md](Docs/REACT_ARCHITECTURE.md) and [Docs/REACT_QUICK_START.md](Docs/REACT_QUICK_START.md).
 
-**Legacy (REACT_MODE=0):** run_attempt_loop, get_plan, GoalEvaluator, Critic, RetryPlanner. See [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md) and [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md).
+**Legacy (design reference, not in code):** Phase 5 design (run_attempt_loop, get_plan, GoalEvaluator, Critic, RetryPlanner) documented in [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md) and [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md).
 
 ReAct flow, tools, and diagrams: [Docs/REACT_ARCHITECTURE.md](Docs/REACT_ARCHITECTURE.md).
 

@@ -1,8 +1,8 @@
 # Agent Loop Workflow Diagram
 
-**Primary (ReAct, REACT_MODE=1 default):** run_controller → run_hierarchical → execution_loop (ReAct). Model chooses actions (search, open_file, edit, run_tests, finish). No planner, Critic, or RetryPlanner. See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md) and [REACT_QUICK_START.md](REACT_QUICK_START.md).
+**Primary (Current Code):** run_controller → run_hierarchical → execution_loop (ReAct). Model chooses actions (search, open_file, edit, run_tests, finish). See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md) and [REACT_QUICK_START.md](REACT_QUICK_START.md).
 
-**Legacy (REACT_MODE=0):** run_attempt_loop wraps each task; per attempt: get_plan(retry_context) → plan → execute steps → validate → **GoalEvaluator** → if not goal_met: **Critic** + **RetryPlanner** → next attempt. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+**Legacy (Design Reference — run_attempt_loop not in code):** The diagrams below document the original Phase 5 design (get_plan, GoalEvaluator, Critic, RetryPlanner). The current controller does not branch; it always uses run_hierarchical. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
 
 ---
 
@@ -10,15 +10,15 @@ Retrieval: SEARCH_CANDIDATES → BUILD_CONTEXT → EDIT. Full pipeline: [RETRIEV
 
 ---
 
-## High-level flow
+## High-level flow (Legacy Design — Not in Current Code)
 
-**Phase 5:** Deterministic mode uses **run_controller** → **run_attempt_loop**. Each attempt runs **run_deterministic** (get_plan → step loop); after the attempt, **GoalEvaluator.evaluate**; on failure, **Critic.analyze** and **RetryPlanner.build_retry_context** feed the next attempt's **get_plan(retry_context)**. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+**Phase 5 design:** run_controller → run_attempt_loop. Each attempt: run_deterministic (get_plan → step loop) → GoalEvaluator → Critic → RetryPlanner → next attempt. **The current code does not use this path**; it always calls run_hierarchical. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
 
 ```mermaid
 flowchart TB
-    subgraph ENTRY[" "]
-        A["User instruction"] --> B["run_controller (deterministic)"]
-        B --> B2["run_attempt_loop"]
+    subgraph ENTRY["Legacy design only"]
+        A["User instruction"] --> B["run_controller"]
+        B --> B2["run_attempt_loop (not in code)"]
         B2 --> C["get_plan with retry_context"]
     end
 
@@ -48,7 +48,7 @@ flowchart TB
         L --> M["AgentState with instruction, plan (plan_id), completed_steps (plan_id, step_id), results, context"]
     end
 
-    subgraph STEPLOOP["Attempt: step loop (execution_loop — shared by run_deterministic & run_agent)"]
+    subgraph STEPLOOP["Attempt: step loop (legacy design)"]
         M --> N{"Termination?"}
         N -->|max_iter/runtime/replan| O["Attempt done"]
         N -->|no| P["state.next_step"]
@@ -74,10 +74,10 @@ flowchart TB
     end
 ```
 
-**ASCII diagram:**
+**ASCII diagram (legacy design — not in current code):**
 
 ```
-  User instruction ──► run_controller ──► run_attempt_loop
+  User instruction ──► run_controller ──► run_attempt_loop (removed)
                                                     │
          ┌──────────────────────────────────────────┴──────────────────────────────────────────┐
          │ for each attempt: get_plan(retry_context)                                            │
@@ -93,7 +93,7 @@ flowchart TB
          └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Context initialization:** When execution goes through `run_controller` (CLI entrypoints `python -m agent`, `python -m agent.cli.run_agent`), `run_deterministic` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. **Phase 3:** Both `run_agent` and `run_deterministic` share a single implementation: **execution_loop()** in `agent/orchestrator/execution_loop.py`. Behavior is selected via **ExecutionLoopMode**: `run_agent` uses `mode=AGENT`; `run_deterministic` uses `mode=DETERMINISTIC`. Same config limits and failure semantics (no record of failed steps, no `undo_last_step`). See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
+**Current implementation:** `run_controller` calls `run_hierarchical` → `execution_loop` (ReAct). The execution_loop in `agent/orchestrator/execution_loop.py` is ReAct-only; model selects actions each step. No run_deterministic, run_agent, or ExecutionLoopMode in the current path.
 
 **Termination conditions (Phase 4):** task complete, max replan, max step retries (run_agent only), max steps, max tool calls, max runtime, max iterations. Both `run_agent` and `run_deterministic` use limits from `config/agent_config.py`. **Phase 7:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`) via ThreadPoolExecutor around `execute_step`; step timeout returns RETRYABLE_FAILURE and logs `step_timeout`. See [CONFIGURATION.md](CONFIGURATION.md).
 
