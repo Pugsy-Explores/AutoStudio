@@ -17,6 +17,7 @@ AutoStudio converts natural-language instructions into executable plans, runs co
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
+- [ReAct Architecture](#react-architecture)
 - [Quick Start](#quick-start)
 - [Project Structure](#project-structure)
 - [Core Components](#core-components)
@@ -47,15 +48,116 @@ AutoStudio converts natural-language instructions into executable plans, runs co
 
 ## Architecture Overview
 
-**Primary (ReAct, default, REACT_MODE=1):** Instruction → **run_controller** → **run_hierarchical** → **execution_loop** (ReAct). The model selects actions (search, open_file, edit, run_tests, finish) each step. No planner. No Critic/RetryPlanner. See [Docs/REACT_ARCHITECTURE.md](Docs/REACT_ARCHITECTURE.md) and [Docs/REACT_QUICK_START.md](Docs/REACT_QUICK_START.md).
+**Primary (ReAct, default, REACT_MODE=1):** Instruction → **run_controller** → **run_hierarchical** → **execution_loop** (ReAct). The model selects actions (search, open_file, edit, run_tests, finish) each step. No planner. No Critic/RetryPlanner. See [ReAct Architecture](#react-architecture) below and [Docs/REACT_QUICK_START.md](Docs/REACT_QUICK_START.md).
 
 **Legacy (design reference, not in code):** Phase 5 design (run_attempt_loop, get_plan, GoalEvaluator, Critic, RetryPlanner) documented in [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md) and [Docs/PHASE_5_ATTEMPT_LOOP.md](Docs/PHASE_5_ATTEMPT_LOOP.md).
-
-ReAct flow, tools, and diagrams: [Docs/REACT_ARCHITECTURE.md](Docs/REACT_ARCHITECTURE.md).
 
 ### Hybrid Retrieval (Shared)
 
 SEARCH path reuses the same retrieval pipeline: RepoMapLookup → BM25 + Graph + Vector + Grep → RRF → Anchor → SymbolExpander → GraphExpansion → ReferenceLookup → CallChain → Deduplicator → Reranker → Pruner. See [Docs/RETRIEVAL_ARCHITECTURE.md](Docs/RETRIEVAL_ARCHITECTURE.md).
+
+---
+
+## ReAct Architecture
+
+ReAct mode is the default and primary execution path (REACT_MODE=1). The model selects actions step-by-step; no planner, no Critic, no RetryPlanner.
+
+### Flow
+
+```
+User instruction
+    → run_controller
+        → start_trace
+        → ensure_retrieval_daemon (optional)
+        → build_repo_map
+        → search_similar_tasks (optional)
+        → run_hierarchical
+            → execution_loop (ReAct)
+                → _react_get_next_action (LLM: thought, action, args)
+                → validate_action (strict schema)
+                → StepExecutor.execute_step → dispatch (SEARCH/READ/EDIT/RUN_TEST)
+                → _build_react_observation
+                → append to react_history
+                → repeat until finish or limits
+        → save_task
+        → finish_trace
+```
+
+### Flow Diagram
+
+```mermaid
+flowchart TB
+    User[User instruction] --> RC[run_controller]
+    RC --> Setup[start_trace, build_repo_map, search_similar_tasks]
+    Setup --> RH[run_hierarchical]
+    RH --> EL[execution_loop - ReAct]
+    EL --> RGA[_react_get_next_action]
+    RGA --> LLM[LLM: thought, action, args]
+    LLM --> VA{validate_action}
+    VA -->|invalid| OBS1[Append error to react_history]
+    OBS1 --> RGA
+    VA -->|valid| DISP{action?}
+    DISP -->|search| SEARCH[SEARCH: hybrid retrieval]
+    DISP -->|open_file| READ[READ: read file]
+    DISP -->|edit| EDIT[EDIT: generate_patch_once → execute_patch → validate → run_tests]
+    DISP -->|run_tests| TEST[RUN_TEST]
+    DISP -->|finish| DONE[Exit loop; controller saves task]
+    SEARCH --> OBS2[Build observation]
+    READ --> OBS2
+    EDIT --> OBS2
+    TEST --> OBS2
+    OBS2 --> APP[Append to react_history]
+    APP --> EL
+```
+
+### Tool Schema
+
+| Action | Required Args | Internal Step |
+|--------|---------------|---------------|
+| `search` | `query` (non-empty) | SEARCH |
+| `open_file` | `path` | READ |
+| `edit` | `path`, `instruction` | EDIT |
+| `run_tests` | `{}` | RUN_TEST |
+| `finish` | `{}` | (terminates loop) |
+
+Source of truth: `agent/execution/react_schema.py`. Invalid output → error appended to react_history → model retries.
+
+### Required Workflow
+
+1. **search** → find relevant files
+2. **open_file** → read and understand code
+3. **edit** → apply a precise fix (path + instruction)
+4. **run_tests** → verify
+
+### EDIT Path
+
+```
+edit (path, instruction) → _edit_react → _generate_patch_once → execute_patch → validate_project → run_tests
+```
+
+Single attempt per edit step. No critic, no retry_planner.
+
+### Limits
+
+| Limit | Config | Default |
+|-------|--------|---------|
+| Max loop iterations | MAX_LOOP_ITERATIONS | 50 |
+| Max steps | MAX_STEPS | 30 |
+| Max tool calls | MAX_TOOL_CALLS | 50 |
+| Max task runtime | MAX_TASK_RUNTIME_SECONDS | 900 |
+| Per-step timeout | MAX_STEP_TIMEOUT_SECONDS | 60 |
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `agent/orchestrator/agent_controller.py` | run_controller → run_hierarchical |
+| `agent/orchestrator/deterministic_runner.py` | run_hierarchical → execution_loop |
+| `agent/orchestrator/execution_loop.py` | ReAct loop: _react_get_next_action, react_history |
+| `agent/execution/step_dispatcher.py` | _dispatch_react, _edit_react, _generate_patch_once |
+| `agent/execution/react_schema.py` | ALLOWED_ACTIONS, validate_action |
+| `agent/prompt_versions/react_action/v1.yaml` | Production ReAct system prompt |
+| `scripts/run_react_live.py` | Live execution with trace capture |
 
 ---
 
@@ -153,7 +255,7 @@ See [Docs/PROJECT_STRUCTURE.md](Docs/PROJECT_STRUCTURE.md) for full tree.
 
 ## Core Components
 
-**run_controller** → **run_hierarchical** → **execution_loop** (ReAct). Key files and tool schema: [Docs/REACT_ARCHITECTURE.md](Docs/REACT_ARCHITECTURE.md). Legacy: [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md).
+**run_controller** → **run_hierarchical** → **execution_loop** (ReAct). Key files and tool schema: [ReAct Architecture](#react-architecture). Legacy: [Docs/AGENT_LOOP_WORKFLOW.md](Docs/AGENT_LOOP_WORKFLOW.md).
 
 ---
 
@@ -461,7 +563,7 @@ The **workflow layer** (`agent/workflow/`) turns AutoStudio into a developer tea
 
 | Doc | Description |
 |-----|--------------|
-| [Docs/REACT_ARCHITECTURE.md](Docs/REACT_ARCHITECTURE.md) | **Primary:** ReAct flow, tools, schema, EDIT path |
+| [ReAct Architecture](#react-architecture) | **Primary:** ReAct flow, tools, schema, EDIT path (in main README) |
 | [Docs/REACT_QUICK_START.md](Docs/REACT_QUICK_START.md) | Quick start for ReAct mode |
 | [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md) | Authoritative system architecture: pipeline diagram, component descriptions, data flow |
 | [Docs/OBSERVABILITY.md](Docs/OBSERVABILITY.md) | Telemetry fields, trace logging, retrieval metrics |
