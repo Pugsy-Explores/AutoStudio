@@ -42,6 +42,41 @@ def _read_handler(args: dict, state) -> dict:
     return {"success": True, "output": content, "classification": ResultClassification.SUCCESS.value}
 
 
+def _read_snippet_handler(args: dict, state) -> dict:
+    """
+    Internal bounded read tool.
+
+    Not intended for LLM selection; used by system-driven exploration inspection to guarantee
+    bound-before-I/O (no full-file reads).
+    """
+    from agent_v2.exploration.read_router import ReadRequest, read as bounded_read  # noqa: PLC0415
+
+    project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    path = str(args.get("path") or "").strip()
+    if not path:
+        return {
+            "success": False,
+            "output": {},
+            "error": "READ_SNIPPET requires path. Args: {\"path\": \"<file path>\", \"symbol\"?: str, \"line\"?: int, \"window\"?: int}",
+            "classification": ResultClassification.RETRYABLE_FAILURE.value,
+        }
+
+    # Resolve path relative to project root for deterministic behavior.
+    full_path = Path(path) if Path(path).is_absolute() else Path(project_root) / path
+    symbol = args.get("symbol")
+    line = args.get("line")
+    window = args.get("window")
+
+    req = ReadRequest(
+        path=str(full_path),
+        symbol=str(symbol).strip() if isinstance(symbol, str) and symbol.strip() else None,
+        line=int(line) if isinstance(line, int) or (isinstance(line, str) and str(line).strip().isdigit()) else None,
+        window=int(window) if isinstance(window, int) or (isinstance(window, str) and str(window).strip().isdigit()) else 80,
+    )
+    payload = bounded_read(req, state=state)
+    return {"success": True, "output": payload, "classification": ResultClassification.SUCCESS.value}
+
+
 def _edit_handler(args: dict, state) -> dict:
     from agent.execution import step_dispatcher as sd
 
@@ -91,6 +126,8 @@ def register_all_tools() -> None:
     """Register the canonical ReAct tools."""
     register_tool(ToolDefinition("search", "Search the codebase", ["query"], _search_handler))
     register_tool(ToolDefinition("open_file", "Read file contents", ["path"], _read_handler))
+    # Internal-only bounded read primitive (used by system exploration; not part of user-facing ReAct contract).
+    register_tool(ToolDefinition("read_snippet", "Read bounded snippet (internal)", ["path"], _read_snippet_handler))
     register_tool(ToolDefinition("edit", "Apply edit to file", ["instruction", "path"], _edit_handler))
     register_tool(ToolDefinition("run_tests", "Run tests", [], _run_tests_handler))
     register_tool(ToolDefinition("finish", "Terminate the task", [], None))

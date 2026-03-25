@@ -1176,7 +1176,10 @@ def _dispatch_react(step: dict, state: AgentState) -> dict:
             "classification": ResultClassification.RETRYABLE_FAILURE.value,
         }
 
-    tool = get_tool_by_name(react_name_by_action.get(action, ""))
+    # Prefer explicit tool name when provided. This allows system-driven calls (e.g. bounded reads)
+    # while keeping the user-facing ReAct contract stable (LLM still emits canonical actions).
+    tool_name = (step.get("_react_action_raw") or "").strip() or react_name_by_action.get(action, "")
+    tool = get_tool_by_name(tool_name)
     if tool is None or tool.handler is None:
         return _obs(f"Unknown action for ReAct: {action}. Use search, open_file, edit, run_tests, or finish.")
     try:

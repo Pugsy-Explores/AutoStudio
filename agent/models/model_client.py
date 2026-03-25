@@ -144,6 +144,35 @@ def _retry_with_exponential_backoff(
         raise last_exc
     raise RuntimeError("retry loop exited unexpectedly")
 
+
+def _try_emit_llm_trace(
+    *,
+    task_name: str,
+    prompt: str,
+    system_prompt: str | None,
+    output_text: str,
+    latency_ms: int,
+    model_name: str,
+) -> None:
+    """Phase 13 — append LLM step to active TraceEmitter when ModeManager pins context."""
+    try:
+        from agent_v2.runtime.trace_context import get_active_trace_emitter
+
+        em = get_active_trace_emitter()
+        if em is None:
+            return
+        em.record_llm(
+            task_name=task_name,
+            prompt=prompt,
+            output_text=output_text,
+            latency_ms=latency_ms,
+            system_prompt=system_prompt,
+            model=model_name,
+        )
+    except Exception:
+        logger.debug("LLM trace emit skipped", exc_info=True)
+
+
 _ENABLE_GUARDRAILS = os.getenv("ENABLE_PROMPT_GUARDRAILS", "1").lower() in ("1", "true", "yes")
 
 # Use config from same package
@@ -578,8 +607,10 @@ def call_small_model(
     base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
     _record_model_call("small", callsite=task_name or "call_small_model", model_name=model_name, base_url=base_url)
     last_msg = ""
+    tn = task_name or "SMALL_MODEL"
     for attempt in range(_GUARDRAIL_MAX_ATTEMPTS):
         temperature = 0 if attempt > 0 else params.get("temperature")
+        t0 = time.perf_counter()
         response = _call_chat(
             endpoint,
             messages,
@@ -589,8 +620,17 @@ def call_small_model(
             frequency_penalty=params.get("frequency_penalty"),
             presence_penalty=params.get("presence_penalty"),
         )
+        latency_ms = int((time.perf_counter() - t0) * 1000)
         valid, msg = _run_guardrails_post(prompt_name, response, prompt)
         if valid:
+            _try_emit_llm_trace(
+                task_name=tn,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                output_text=response,
+                latency_ms=latency_ms,
+                model_name=model_name,
+            )
             return response
         last_msg = msg or "unknown"
         logger.warning(
@@ -603,6 +643,14 @@ def call_small_model(
             valid, _ = _run_guardrails_post(prompt_name, response, prompt, relax_actions=True)
             if valid:
                 logger.info("[guardrail] recovered via relaxed policy: prompt=%s", prompt_name)
+                _try_emit_llm_trace(
+                    task_name=tn,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    output_text=response,
+                    latency_ms=latency_ms,
+                    model_name=model_name,
+                )
                 return response
         if attempt >= _GUARDRAIL_MAX_ATTEMPTS - 1:
             logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
@@ -664,8 +712,10 @@ def call_reasoning_model(
     base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
     _record_model_call("reasoning", callsite=task_name or "call_reasoning_model", model_name=model_name, base_url=base_url)
     last_msg = ""
+    tn = task_name or "REASONING"
     for attempt in range(_GUARDRAIL_MAX_ATTEMPTS):
         temperature = 0 if attempt > 0 else params.get("temperature")
+        t0 = time.perf_counter()
         response = _call_chat(
             endpoint,
             messages,
@@ -675,8 +725,17 @@ def call_reasoning_model(
             frequency_penalty=params.get("frequency_penalty"),
             presence_penalty=params.get("presence_penalty"),
         )
+        latency_ms = int((time.perf_counter() - t0) * 1000)
         valid, msg = _run_guardrails_post(prompt_name, response, prompt)
         if valid:
+            _try_emit_llm_trace(
+                task_name=tn,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                output_text=response,
+                latency_ms=latency_ms,
+                model_name=model_name,
+            )
             return response
         last_msg = msg or "unknown"
         logger.warning(
@@ -689,6 +748,14 @@ def call_reasoning_model(
             valid, _ = _run_guardrails_post(prompt_name, response, prompt, relax_actions=True)
             if valid:
                 logger.info("[guardrail] recovered via relaxed policy: prompt=%s", prompt_name)
+                _try_emit_llm_trace(
+                    task_name=tn,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    output_text=response,
+                    latency_ms=latency_ms,
+                    model_name=model_name,
+                )
                 return response
         if attempt >= _GUARDRAIL_MAX_ATTEMPTS - 1:
             logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
