@@ -64,11 +64,16 @@ class V2PlannerAdapter:
         exploration: ExplorationResult | None = None,
         planner_input: PlannerInput | None = None,
         langfuse_trace: Any = None,
+        obs: Any = None,
         **kwargs,
     ):
         if planner_input is not None:
             return self._inner.plan(
-                instruction, planner_input, deep=deep, langfuse_trace=langfuse_trace
+                instruction,
+                planner_input,
+                deep=deep,
+                langfuse_trace=langfuse_trace,
+                obs=obs,
             )
         if exploration is not None:
             ex = exploration
@@ -79,7 +84,9 @@ class V2PlannerAdapter:
                 "Planner v2 requires exploration_runner, a precomputed ExplorationResult, "
                 "or planner_input (e.g. ReplanContext)."
             )
-        return self._inner.plan(instruction, ex, deep=deep, langfuse_trace=langfuse_trace)
+        return self._inner.plan(
+            instruction, ex, deep=deep, langfuse_trace=langfuse_trace, obs=obs
+        )
 
 
 def _validate_step(step: dict):
@@ -326,6 +333,9 @@ def create_runtime():
         plan_argument_generator=arg_gen,
         replanner=replanner,
         execution_policy=_DEFAULT_V2_POLICY,
+        exploration_llm_fn=lambda prompt: call_reasoning_model(
+            prompt, task_name="EXPLORATION_V2"
+        ),
     )
 
 
@@ -340,4 +350,10 @@ def create_exploration_runner(dispatch_fn=None) -> ExplorationRunner:
     fn = dispatch_fn or _dispatch_react
     action_gen = ActionGenerator(fn=_next_action, exploration_fn=_exploration_action_fn)
     dispatcher = Dispatcher(execute_fn=fn)
-    return ExplorationRunner(action_generator=action_gen, dispatcher=dispatcher)
+    return ExplorationRunner(
+        action_generator=action_gen,
+        dispatcher=dispatcher,
+        llm_generate_fn=lambda prompt: call_reasoning_model(
+            prompt, task_name="EXPLORATION_V2"
+        ),
+    )

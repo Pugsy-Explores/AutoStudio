@@ -16,13 +16,21 @@ Hard constraints (non-negotiable):
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from agent_v2.schemas.execution import ExecutionResult
-from agent_v2.config import EXPLORATION_STEPS
+from agent_v2.config import ENABLE_EXPLORATION_ENGINE_V2, EXPLORATION_STEPS
+from agent_v2.exploration.candidate_selector import CandidateSelector
+from agent_v2.exploration.exploration_engine_v2 import ExplorationEngineV2
+from agent_v2.exploration.exploration_scoper import ExplorationScoper
+from agent_v2.exploration.graph_expander import GraphExpander
+from agent_v2.exploration.inspection_reader import InspectionReader
+from agent_v2.exploration.query_intent_parser import QueryIntentParser
+from agent_v2.exploration.understanding_analyzer import UnderstandingAnalyzer
 from agent_v2.schemas.exploration import (
     ExplorationContent,
     ExplorationItem,
@@ -102,7 +110,14 @@ class ExplorationRunner:
       - Returns a valid ExplorationResult even when no steps succeed
     """
 
-    def __init__(self, action_generator, dispatcher):
+    def __init__(
+        self,
+        action_generator,
+        dispatcher,
+        *,
+        llm_generate_fn=None,
+        enable_v2: bool | None = None,
+    ):
         """
         Args:
             action_generator: must expose
@@ -111,12 +126,48 @@ class ExplorationRunner:
         """
         self.action_generator = action_generator
         self.dispatcher = dispatcher
+        if enable_v2 is None:
+            # Read env at wiring time (tests may toggle in-process).
+            self._enable_v2 = os.getenv("AGENT_V2_ENABLE_EXPLORATION_ENGINE_V2", "1").strip() in (
+                "1",
+                "true",
+                "yes",
+            )
+        else:
+            self._enable_v2 = enable_v2
+        # Default on (same convention as AGENT_V2_ENABLE_EXPLORATION_ENGINE_V2); disable with =0
+        _enable_scoper = os.getenv("AGENT_V2_ENABLE_EXPLORATION_SCOPER", "1").strip() in (
+            "1",
+            "true",
+            "yes",
+        )
+        scoper_v2 = None
+        if _enable_scoper:
+            scoper_v2 = ExplorationScoper(
+                llm_generate=llm_generate_fn,
+                max_snippet_chars=ExplorationEngineV2.MAX_SNIPPET_CHARS,
+            )
+        self._engine_v2 = ExplorationEngineV2(
+            dispatcher=dispatcher,
+            intent_parser=QueryIntentParser(llm_generate=llm_generate_fn),
+            selector=CandidateSelector(llm_generate=llm_generate_fn),
+            inspection_reader=InspectionReader(dispatcher=dispatcher),
+            analyzer=UnderstandingAnalyzer(llm_generate=llm_generate_fn),
+            graph_expander=GraphExpander(dispatcher=dispatcher),
+            scoper=scoper_v2,
+        )
 
     # ------------------------------------------------------------------
     # Public entry point (Step 6)
     # ------------------------------------------------------------------
 
-    def run(self, instruction: str, *, langfuse_trace: Any = None) -> ExplorationResult:
+    def run(
+        self,
+        instruction: str,
+        *,
+        obs: Any = None,
+        langfuse_trace: Any = None,
+    ) -> ExplorationResult:
         """
         Run the bounded exploration loop and return a structured ExplorationResult.
 
@@ -130,11 +181,22 @@ class ExplorationRunner:
         Exploration state is isolated and never written back to main agent state.
         """
         state = _ExplorationState(instruction=instruction)
+        state.context.setdefault(
+            "project_root",
+            os.environ.get("SERENA_PROJECT_DIR") or os.getcwd(),
+        )
+        lf = None
+        if obs is not None and getattr(obs, "langfuse_trace", None) is not None:
+            lf = obs.langfuse_trace
+        elif langfuse_trace is not None:
+            lf = langfuse_trace
+        if self._enable_v2:
+            return self._engine_v2.explore(instruction, state=state, obs=obs, langfuse_trace=lf)
         collected: list[tuple[dict, ExecutionResult]] = []
 
         for _ in range(MAX_STEPS):
             step = self.action_generator.next_action_exploration(
-                instruction, collected, langfuse_trace=langfuse_trace
+                instruction, collected, langfuse_trace=lf
             )
 
             if not step:

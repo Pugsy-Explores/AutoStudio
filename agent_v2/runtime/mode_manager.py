@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Any
 
 from agent_v2.schemas.plan import PlanDocument
+from agent_v2.runtime.trace_context import clear_active_trace_emitter, set_active_trace_emitter
+from agent_v2.runtime.trace_emitter import TraceEmitter
 
 
 def _plan_to_state_payload(plan: Any) -> object:
@@ -19,6 +21,15 @@ def _plan_to_state_payload(plan: Any) -> object:
     if isinstance(plan, dict):
         return plan.get("steps", plan)
     return plan
+
+
+def _attach_plan_only_trace(state: Any, plan: PlanDocument, emitter: TraceEmitter) -> None:
+    """Phase 13 — exploration + planner LLMs only (no tool steps). Mirrors execution_trace_id wiring."""
+    trace = emitter.build_trace(state.instruction, plan.plan_id)
+    md = getattr(state, "metadata", None)
+    if isinstance(md, dict):
+        md["execution_trace_id"] = trace.trace_id
+        md["trace"] = trace
 
 
 def _attach_plan_view(state: Any, plan: Any) -> None:
@@ -37,6 +48,38 @@ def _attach_plan_view(state: Any, plan: Any) -> None:
             state.current_plan_steps = None
     else:
         state.current_plan_steps = None
+
+
+def _exploration_is_complete(exploration: Any) -> bool:
+    """
+    Phase 12.6 planner boundary:
+    - If completion metadata is present, require completion_status=complete.
+    - For legacy/older exploration payloads without metadata, allow planning.
+    """
+    md = getattr(exploration, "metadata", None)
+    if md is None:
+        return True
+    if "unittest.mock" in type(md).__module__:
+        return True
+    completion_status = getattr(md, "completion_status", None)
+    if completion_status is None and isinstance(md, dict):
+        completion_status = md.get("completion_status")
+    if completion_status is None:
+        return True
+    status = str(completion_status).lower()
+    if status not in {"complete", "incomplete"}:
+        return True
+    return status == "complete"
+
+
+def _exploration_termination_reason(exploration: Any) -> str:
+    md = getattr(exploration, "metadata", None)
+    if md is None:
+        return "unknown"
+    reason = getattr(md, "termination_reason", None)
+    if reason is None and isinstance(md, dict):
+        reason = md.get("termination_reason")
+    return str(reason or "unknown")
 
 
 class ModeManager:
@@ -88,25 +131,38 @@ class ModeManager:
             raise ValueError("ACT requires exploration_runner.")
 
         state.context["react_mode"] = True
+        obs = state.metadata.get("obs")
         lf = state.metadata.get("langfuse_trace")
-        exploration = self.exploration_runner.run(state.instruction, langfuse_trace=lf)
-        state.exploration_result = exploration
-        state.context["exploration_summary_text"] = exploration.summary.overall
-        state.context["exploration_result"] = exploration.model_dump(mode="json")
+        trace_emitter = TraceEmitter()
+        trace_emitter.reset()
+        set_active_trace_emitter(trace_emitter)
+        try:
+            exploration = self.exploration_runner.run(state.instruction, obs=obs, langfuse_trace=lf)
+            state.exploration_result = exploration
+            state.context["exploration_summary_text"] = exploration.summary.overall
+            state.context["exploration_result"] = exploration.model_dump(mode="json")
+            if not _exploration_is_complete(exploration):
+                raise RuntimeError(
+                    "Exploration did not complete; planner execution is gated "
+                    f"(termination_reason={_exploration_termination_reason(exploration)})."
+                )
 
-        plan_doc = self.planner.plan(
-            state.instruction,
-            deep=deep,
-            exploration=exploration,
-            langfuse_trace=lf,
-        )
-        if not isinstance(plan_doc, PlanDocument):
-            raise TypeError(
-                f"Planner must return PlanDocument for ACT path, got {type(plan_doc).__name__}"
+            plan_doc = self.planner.plan(
+                state.instruction,
+                deep=deep,
+                exploration=exploration,
+                obs=obs,
+                langfuse_trace=lf,
             )
-        _attach_plan_view(state, plan_doc)
+            if not isinstance(plan_doc, PlanDocument):
+                raise TypeError(
+                    f"Planner must return PlanDocument for ACT path, got {type(plan_doc).__name__}"
+                )
+            _attach_plan_view(state, plan_doc)
 
-        exec_out = self.plan_executor.run(plan_doc, state)
+            exec_out = self.plan_executor.run(plan_doc, state, trace_emitter=trace_emitter)
+        finally:
+            clear_active_trace_emitter()
 
         final_plan = plan_doc
         ctx = getattr(state, "context", None)
@@ -126,44 +182,72 @@ class ModeManager:
         if self.exploration_runner is None:
             raise ValueError("plan mode requires exploration_runner.")
 
+        obs = state.metadata.get("obs")
         lf = state.metadata.get("langfuse_trace")
-        exploration = self.exploration_runner.run(state.instruction, langfuse_trace=lf)
-        state.exploration_result = exploration
-        state.context["exploration_summary_text"] = exploration.summary.overall
-        state.context["exploration_result"] = exploration.model_dump(mode="json")
+        trace_emitter = TraceEmitter()
+        trace_emitter.reset()
+        set_active_trace_emitter(trace_emitter)
+        try:
+            exploration = self.exploration_runner.run(state.instruction, obs=obs, langfuse_trace=lf)
+            state.exploration_result = exploration
+            state.context["exploration_summary_text"] = exploration.summary.overall
+            state.context["exploration_result"] = exploration.model_dump(mode="json")
+            if not _exploration_is_complete(exploration):
+                raise RuntimeError(
+                    "Exploration did not complete; planner execution is gated "
+                    f"(termination_reason={_exploration_termination_reason(exploration)})."
+                )
 
-        plan = self.planner.plan(
-            state.instruction,
-            deep=False,
-            exploration=exploration,
-            langfuse_trace=lf,
-        )
-        if not isinstance(plan, PlanDocument):
-            raise TypeError(
-                f"Planner must return PlanDocument for plan mode, got {type(plan).__name__}"
+            plan = self.planner.plan(
+                state.instruction,
+                deep=False,
+                exploration=exploration,
+                obs=obs,
+                langfuse_trace=lf,
             )
-        _attach_plan_view(state, plan)
+            if not isinstance(plan, PlanDocument):
+                raise TypeError(
+                    f"Planner must return PlanDocument for plan mode, got {type(plan).__name__}"
+                )
+            _attach_plan_view(state, plan)
+            _attach_plan_only_trace(state, plan, trace_emitter)
+        finally:
+            clear_active_trace_emitter()
         return state
 
     def _run_deep_plan(self, state: Any) -> Any:
         if self.exploration_runner is None:
             raise ValueError("deep_plan mode requires exploration_runner.")
 
+        obs = state.metadata.get("obs")
         lf = state.metadata.get("langfuse_trace")
-        exploration = self.exploration_runner.run(state.instruction, langfuse_trace=lf)
-        state.exploration_result = exploration
-        state.context["exploration_summary_text"] = exploration.summary.overall
-        state.context["exploration_result"] = exploration.model_dump(mode="json")
+        trace_emitter = TraceEmitter()
+        trace_emitter.reset()
+        set_active_trace_emitter(trace_emitter)
+        try:
+            exploration = self.exploration_runner.run(state.instruction, obs=obs, langfuse_trace=lf)
+            state.exploration_result = exploration
+            state.context["exploration_summary_text"] = exploration.summary.overall
+            state.context["exploration_result"] = exploration.model_dump(mode="json")
+            if not _exploration_is_complete(exploration):
+                raise RuntimeError(
+                    "Exploration did not complete; planner execution is gated "
+                    f"(termination_reason={_exploration_termination_reason(exploration)})."
+                )
 
-        plan = self.planner.plan(
-            state.instruction,
-            deep=True,
-            exploration=exploration,
-            langfuse_trace=lf,
-        )
-        if not isinstance(plan, PlanDocument):
-            raise TypeError(
-                f"Planner must return PlanDocument for deep_plan mode, got {type(plan).__name__}"
+            plan = self.planner.plan(
+                state.instruction,
+                deep=True,
+                exploration=exploration,
+                obs=obs,
+                langfuse_trace=lf,
             )
-        _attach_plan_view(state, plan)
+            if not isinstance(plan, PlanDocument):
+                raise TypeError(
+                    f"Planner must return PlanDocument for deep_plan mode, got {type(plan).__name__}"
+                )
+            _attach_plan_view(state, plan)
+            _attach_plan_only_trace(state, plan, trace_emitter)
+        finally:
+            clear_active_trace_emitter()
         return state

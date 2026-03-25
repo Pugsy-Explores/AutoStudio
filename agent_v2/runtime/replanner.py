@@ -155,6 +155,7 @@ class Replanner:
         request: ReplanRequest,
         *,
         langfuse_trace: Any = None,
+        obs: Any = None,
     ) -> tuple[ReplanResult, Optional[PlanDocument]]:
         replan_context = self.build_replan_context(request)
         try:
@@ -163,6 +164,7 @@ class Replanner:
                 deep=True,
                 planner_input=replan_context,
                 langfuse_trace=langfuse_trace,
+                obs=obs,
             )
         except (PlanValidationError, ValueError, TypeError) as e:
             ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

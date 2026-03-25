@@ -37,8 +37,15 @@ class PlanArgumentGenerator:
 
     def _generate_with_langfuse(self, prompt: str, step: PlanStep, state: Any) -> str:
         md = getattr(state, "metadata", None) or {}
-        span = md.get("_current_langfuse_span")
+        obs = md.get("obs")
+        span = None
+        if obs is not None and getattr(obs, "current_span", None) is not None:
+            span = obs.current_span
+        if span is None:
+            span = md.get("_current_langfuse_span")
         lf = md.get("langfuse_trace")
+        if obs is not None and getattr(obs, "langfuse_trace", None) is not None:
+            lf = obs.langfuse_trace
         gen = None
         if span is not None and hasattr(span, "generation"):
             gen = span.generation(

@@ -27,14 +27,20 @@ from .plan import (
     PlanStepLastResult,
 )
 from .exploration import (
+    ExplorationCandidate,
     ExplorationContent,
+    ExplorationDecision,
+    ExplorationTarget,
+    GraphExpansionResult,
     ExplorationItem,
     ExplorationItemMetadata,
     ExplorationRelevance,
     ExplorationResult,
     ExplorationResultMetadata,
+    ExplorationState,
     ExplorationSource,
     ExplorationSummary,
+    QueryIntent,
 )
 from .replan import (
     PlannerInput,
@@ -100,14 +106,20 @@ __all__ = [
     "PlanStepFailure",
     "PlanStepLastResult",
     # exploration
+    "ExplorationCandidate",
     "ExplorationContent",
+    "ExplorationDecision",
+    "ExplorationTarget",
+    "GraphExpansionResult",
     "ExplorationItem",
     "ExplorationItemMetadata",
     "ExplorationRelevance",
     "ExplorationResult",
     "ExplorationResultMetadata",
+    "ExplorationState",
     "ExplorationSource",
     "ExplorationSummary",
+    "QueryIntent",
     # replan
     "PlannerInput",
     "ReplanChanges",

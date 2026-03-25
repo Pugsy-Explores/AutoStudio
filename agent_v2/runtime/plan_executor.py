@@ -36,6 +36,15 @@ def _execution_error_payload(err: ExecutionError | None) -> Any:
     return str(err)
 
 
+def _span_event(span: Any, name: str, metadata: dict[str, Any] | None = None) -> None:
+    if span is None or not hasattr(span, "event"):
+        return
+    try:
+        span.event(name=name, metadata=metadata or {})
+    except Exception:
+        pass
+
+
 def _end_langfuse_step_span(span: Any, result: ExecutionResult | None) -> None:
     if span is None or result is None:
         return
@@ -101,7 +110,13 @@ class PlanExecutor:
         self._trace_emitter_factory: TraceEmitterFactory = trace_emitter_factory or TraceEmitter
         self.trace_emitter: TraceEmitter = self._trace_emitter_factory()
 
-    def run(self, plan: PlanDocument, state: Any) -> dict[str, Any]:
+    def run(
+        self,
+        plan: PlanDocument,
+        state: Any,
+        *,
+        trace_emitter: TraceEmitter | None = None,
+    ) -> dict[str, Any]:
         """
         Execute until finish, deadlock, terminal failure, or replan budget exhausted.
 
@@ -111,6 +126,9 @@ class PlanExecutor:
 
         Returns ``{"status": "success"|"failed", "trace": Trace, "state": state}``.
         One TraceStep is recorded per plan step after final retry outcome (Phase 9).
+
+        When ``trace_emitter`` is provided (Phase 13), reuse it so exploration/planner LLM
+        steps already on the emitter stay in one timeline with tool steps.
         """
         if not isinstance(plan, PlanDocument):
             raise TypeError(f"PlanExecutor.run expected PlanDocument, got {type(plan).__name__}")
@@ -125,7 +143,7 @@ class PlanExecutor:
         md0["executor_dispatch_count"] = 0
         md0.pop("plan_executor_abort", None)
 
-        self.trace_emitter = self._trace_emitter_factory()
+        self.trace_emitter = trace_emitter if trace_emitter is not None else self._trace_emitter_factory()
         self._pin_active_plan(state, plan)
         work_plan = plan
 
@@ -152,27 +170,15 @@ class PlanExecutor:
                 return self._finalize_run(state, plan, "failed")
 
             req = self.replanner.build_replan_request(state, work_plan, failed_step, result)
-            lf = self._metadata_dict(state).get("langfuse_trace")
-            if lf is not None and hasattr(lf, "event"):
-                try:
-                    et = req.failure_context.error.type
-                    reason = et.value if hasattr(et, "value") else str(et)
-                    lf.event(
-                        name="replan_triggered",
-                        metadata={
-                            "failed_step_id": req.original_plan.failed_step_id,
-                            "reason": reason,
-                            "replan_id": req.replan_id,
-                        },
-                    )
-                except Exception:
-                    pass
-            replan_res, new_plan = self.replanner.replan(req, langfuse_trace=lf)
+            md = self._metadata_dict(state)
+            lf = md.get("langfuse_trace")
+            replan_res, new_plan = self.replanner.replan(req, langfuse_trace=lf, obs=md.get("obs"))
 
             if replan_res.status != "success" or new_plan is None:
                 md["plan_executor_status"] = "failed_final"
                 if replan_res.validation.issues:
                     md["last_replan_issues"] = list(replan_res.validation.issues)
+                self._emit_replan_failed_on_step(state, failed_step)
                 return self._finalize_run(state, plan, "failed")
 
             md["replan_attempt"] = replan_res.metadata.replan_attempt
@@ -231,6 +237,7 @@ class PlanExecutor:
             if abort:
                 _LOG.error("PlanExecutor scheduling abort: %s", abort)
                 self._metadata_dict(state)["plan_executor_abort"] = abort
+                self._emit_executor_abort_observation(state, abort)
                 return ("aborted",)
 
             progressed = False
@@ -250,11 +257,12 @@ class PlanExecutor:
                     if lf_fin is not None and hasattr(lf_fin, "span"):
                         try:
                             sp = lf_fin.span(
-                                name=f"step_{step.index}_{step.action}",
+                                name="executor.step",
                                 input={
+                                    "step_index": step.index,
+                                    "action": step.action,
                                     "step_id": step.step_id,
                                     "goal": step.goal,
-                                    "action": step.action,
                                 },
                             )
                             sp.end(
@@ -296,7 +304,57 @@ class PlanExecutor:
             if not progressed:
                 break
 
+        self._emit_deadlock_observation(state)
         return ("deadlock",)
+
+    def _emit_deadlock_observation(self, state: Any) -> None:
+        md = self._metadata_dict(state)
+        lf = md.get("langfuse_trace")
+        if lf is None or not hasattr(lf, "span"):
+            return
+        try:
+            sp = lf.span(
+                "executor.step",
+                input={"step_index": -1, "action": "deadlock"},
+            )
+            _span_event(sp, "deadlock", {"reason": "scheduling_no_progress"})
+            sp.end()
+        except Exception:
+            pass
+
+    def _emit_executor_abort_observation(self, state: Any, reason: str) -> None:
+        md = self._metadata_dict(state)
+        lf = md.get("langfuse_trace")
+        if lf is None or not hasattr(lf, "span"):
+            return
+        try:
+            sp = lf.span(
+                "executor.step",
+                input={"step_index": -1, "action": "abort"},
+            )
+            _span_event(sp, "executor_aborted", {"reason": reason})
+            sp.end()
+        except Exception:
+            pass
+
+    def _emit_replan_failed_on_step(self, state: Any, failed_step: PlanStep) -> None:
+        md = self._metadata_dict(state)
+        lf = md.get("langfuse_trace")
+        if lf is None or not hasattr(lf, "span"):
+            return
+        try:
+            sp = lf.span(
+                "executor.step",
+                input={
+                    "step_index": failed_step.index,
+                    "action": failed_step.action,
+                    "step_id": failed_step.step_id,
+                },
+            )
+            _span_event(sp, "replan_failed", {})
+            sp.end()
+        except Exception:
+            pass
 
     def _can_execute(self, step: PlanStep, plan: PlanDocument) -> bool:
         completed = {s.step_id for s in plan.steps if s.execution.status == "completed"}
@@ -311,18 +369,22 @@ class PlanExecutor:
         result: ExecutionResult | None = None
         md = self._metadata_dict(state)
         lf = md.get("langfuse_trace")
+        obs = md.get("obs")
         step_span = None
         if lf is not None and hasattr(lf, "span"):
             try:
                 step_span = lf.span(
-                    name=f"step_{step.index}_{step.action}",
+                    name="executor.step",
                     input={
+                        "step_index": step.index,
+                        "action": step.action,
                         "step_id": step.step_id,
                         "goal": step.goal,
-                        "action": step.action,
                     },
                 )
                 md["_current_langfuse_span"] = step_span
+                if obs is not None:
+                    obs.current_span = step_span
             except Exception:
                 step_span = None
 
@@ -347,8 +409,11 @@ class PlanExecutor:
                         timestamp=self._utc_now(),
                     ),
                 )
+                _span_event(step_span, "executor_aborted", {"reason": abort})
                 _end_langfuse_step_span(step_span, abort_res)
                 md.pop("_current_langfuse_span", None)
+                if obs is not None:
+                    obs.current_span = None
                 return abort_res
 
             now = self._utc_now()
@@ -380,24 +445,20 @@ class PlanExecutor:
                 )
                 _end_langfuse_step_span(step_span, result)
                 md.pop("_current_langfuse_span", None)
+                if obs is not None:
+                    obs.current_span = None
                 return result
 
-            if (
-                lf is not None
-                and hasattr(lf, "event")
-                and step.execution.attempts < max_attempts
-            ):
-                try:
-                    lf.event(
-                        name="retry",
-                        metadata={
-                            "step_id": step.step_id,
-                            "attempt": step.execution.attempts,
-                            "error": _execution_error_payload(result.error),
-                        },
-                    )
-                except Exception:
-                    pass
+            if step.execution.attempts < max_attempts:
+                _span_event(
+                    step_span,
+                    "retry",
+                    {
+                        "step_id": step.step_id,
+                        "attempt": step.execution.attempts,
+                        "error": _execution_error_payload(result.error),
+                    },
+                )
 
             self._handle_failure(step, result)
 
@@ -418,6 +479,8 @@ class PlanExecutor:
             )
             _end_langfuse_step_span(step_span, nr)
             md.pop("_current_langfuse_span", None)
+            if obs is not None:
+                obs.current_span = None
             return nr
         completed_at = self._utc_now()
         step.execution = step.execution.model_copy(
@@ -427,8 +490,19 @@ class PlanExecutor:
             }
         )
         step.failure = step.failure.model_copy(update={"replan_required": True})
+        if self.replanner is not None and int(md.get("replan_attempt", 0)) < self._max_replans(state):
+            _span_event(
+                step_span,
+                "replan_triggered",
+                {
+                    "failed_step_id": step.step_id,
+                    "action": step.action,
+                },
+            )
         _end_langfuse_step_span(step_span, result)
         md.pop("_current_langfuse_span", None)
+        if obs is not None:
+            obs.current_span = None
         return result
 
     def _handle_failure(self, step: PlanStep, result: ExecutionResult) -> None:

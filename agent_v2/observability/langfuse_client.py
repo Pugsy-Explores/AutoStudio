@@ -10,7 +10,23 @@ for the Langfuse handle (never ``trace`` alone).
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Optional
+
+# ---------------------------------------------------------------------------
+# Load repo .env before reading LANGFUSE_* (keys are not in the shell by default)
+# ---------------------------------------------------------------------------
+def _load_dotenv_if_present() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    # agent_v2/observability/langfuse_client.py -> repo root is parents[2]
+    root = Path(__file__).resolve().parents[2]
+    load_dotenv(root / ".env")
+
+
+_load_dotenv_if_present()
 
 # ---------------------------------------------------------------------------
 # Optional Langfuse SDK
@@ -27,19 +43,36 @@ except Exception:  # pragma: no cover - optional dependency
     pass
 
 _CLIENT: Any = None
-_HAS_KEYS = bool(os.getenv("LANGFUSE_PUBLIC_KEY")) and bool(os.getenv("LANGFUSE_SECRET_KEY"))
+
+
+def _langfuse_host() -> str:
+    """
+    Langfuse Python SDK uses `host` (LANGFUSE_HOST).
+    Many deployments set LANGFUSE_BASE_URL in .env — support both.
+    """
+    h = (os.environ.get("LANGFUSE_HOST") or "").strip()
+    if h:
+        return h.rstrip("/")
+    base = (os.environ.get("LANGFUSE_BASE_URL") or "").strip()
+    if base:
+        return base.rstrip("/")
+    return "https://cloud.langfuse.com"
+
+
+def _has_langfuse_keys() -> bool:
+    return bool(os.getenv("LANGFUSE_PUBLIC_KEY")) and bool(os.getenv("LANGFUSE_SECRET_KEY"))
 
 
 def _get_client() -> Any:
     global _CLIENT
     if _CLIENT is not None:
         return _CLIENT
-    if Langfuse is None or not _HAS_KEYS:
+    if Langfuse is None or not _has_langfuse_keys():
         return None
     _CLIENT = Langfuse(
         public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
         secret_key=os.environ["LANGFUSE_SECRET_KEY"],
-        host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+        host=_langfuse_host(),
     )
     return _CLIENT
 
@@ -68,6 +101,9 @@ class _NoopSpan:
     def span(self, name: str, input: Any = None, **kwargs: Any) -> "_NoopSpan":
         del name, input, kwargs
         return _NoopSpan()
+
+    def event(self, name: str, metadata: Any = None, **kwargs: Any) -> None:
+        del name, metadata, kwargs
 
 
 class _NoopTrace:
@@ -127,6 +163,15 @@ class LFSpanHandle:
     def span(self, name: str, input: Any = None, **kwargs: Any) -> "LFSpanHandle":
         child = self._obs.start_observation(name=name, as_type="span", input=input, **kwargs)
         return LFSpanHandle(child)
+
+    def event(self, name: str, metadata: Any = None, **kwargs: Any) -> None:
+        """Phase 12.6.G — observation-scoped event (prefer over root trace for causality)."""
+        fn = getattr(self._obs, "create_event", None)
+        if callable(fn):
+            try:
+                fn(name=name, metadata=metadata or {}, **kwargs)
+            except Exception:
+                pass
 
 
 class LFTraceHandle:

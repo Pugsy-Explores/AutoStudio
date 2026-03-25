@@ -2,7 +2,7 @@
 # DO NOT import from agent.* here
 
 from agent_v2.schemas.execution import ExecutionResult
-from agent_v2.runtime.langfuse_client import langfuse
+from agent_v2.observability.observability_context import get_or_create_root_trace
 from agent_v2.runtime.react_context import (
     MAX_OBS_CHARS,
     normalize_path_for_dedup,
@@ -63,9 +63,11 @@ class AgentLoop:
     def run(self, state):
         failure_streak = int(state.metadata.get("failure_streak", 0) or 0)
         state.metadata.setdefault("retry_count", 0)
-        trace = langfuse.trace(
-            name="agent_run",
-            input={"instruction": state.instruction},
+        mode = str(state.metadata.get("mode") or "act")
+        trace, owns_root_trace = get_or_create_root_trace(
+            state,
+            instruction=state.instruction,
+            mode=mode,
         )
         try:
             while True:
@@ -172,7 +174,18 @@ class AgentLoop:
                 if self.should_stop(step, state):
                     break
         finally:
-            trace.end(output={"steps": len(state.step_results or [])})
+            n_steps = len(state.step_results or [])
+            if owns_root_trace:
+                trace.end(output={"steps": n_steps})
+            else:
+                # Parent (e.g. AgentRuntime) owns root lifecycle via finalize_agent_trace; do not end root.
+                try:
+                    trace.event(
+                        name="react_loop_finished",
+                        metadata={"steps": n_steps},
+                    )
+                except Exception:
+                    pass
 
         return state
 

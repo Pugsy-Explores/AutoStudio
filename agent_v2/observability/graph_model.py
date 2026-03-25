@@ -30,7 +30,10 @@ class GraphNode(BaseModel):
     """
 
     id: str = Field(..., description="Unique node identifier (e.g., step_id)")
-    type: str = Field(..., description="Node type: step | llm | event")
+    type: str = Field(
+        ...,
+        description="Node type: step | llm | event | diff | memory (extend via SCHEMAS amendment)",
+    )
     label: str = Field(..., description="Human-readable label for UI")
     status: str = Field(..., description="Execution status: success | failure | retry | pending")
 

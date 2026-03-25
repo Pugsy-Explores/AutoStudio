@@ -192,13 +192,38 @@ class PlannerV2:
         planner_input: PlannerInput,
         deep: bool = False,
         langfuse_trace: Any = None,
+        obs: Any = None,
     ) -> PlanDocument:
         # LIVE-TEST-002: Infer task mode from instruction
         task_mode = self._infer_task_mode(instruction)
-        
+
+        lf: Any = None
+        if obs is not None and getattr(obs, "langfuse_trace", None) is not None:
+            lf = obs.langfuse_trace
+        elif langfuse_trace is not None:
+            lf = langfuse_trace
+
         prompt = self._build_prompt(instruction, planner_input, deep, task_mode=task_mode)
         gen_name = "planner_replan" if isinstance(planner_input, ReplanContext) else "planner"
-        raw = self._call_llm(prompt, langfuse_trace=langfuse_trace, gen_name=gen_name)
+        planning_span: Any = None
+        if lf is not None and hasattr(lf, "span"):
+            try:
+                planning_span = lf.span("planning", input={"instruction": instruction[:500]})
+            except Exception:
+                planning_span = None
+        try:
+            raw = self._call_llm(
+                prompt,
+                langfuse_trace=lf,
+                parent_span=planning_span,
+                gen_name=gen_name,
+            )
+        finally:
+            if planning_span is not None:
+                try:
+                    planning_span.end()
+                except Exception:
+                    pass
         plan = self._build_plan(raw, instruction)
         if not isinstance(plan, PlanDocument):
             raise TypeError(
@@ -264,6 +289,28 @@ class PlannerV2:
         sources_lines = "\n".join(
             f"- {item.source.ref} ({item.type})" for item in exploration.items
         ) or "(no exploration items)"
+        md = getattr(exploration, "metadata", None)
+        source_summary = getattr(md, "source_summary", None) if md is not None else None
+        if isinstance(source_summary, dict):
+            ss_symbol = int(source_summary.get("symbol", 0) or 0)
+            ss_line = int(source_summary.get("line", 0) or 0)
+            ss_head = int(source_summary.get("head", 0) or 0)
+        else:
+            ss_symbol = ss_line = ss_head = 0
+
+        item_lines: list[str] = []
+        for item in exploration.items:
+            ref = item.source.ref
+            rs = item.read_source or "unknown"
+            snippet = (item.snippet or "").strip()
+            if snippet:
+                snippet = snippet[:600]
+            item_lines.append(f"- file: {ref}")
+            item_lines.append(f"  read_source: {rs}")
+            item_lines.append(f"  snippet: {snippet if snippet else '(none)'}")
+            item_lines.append(f"  summary: {item.content.summary}")
+            item_lines.append("")
+        items_block = "\n".join(item_lines).rstrip() if item_lines else "(no exploration items)"
         deep_extra = ""
         if deep:
             deep_extra = (
@@ -289,6 +336,14 @@ TASK:
 
 EXPLORATION SUMMARY:
 {exploration.summary.overall}
+
+EXPLORATION SOURCES:
+- symbol reads: {ss_symbol}
+- line reads: {ss_line}
+- header reads: {ss_head}
+
+EXPLORATION ITEMS:
+{items_block}
 
 KEY FINDINGS:
 {key_findings}
@@ -318,8 +373,16 @@ REQUIREMENTS:
    - must include exactly one finish step as the LAST step (highest index): type=finish, action=finish
    - must NOT hallucinate files or APIs not supported by SOURCES above when citing paths
    - include at least one risk object with keys risk, impact (low|medium|high), mitigation
-7. "sources" array: objects with type (file|search|other), ref, summary — align with exploration when possible.
-8. "completion_criteria": non-empty array of strings.
+7. Evidence-use requirements (critical):
+   - Use EXPLORATION ITEMS (snippets + read_source) as primary grounding, not just the exploration summary.
+   - When referencing code, use the exact file paths shown in EXPLORATION ITEMS / SOURCES.
+   - Prefer plan steps that open/read the specific files/symbols implied by snippets.
+8. Tool-argument requirements (critical correctness):
+   - If action == "open_file": inputs MUST include a non-empty "path" that exactly matches a file path from SOURCES/EXPLORATION ITEMS.
+   - If action == "search": inputs MUST include a non-empty "query".
+   - Never emit placeholder targets like "alternative_sources" or "community_discussions" as if they were files.
+9. "sources" array: objects with type (file|search|other), ref, summary — align with exploration when possible.
+10. "completion_criteria": non-empty array of strings.
 
 Return a single JSON object only.
 """
@@ -397,13 +460,15 @@ Return a single JSON object only.
         prompt: str,
         *,
         langfuse_trace: Any = None,
+        parent_span: Any = None,
         gen_name: str = "planner",
     ) -> dict[str, Any]:
         last_err: Optional[Exception] = None
         for attempt in range(2):
             gen = None
-            if langfuse_trace is not None:
-                gen = langfuse_trace.generation(
+            gen_parent = parent_span if parent_span is not None else langfuse_trace
+            if gen_parent is not None:
+                gen = gen_parent.generation(
                     name=gen_name,
                     input={"prompt": prompt[:12000], "attempt": attempt},
                 )

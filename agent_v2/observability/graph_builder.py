@@ -49,28 +49,47 @@ def build_graph(trace: Trace, plan: Optional[PlanDocument] = None) -> ExecutionG
             step_id_to_plan_step[ps.step_id] = ps
 
     prev_node_id: str | None = None
-    prev_step_failed = False
+    prev_tool_step_failed = False
 
     for idx, step in enumerate(trace.steps):
         node_id = step.step_id
         plan_step = step_id_to_plan_step.get(node_id)
 
-        node = GraphNode(
-            id=node_id,
-            type="step",
-            label=f"{step.action}",
-            status="success" if step.success else "failure",
-            input={},
-            output={"target": step.target},
-            error=step.error.message if step.error else None,
-            metadata={
+        if step.kind == "llm":
+            meta = {
                 "duration_ms": step.duration_ms,
-                "plan_step_index": step.plan_step_index,
-                "action": step.action,
-            },
-        )
+                "task_name": step.metadata.get("task_name") or step.action,
+                "model": step.metadata.get("model"),
+                "tokens_input": step.metadata.get("tokens_input"),
+                "tokens_output": step.metadata.get("tokens_output"),
+            }
+            node = GraphNode(
+                id=node_id,
+                type="llm",
+                label=step.action,
+                status="success" if step.success else "failure",
+                input=dict(step.input) if step.input else {},
+                output=dict(step.output) if step.output else {},
+                error=step.error.message if step.error else None,
+                metadata={k: v for k, v in meta.items() if v is not None},
+            )
+        else:
+            node = GraphNode(
+                id=node_id,
+                type="step",
+                label=f"{step.action}",
+                status="success" if step.success else "failure",
+                input=dict(step.input) if step.input else {},
+                output=dict(step.output) if step.output else {"target": step.target},
+                error=step.error.message if step.error else None,
+                metadata={
+                    "duration_ms": step.duration_ms,
+                    "plan_step_index": step.plan_step_index,
+                    "action": step.action,
+                },
+            )
 
-        if plan_step is not None and hasattr(plan_step, "execution"):
+        if step.kind == "tool" and plan_step is not None and hasattr(plan_step, "execution"):
             attempts = getattr(plan_step.execution, "attempts", 0)
             node.metadata["attempts"] = attempts
 
@@ -93,14 +112,19 @@ def build_graph(trace: Trace, plan: Optional[PlanDocument] = None) -> ExecutionG
                 edges.append(GraphEdge(source=retry_node_id, target=node_id, type="retry"))
                 prev_node_id = node_id
                 nodes.append(node)
-                prev_step_failed = not step.success
+                if step.kind == "tool":
+                    prev_tool_step_failed = not step.success
                 continue
 
         nodes.append(node)
 
         if prev_node_id:
             edge_type = "next"
-            if prev_step_failed and step.plan_step_index == 1:
+            if (
+                step.kind == "tool"
+                and prev_tool_step_failed
+                and step.plan_step_index == 1
+            ):
                 edge_type = "replan"
 
             edges.append(
@@ -112,7 +136,8 @@ def build_graph(trace: Trace, plan: Optional[PlanDocument] = None) -> ExecutionG
             )
 
         prev_node_id = node_id
-        prev_step_failed = not step.success
+        if step.kind == "tool":
+            prev_tool_step_failed = not step.success
 
     return ExecutionGraph(
         trace_id=trace.trace_id,

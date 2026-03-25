@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .execution import ErrorType
 
@@ -19,6 +19,13 @@ class TraceError(BaseModel):
 
 
 class TraceStep(BaseModel):
+    """
+    kind=\"tool\" — plan step execution (Phase 9).
+    kind=\"llm\" — reasoning/small model call interleaved in the same timeline (Phase 13).
+    kind=\"diff\" — patch artifact after successful edit (Phase 14; observability only).
+    kind=\"memory\" — distilled memory record emitted to trace (Phase 16; observability only).
+    """
+
     step_id: str
     plan_step_index: int
     action: str
@@ -26,6 +33,10 @@ class TraceStep(BaseModel):
     success: bool
     error: Optional[TraceError] = None
     duration_ms: int
+    kind: Literal["tool", "llm", "diff", "memory"] = "tool"
+    input: dict = Field(default_factory=dict)
+    output: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
 
 
 class TraceMetadata(BaseModel):

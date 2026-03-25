@@ -15,6 +15,7 @@ from agent_v2.runtime.validator import Validator
 from agent_v2.state.agent_state import AgentState
 from agent_v2.observability.langfuse_client import create_agent_trace, finalize_agent_trace
 from agent_v2.observability.graph_builder import build_graph
+from agent_v2.observability.observability_context import ObservabilityContext
 
 
 def normalize_run_result(mgr_out: Any, state: AgentState) -> dict[str, Any]:
@@ -37,7 +38,17 @@ def normalize_run_result(mgr_out: Any, state: AgentState) -> dict[str, Any]:
             "state": mgr_out.get("state", state),
         }
     if isinstance(mgr_out, AgentState):
-        return {"status": "plan_ready", "trace": None, "graph": None, "state": mgr_out}
+        trace_obj = None
+        md = getattr(mgr_out, "metadata", None)
+        if isinstance(md, dict):
+            trace_obj = md.get("trace")
+        graph_obj = None
+        if trace_obj is not None:
+            try:
+                graph_obj = build_graph(trace_obj).model_dump()
+            except Exception:
+                pass
+        return {"status": "plan_ready", "trace": trace_obj, "graph": graph_obj, "state": mgr_out}
     if isinstance(mgr_out, dict) and "state" in mgr_out:
         trace_obj = mgr_out.get("trace")
         graph_obj = None
@@ -67,6 +78,7 @@ class AgentRuntime:
         plan_argument_generator=None,
         replanner=None,
         execution_policy: ExecutionPolicy | None = None,
+        exploration_llm_fn=None,
     ):
         dispatcher = Dispatcher(execute_fn=dispatch_fn)
         self.dispatcher = dispatcher
@@ -95,6 +107,7 @@ class AgentRuntime:
         self.exploration_runner = ExplorationRunner(
             action_generator=action_generator,
             dispatcher=dispatcher,
+            llm_generate_fn=exploration_llm_fn,
         )
 
         self.mode_manager = ModeManager(
@@ -107,9 +120,11 @@ class AgentRuntime:
     def run(self, instruction: str, mode: str = "act"):
         state = AgentState(instruction=instruction)
         state.metadata["runtime"] = "agent_v2"
+        state.metadata["mode"] = mode
         state.context.setdefault("react_mode", mode in ("act", "plan_execute"))
         lf_trace = create_agent_trace(instruction=instruction, mode=mode)
         state.metadata["langfuse_trace"] = lf_trace
+        state.metadata["obs"] = ObservabilityContext(langfuse_trace=lf_trace)
         run_status = "unknown"
         plan_id_out: str | None = None
         try:
@@ -127,8 +142,11 @@ class AgentRuntime:
         finally:
             if run_status == "unknown":
                 run_status = "plan_ready" if mode in ("plan", "deep_plan") else "unknown"
+            lf_fin = state.metadata.get("langfuse_trace")
+            if lf_fin is None and state.metadata.get("obs") is not None:
+                lf_fin = getattr(state.metadata["obs"], "langfuse_trace", None)
             finalize_agent_trace(
-                state.metadata.get("langfuse_trace"),
+                lf_fin,
                 status=run_status,
                 plan_id=plan_id_out,
             )
@@ -140,4 +158,9 @@ class AgentRuntime:
         This is the Phase 3 entry point: runs before planning, produces grounded
         context for the planner. Isolated from the main agent loop.
         """
-        return self.exploration_runner.run(instruction)
+        lf = create_agent_trace(instruction=instruction, mode="explore")
+        obs = ObservabilityContext(langfuse_trace=lf)
+        try:
+            return self.exploration_runner.run(instruction, obs=obs)
+        finally:
+            finalize_agent_trace(lf, status="explore_done", plan_id=None)
