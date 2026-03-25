@@ -181,6 +181,8 @@ NO action field here
 
 ## 7. `TraceStep`
 
+**Normative implementation:** `agent_v2/schemas/trace.py` (Pydantic). **Discriminator:** use **`kind`**, not a parallel `type` field.
+
 ### Schema
 
 ```json
@@ -200,8 +202,34 @@ NO action field here
     "message": "string"
   },
 
-  "duration_ms": 0
+  "duration_ms": 0,
+
+  "kind": "tool | llm | diff | memory",
+
+  "input": {},
+
+  "output": {},
+
+  "metadata": {}
 }
+```
+
+**`kind`**
+
+```text
+- tool   — plan step / tool execution (default)
+- llm    — model call interleaved in the same timeline (Phase 13)
+- diff   — unified diff artifact after successful edit (Phase 14; observability only)
+- memory — distilled memory entry recorded in trace (Phase 16; observability only)
+```
+
+Until Phases 14 / 16 are implemented, emitters may only produce **`tool`** and **`llm`**.
+
+**`input` / `output`**
+
+```text
+Structured payloads (e.g. LLM prompt/response summaries, diff text, memory content).
+Truncate per phase specs; do not store full file bodies in trace (Phase 14).
 ```
 
 **`error`**
@@ -210,6 +238,10 @@ NO action field here
 - null when success = true
 - when success = false, structured error using ErrorType (SCHEMAS.md Schema 0) — same taxonomy as ExecutionResult.error
 ```
+
+### Graph UI note (`GraphNode.type` vs `TraceStep.kind`)
+
+**Execution graph** nodes use **`GraphNode.type`** (`step`, `llm`, `event`, and when implemented **`diff`**, **`memory`**). That is the **projection** layer (Phase 12+). **`TraceStep.kind`** is the **trace** discriminator. Extend both via **`SCHEMAS.md`** / **`SUPPORTING_SCHEMAS.md`** amendment — keep literals aligned.
 
 ---
 
@@ -269,6 +301,20 @@ NO action field here
 ```
 
 (`items` is an array of `ContextItem`.)
+
+---
+
+## 10a. `MemoryEntry` (Phase 16) vs `ContextItem` (retrieval)
+
+**`ContextItem`** — ranked **repository** snippets from the **retrieval pipeline** (query rewrite → … → context ranking → pruning). Feeds **context building** for code-grounded reasoning.
+
+**`MemoryEntry`** (Phase 16 — see **`PHASE_16_MEMORY_LAYER.md`**) — **distilled** episodic/semantic text derived from **execution** (tool results, exploration, failures), stored in **`MemoryStore`** and passed to the **Planner** as a **bounded**, **optional** input.
+
+```text
+- Memory does NOT replace retrieval or run inside the retrieval pipeline order (frozen in architecture rules).
+- Memory does NOT rank or reorder ContextItem / repository snippets.
+- Do not conflate with CONTRACT_LAYER ContextManager / ContextWindow — different responsibilities; integrate via explicit PlannerInput fields only.
+```
 
 ---
 

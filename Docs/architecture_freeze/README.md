@@ -18,6 +18,12 @@ If any conflict exists → SCHEMAS.md wins
 
 Then align **`PHASE_1_SCHEMA_LAYER.md`** to match **`SCHEMAS.md`**.
 
+**See also:** **`CONTRACT_LAYER.md`** — required components and **ExplorationRunner / ExplorationEngineV2** (Phase 12.5) relationship; types remain defined in **`SCHEMAS.md`**.
+
 ### v2 freeze note
 
-This folder is the **v2** contract baseline: **`README.md`** hierarchy, **`SCHEMAS.md`** (`PlanStep` / `PlannerInput` / `ErrorType` / `ReplanRequest` / `ReplanResult` / exploration rules / retry authority), **`VALIDATION_REGISTRY.md`**, **`PHASE_1_SCHEMA_LAYER.md`**, **`PHASED_IMPLEMENTATION_PLAN.md`** (Phases 1–12), aligned **`PHASE_7`**, **`PHASE_9`**, **`PHASE_10`**, **`SUPPORTING_SCHEMAS.md`**, **`TOOL_EXECUTION_CONTRACT.md`**, and narrative **`ARCHITECTURE_FREEZE.md`** pointer to schemas.
+This folder is the **v2** contract baseline: **`README.md`** hierarchy, **`SCHEMAS.md`** (`PlanStep` / `PlannerInput` / `ErrorType` / `ReplanRequest` / `ReplanResult` / exploration rules / retry authority), **`VALIDATION_REGISTRY.md`**, **`PHASE_1_SCHEMA_LAYER.md`**, **`PHASED_IMPLEMENTATION_PLAN.md`** (Phases 1–16 product/observability specs as listed), aligned **`PHASE_7`**, **`PHASE_9`**, **`PHASE_10`**, **`SUPPORTING_SCHEMAS.md`**, **`TOOL_EXECUTION_CONTRACT.md`**, and narrative **`ARCHITECTURE_FREEZE.md`** pointer to schemas.
+
+**Note:** Root **`README.md`** “prompt budget” settings are **not** the same numbering as **`PHASE_14_DIFF_VIEWER_PATCH_VISUALIZATION.md`** (architecture freeze Phase 14).
+
+**Exploration V2:** **`PHASE_12_5_EXPLORATION_ENGINE_V2.md`** — control-plane upgrade; **`ExplorationEngineV2`** produces **Schema 4 `ExplorationResult`** (Rules 2–5, **`PlannerInput`** union per Schema 4c); **`ExplorationRunner`** may delegate. See **`PHASED_IMPLEMENTATION_PLAN.md`** rollout.

@@ -143,6 +143,8 @@ ExplorationResult = {
 - max_steps: 3–6
 - must produce summaries (not raw dumps)
 
+**Staged engine (Phase 12.5):** **`PHASE_12_5_EXPLORATION_ENGINE_V2.md`** — optional **`ExplorationEngineV2`** behind **`ExplorationRunner`**; output remains **Schema 4 `ExplorationResult`** only (**`CONTRACT_LAYER.md`**).
+
 ---
 
 ### 3.2 Planner (critical)

@@ -75,7 +75,7 @@ class ExecutionGraph(BaseModel):
 
 | Field | Target typing |
 |-------|----------------|
-| **`GraphNode.type`** | `Literal["step", "llm", "event"]` (extend only via SCHEMAS amendment) |
+| **`GraphNode.type`** | `Literal["step", "llm", "event", "diff", "memory"]` (extend only via SCHEMAS amendment; Phases 14 / 16) |
 | **`GraphNode.status`** | `Literal["success", "failure", "retry", "pending"]` |
 | **`GraphEdge.type`** | `Literal["next", "retry", "replan"]` |
 | **`GraphNode.error`** | Structured (`ErrorType` + message) or `null` — match **`TraceStep`** / **`ExecutionResult`** |

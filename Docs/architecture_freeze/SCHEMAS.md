@@ -23,6 +23,7 @@ unknown
 ```text
 - Normalization from ToolResult / tool-native errors happens in the dispatcher → ExecutionResult mapping (see TOOL_EXECUTION_CONTRACT.md).
 - TraceStep.error.type MUST use the same enum (see SUPPORTING_SCHEMAS.md TraceStep).
+- TraceStep uses kind (tool | llm | diff | memory) for step class; extend literals only via SCHEMAS + SUPPORTING_SCHEMAS amendment (Phases 13–16).
 ```
 
 ---
@@ -1040,6 +1041,8 @@ output meaning
 
 Foundation of planning quality. Strict, source-grounded, LLM-consumable, non-noisy.
 
+**Implementation guidance (optional engine):** **`PHASE_12_5_EXPLORATION_ENGINE_V2.md`** describes a staged **`ExplorationEngineV2`** that must still **populate this schema**; internal helper types are **not** a substitute for **`ExplorationResult`**.
+
 ### Full structure
 
 ```json
@@ -1120,8 +1123,14 @@ One source → one summarized understanding
 **Hard rule**
 
 ```text
-NO raw data dumps
-ONLY summarized, structured content
+NO raw data dumps.
+
+Meaning (clarified):
+- NO full files
+- NO unbounded content
+
+Bounded excerpts are allowed when explicitly capped and used for grounding.
+The goal is to prevent full-file payloads and runaway token growth, not to forbid all snippets.
 ```
 
 **3. Item structure**
@@ -1222,6 +1231,17 @@ Purpose:
 traceability + debugging
 ```
 
+**Additive fields (Phase 12.6.E — frozen extension)**
+
+ExplorationItem MAY include bounded snippet + deterministic read origin:
+
+```json
+{
+  "snippet": "string (bounded excerpt; NOT full file; capped)",
+  "read_source": "symbol | line | head"
+}
+```
+
 ---
 
 **4. Summary block (critical for planner)**
@@ -1270,6 +1290,22 @@ When knowledge_gaps is non-empty: MUST be null or omitted.
 {
   "total_items": 3,
   "created_at": "..."
+}
+```
+
+**Additive metadata fields (Phase 12.6.E — frozen extension)**
+
+```json
+{
+  "completion_status": "complete | incomplete",
+  "termination_reason": "string",
+  "explored_files": 0,
+  "explored_symbols": 0,
+  "source_summary": {
+    "symbol": 0,
+    "line": 0,
+    "head": 0
+  }
 }
 ```
 

@@ -25,6 +25,8 @@ AutoStudio now has a **complete observability stack** with three layers:
 
 All three layers are **independent**, **complementary**, and **production-ready**.
 
+**Roadmap (specs in this folder, not all shipped):** **Phase 13** — LLM nodes on the trace timeline; **Phase 14** — diff viewer (`TraceStep.kind="diff"`); **Phase 15** — replay engine (playback from `Trace` only, no re-execution); **Phase 16** — distilled memory (`MemoryEntry` → planner). See **`PHASED_IMPLEMENTATION_PLAN.md`**. Internal trace JSON can be **stepped through** once Phase 15 exists; until then, “replay” in prose means *inspect serialized `Trace`*, not the **`ReplayEngine`** API.
+
 ---
 
 ## Phase 11 — Langfuse Observability

@@ -367,18 +367,20 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `MAX_PATCH_LINES` | Phase 12: max patch lines (default 500) |
 | `MAX_CI_RUNTIME_SECONDS` | Phase 12: CI timeout in seconds (default 600) |
 | `MAX_AGENT_ATTEMPTS` | Phase 5: max attempt-loop iterations per task (default 3); goal_met or exhaust → return |
-| `MAX_PROMPT_TOKENS` | Phase 14: hard cap on total prompt tokens (default 12000) |
-| `OUTPUT_TOKEN_RESERVE` | Phase 14: tokens reserved for model output (default 2000) |
-| `MAX_REPO_SNIPPETS` | Phase 14: max ranked code snippets (default 10) |
-| `MAX_HISTORY_TOKENS` | Phase 14: token budget for history (default 2000) |
-| `MAX_REPO_CONTEXT_TOKENS` | Phase 14: threshold for conditional compression (default 7200) |
-| `MAX_RETRIEVAL_RESULTS` | Phase 14: max candidates from retrieval to ranker (default 20) |
+| `MAX_PROMPT_TOKENS` | Prompt budget: hard cap on total prompt tokens (default 12000) |
+| `OUTPUT_TOKEN_RESERVE` | Prompt budget: tokens reserved for model output (default 2000) |
+| `MAX_REPO_SNIPPETS` | Prompt budget: max ranked code snippets (default 10) |
+| `MAX_HISTORY_TOKENS` | Prompt budget: token budget for history (default 2000) |
+| `MAX_REPO_CONTEXT_TOKENS` | Prompt budget: threshold for conditional compression (default 7200) |
+| `MAX_RETRIEVAL_RESULTS` | Prompt budget: max candidates from retrieval to ranker (default 20) |
 | `RERANKER_STARTUP` | 1 (default) or 0 — auto-init reranker at service startup. 0 = lazy-load on first use |
-| `HISTORY_WINDOW_TURNS` | Phase 14: last N turns kept raw (default 10) |
-| `HISTORY_SUMMARY_TURNS` | Phase 14: older turns summarized (default 30) |
+| `HISTORY_WINDOW_TURNS` | Prompt budget: last N turns kept raw (default 10) |
+| `HISTORY_SUMMARY_TURNS` | Prompt budget: older turns summarized (default 30) |
 | `LANGFUSE_PUBLIC_KEY` | Phase 11: Langfuse public key (optional; when absent, observability is no-op) |
 | `LANGFUSE_SECRET_KEY` | Phase 11: Langfuse secret key (optional; when absent, observability is no-op) |
 | `LANGFUSE_HOST` | Phase 11: Langfuse host URL (default: `https://cloud.langfuse.com`) |
+
+**Phase numbering:** `Docs/architecture_freeze/PHASED_IMPLEMENTATION_PLAN.md` uses a **separate** roadmap (e.g. **Phase 14 — diff viewer**, **Phase 15 — replay**). That is **not** the same as **prompt budgeting** in the table above — do not conflate the two “Phase 14” meanings.
 
 ---
 
@@ -546,10 +548,10 @@ Tests mock LLM calls where appropriate (e.g. `test_context_ranker.py` mocks `cal
 - Actions: EDIT, SEARCH, EXPLAIN, INFRA
 - Evaluation: `python -m planner.planner_eval`
 
-### Prompt System (Phase 13 + Phase 14)
+### Prompt System (registry + token budgeting)
 
 - **PromptRegistry**: Central registry for all prompts; `get_registry().get(name)`, `get_instructions(name, variables=...)`, `get_guarded(name, user_input=...)`, `validate_response(name, response, user_input)`, `compose(prompt, skill, repo_context)`
-- **Phase 14 — Token Budgeting & Context Control**: `agent/prompt_system/context/` — enforces prompt size bounds via ranked context pruning, conditional compression (only when `repo_context_tokens > MAX_REPO_CONTEXT_TOKENS`), sliding conversation window (last N raw + summarized older), dynamic budget allocation per section, and emergency hard truncation as a last-resort safety guard. Use `build_context_budgeted()` for full pipeline.
+- **Token budgeting & context control** (prompt layer; not `architecture_freeze` Phase 14): `agent/prompt_system/context/` — enforces prompt size bounds via ranked context pruning, conditional compression (only when `repo_context_tokens > MAX_REPO_CONTEXT_TOKENS`), sliding conversation window (last N raw + summarized older), dynamic budget allocation per section, and emergency hard truncation as a last-resort safety guard. Use `build_context_budgeted()` for full pipeline.
 - **Versioning**: Prompts in `agent/prompt_versions/{name}/v1.yaml`; `get_prompt(name, version="latest")`, `compare_prompts(name, v1, v2)`, `run_ab_test(name, variant_a, variant_b, run_fn)` for A/B testing
 - **Guardrails**: Injection detection (pre-load via `get_guarded`), output schema validation, safety policy, constraint checker (post-response via `validate_response`)
 - **Skills**: Modular YAML skills (planner_skill, patch_generation_skill, etc.); compose with prompts

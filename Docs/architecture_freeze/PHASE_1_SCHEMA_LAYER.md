@@ -236,6 +236,8 @@ agent_v2/schemas/
 - `success: bool`
 - `error: Optional[{ type: ErrorType, message: str }]` (or nested Pydantic model; **not** a plain string)
 - `duration_ms: int`
+- `kind: Literal["tool", "llm", "diff", "memory"]` — discriminator (**not** a second `type` field); see **`SUPPORTING_SCHEMAS.md`** §7
+- `input: dict`, `output: dict`, `metadata: dict` (default empty)
 
 **Trace:**
 
