@@ -7,6 +7,7 @@ When EMBEDDING_USE_DAEMON=1 and retrieval daemon is reachable, uses daemon /embe
 import logging
 import os
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from agent.retrieval.daemon_embed import daemon_embed_available, encode_via_daemon
@@ -67,8 +68,8 @@ def _get_client(project_root: str):
         if key not in _chroma_clients:
             _chroma_clients[key] = chromadb.PersistentClient(path=key)
         return _chroma_clients[key]
-    except Exception as e:
-        logger.debug("[vector_retriever] client init failed: %s", e)
+    except BaseException as e:  # noqa: BLE001 - rust panics may not subclass Exception
+        logger.warning("[vector_retriever] client init failed; vector disabled for this query: %s", e)
         return None
 
 
@@ -87,14 +88,15 @@ def _get_model():
         return None
 
 
-def search_by_embedding(
+def vector_search_with_embedder(
     query: str,
-    project_root: str | None = None,
-    top_k: int = DEFAULT_TOP_K,
+    project_root: str | None,
+    top_k: int,
+    embed_fn: Callable[[str], list[float] | None],
 ) -> dict | None:
     """
-    Semantic code search via embeddings.
-    Returns {results: [{file, symbol, line, snippet}], query} or None when unavailable.
+    Chroma query using a caller-supplied embedder (daemon ST model or local).
+    Returns {results, query} or None when Chroma unavailable or query fails.
     """
     if not query or not query.strip():
         return {"results": [], "query": query}
@@ -107,12 +109,6 @@ def search_by_embedding(
     if not client:
         return None
 
-    use_daemon = daemon_embed_available()
-
-    model = _get_model() if not use_daemon else None
-    if not use_daemon and not model:
-        return None
-
     try:
         coll = client.get_collection(COLLECTION_NAME)
     except Exception:
@@ -120,17 +116,12 @@ def search_by_embedding(
         return None
 
     try:
-        if use_daemon:
-            emb_list = encode_via_daemon([query.strip()])
-            q_emb = emb_list[0] if emb_list else None
-        else:
-            q_emb = model.encode(query.strip()).tolist()
-
+        q_emb = embed_fn(query.strip())
         if q_emb is None:
             return None
         results_raw = coll.query(query_embeddings=[q_emb], n_results=min(top_k, 20))
-    except Exception as e:
-        logger.debug("[vector_retriever] query failed: %s", e)
+    except BaseException as e:  # noqa: BLE001 - harden against rust panics
+        logger.warning("[vector_retriever] query failed; returning no vector hits: %s", e)
         return None
 
     documents = results_raw.get("documents", [[]])
@@ -156,6 +147,52 @@ def search_by_embedding(
 
     logger.info("[vector_retriever] results=%d", len(results))
     return {"results": results, "query": query}
+
+
+def search_by_embedding(
+    query: str,
+    project_root: str | None = None,
+    top_k: int = DEFAULT_TOP_K,
+) -> dict | None:
+    """
+    Semantic code search via embeddings.
+    Returns {results: [{file, symbol, line, snippet}], query} or None when unavailable.
+
+    Order: (1) full vector search via retrieval daemon HTTP when RETRIEVAL_REMOTE_FIRST
+    and daemon up; (2) local Chroma + daemon /embed or in-process SentenceTransformer.
+    """
+    if not query or not query.strip():
+        return {"results": [], "query": query}
+
+    from agent.retrieval.daemon_retrieval_client import remote_retrieval_enabled, try_daemon_vector_search
+
+    if remote_retrieval_enabled():
+        remote = try_daemon_vector_search(query, project_root, top_k)
+        if remote is not None:
+            return remote
+
+    if not _check_vector_available():
+        return None
+
+    root = Path(project_root or os.environ.get("SERENA_PROJECT_DIR", os.getcwd())).resolve()
+    client = _get_client(str(root))
+    if not client:
+        return None
+
+    use_daemon = daemon_embed_available()
+
+    model = _get_model() if not use_daemon else None
+    if not use_daemon and not model:
+        return None
+
+    def _embed(q: str) -> list[float] | None:
+        if use_daemon:
+            emb_list = encode_via_daemon([q])
+            return emb_list[0] if emb_list else None
+        assert model is not None
+        return model.encode(q).tolist()
+
+    return vector_search_with_embedder(query, str(root), top_k, _embed)
 
 
 def search_batch(

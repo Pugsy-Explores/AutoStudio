@@ -40,8 +40,9 @@ def main():
         args.repo_path,
         ignore_gitignore=not args.no_gitignore,
         verbose=args.verbose,
+        print_summary=True,
     )
-    print(f"Indexed {len(symbols)} symbols -> {path}")
+    print(f"\nIndexed {len(symbols)} symbols → {path}")
 
 
 if __name__ == "__main__":

@@ -226,8 +226,8 @@ def search_candidates(query: str, project_root: str | None = None, state: AgentS
             lst = [_to_candidate(r, "vector", score=1.0 / (i + 1)) for i, r in enumerate(out["results"])]
             _normalize_scores(lst)
             return lst
-        except Exception as e:
-            logger.debug("[search_candidates] vector failed: %s", e)
+        except BaseException as e:  # noqa: BLE001 - rust panics may escape Exception
+            logger.warning("[search_candidates] vector failed; continuing without vector: %s", e)
             return []
         finally:
             metrics.end("vector")

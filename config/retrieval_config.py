@@ -78,6 +78,8 @@ RERANKER_DAEMON_PORT = int(os.getenv("RERANKER_DAEMON_PORT", "9004"))  # Reranke
 RETRIEVAL_DAEMON_PORT = int(os.getenv("RETRIEVAL_DAEMON_PORT", "9004"))  # Unified retrieval daemon (reranker + embedding)
 RERANKER_USE_DAEMON = _bool_env("RERANKER_USE_DAEMON", "1")  # Prefer daemon when reachable (default ON)
 EMBEDDING_USE_DAEMON = _bool_env("EMBEDDING_USE_DAEMON", "1")  # Prefer daemon /embed when reachable (default ON)
+# When 1, try retrieval daemon HTTP for vector/BM25/repo_map before in-process (fallback if daemon down).
+RETRIEVAL_REMOTE_FIRST = _bool_env("RETRIEVAL_REMOTE_FIRST", "1")
 RETRIEVAL_DAEMON_AUTO_START = _bool_env("RETRIEVAL_DAEMON_AUTO_START", "1")  # Start daemon if not running (default ON)
 RETRIEVAL_DAEMON_START_TIMEOUT_SECONDS = int(os.getenv("RETRIEVAL_DAEMON_START_TIMEOUT_SECONDS", "90"))
 RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "10"))

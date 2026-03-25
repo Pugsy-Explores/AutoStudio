@@ -135,6 +135,16 @@ def search_bm25(query: str, project_root: str | None = None, top_k: int = 30) ->
     if not query or not query.strip():
         return []
 
+    try:
+        from agent.retrieval.daemon_retrieval_client import remote_retrieval_enabled, try_daemon_bm25_search
+
+        if remote_retrieval_enabled():
+            remote = try_daemon_bm25_search(query, project_root, top_k)
+            if remote is not None:
+                return remote
+    except Exception:
+        pass
+
     root_path = Path(
         project_root or _PROJECT_ROOT or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
     ).resolve()

@@ -198,18 +198,20 @@ EMBEDDINGS_SUBDIR = "embeddings"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 INDEX_EMBEDDINGS = os.environ.get("INDEX_EMBEDDINGS", "1").lower() in ("1", "true", "yes")
+VECTOR_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+CHROMA_COLLECTION = "codebase"
 
 
-def _build_embedding_index(root_dir: str, symbols: list[dict], out_path: Path) -> None:
-    """Optionally build ChromaDB embedding index for vector search."""
+def _build_embedding_index(root_dir: str, symbols: list[dict], out_path: Path) -> dict:
+    """Build ChromaDB embedding index for vector search. Returns a status dict for summaries."""
     if not INDEX_EMBEDDINGS:
-        return
+        return {"status": "skipped", "reason": "INDEX_EMBEDDINGS=0"}
     try:
         import chromadb
         from sentence_transformers import SentenceTransformer
-    except ImportError:
+    except ImportError as e:
         logger.debug("[indexer] chromadb/sentence-transformers not available, skipping embeddings")
-        return
+        return {"status": "skipped", "reason": f"missing dependency ({e})"}
 
     root = Path(root_dir).resolve()
     emb_path = out_path / EMBEDDINGS_SUBDIR
@@ -217,7 +219,7 @@ def _build_embedding_index(root_dir: str, symbols: list[dict], out_path: Path) -
 
     try:
         client = chromadb.PersistentClient(path=str(emb_path))
-        model = SentenceTransformer("all-MiniLM-L6-v2")
+        model = SentenceTransformer(VECTOR_EMBEDDING_MODEL)
 
         docs = []
         metas = []
@@ -250,18 +252,146 @@ def _build_embedding_index(root_dir: str, symbols: list[dict], out_path: Path) -
             ids_list.append(f"{rel}:{name}:{s.get('start_line', 0)}")
 
         if not docs:
-            return
+            return {"status": "empty", "reason": "no embeddable symbol chunks", "persist_path": str(emb_path)}
 
         embs = model.encode(docs).tolist()
         try:
-            client.delete_collection("codebase")
+            client.delete_collection(CHROMA_COLLECTION)
         except Exception:
             pass
-        coll = client.create_collection("codebase")
-        coll.add(documents=docs, embeddings=embs, metadatas=metas, ids=ids_list)
+        coll = client.create_collection(CHROMA_COLLECTION)
+        # Chroma caps batch add (e.g. 5461); chunk to stay under the limit.
+        _batch = 4000
+        for i in range(0, len(docs), _batch):
+            sl = slice(i, i + _batch)
+            coll.add(
+                documents=docs[sl],
+                embeddings=embs[sl],
+                metadatas=metas[sl],
+                ids=ids_list[sl],
+            )
         logger.info("[indexer] embedding index: %d chunks", len(docs))
+        return {
+            "status": "ok",
+            "chunks": len(docs),
+            "collection": CHROMA_COLLECTION,
+            "model": VECTOR_EMBEDDING_MODEL,
+            "persist_path": str(emb_path),
+            "batch_size": _batch,
+        }
     except Exception as e:
         logger.warning("[indexer] embedding index failed: %s", e)
+        return {"status": "failed", "error": str(e), "persist_path": str(emb_path)}
+
+
+def _bm25_runtime_note() -> str:
+    """BM25 is built in-memory on first search from the graph; report library availability."""
+    try:
+        import rank_bm25  # noqa: F401
+
+        return "rank_bm25 import OK (BM25 built lazily on first search from graph nodes)"
+    except ImportError as e:
+        return f"rank_bm25 not available ({e}); BM25 search disabled until installed"
+
+
+def _format_index_summary_lines(
+    root: Path,
+    out_path: Path,
+    json_path: Path,
+    db_path: Path,
+    *,
+    symbol_count: int,
+    dependency_edges: int,
+    graph_stats: dict,
+    vector_stats: dict | None,
+    repo_map_result: dict | None,
+    repo_map_failed: str | None,
+) -> list[str]:
+    """Human-readable lines for log + CLI after indexing."""
+    sym_size = ""
+    try:
+        if json_path.is_file():
+            sym_size = f" ({json_path.stat().st_size:,} bytes)"
+    except OSError:
+        pass
+    lines: list[str] = [
+        "=" * 72,
+        "Repository index summary",
+        "=" * 72,
+        f"Project root:     {root}",
+        f"Output directory: {out_path}",
+        "",
+        "[1] Symbol graph (SQLite + symbols.json)",
+        f"    symbols.json:     {json_path}{sym_size}",
+        f"    index.sqlite:     {db_path}",
+        f"    symbols (nodes):  {graph_stats.get('nodes', symbol_count)}",
+        f"    dependency edges: {dependency_edges} extracted → {graph_stats.get('edges_stored', 0)} stored in DB",
+        f"    unresolved pairs: {graph_stats.get('unresolved_endpoint_pairs', 0)}",
+        "",
+        "[2] Repo map (architectural map for retrieval)",
+    ]
+    rm_path = out_path / REPO_MAP_JSON
+    if repo_map_failed:
+        lines.append(f"    status: FAILED — {repo_map_failed}")
+        lines.append(f"    expected path: {rm_path}")
+    elif repo_map_result is not None:
+        mods = repo_map_result.get("modules") or []
+        lines.append(f"    repo_map.json:    {rm_path}")
+        lines.append(f"    modules:          {len(mods)}")
+        # Approximate symbol coverage: sum key_symbols in legacy format
+        kc = sum(len(m.get("key_symbols") or []) for m in mods if isinstance(m, dict))
+        lines.append(f"    key_symbols (sample lists): {kc} entries across modules")
+    else:
+        lines.append(f"    (not written)")
+    lines.extend(
+        [
+            "",
+            "[3] Vector (Chroma persistent embeddings)",
+        ]
+    )
+    vs = vector_stats or {"status": "skipped", "reason": "not run"}
+    st = vs.get("status", "?")
+    if st == "ok":
+        lines.extend(
+            [
+                f"    status:           OK",
+                f"    collection:       {vs.get('collection', '?')}",
+                f"    embedding model:  {vs.get('model', '?')}",
+                f"    chunks stored:    {vs.get('chunks', 0)}",
+                f"    persist path:     {vs.get('persist_path', '')}",
+                f"    add batch size:   {vs.get('batch_size', '?')}",
+            ]
+        )
+    elif st == "skipped":
+        lines.append(f"    status: SKIPPED — {vs.get('reason', '')}")
+        if vs.get("persist_path"):
+            lines.append(f"    persist path:     {vs['persist_path']}")
+    elif st == "empty":
+        lines.append(f"    status: EMPTY — {vs.get('reason', '')}")
+        lines.append(f"    persist path:     {vs.get('persist_path', '')}")
+    elif st == "failed":
+        lines.append(f"    status: FAILED — {vs.get('error', '')}")
+        lines.append(f"    persist path:     {vs.get('persist_path', '')}")
+    else:
+        lines.append(f"    status: {st} {vs}")
+    lines.extend(
+        [
+            "",
+            "[4] BM25 (lexical retrieval)",
+            "    " + _bm25_runtime_note(),
+            f"    (uses same {graph_stats.get('nodes', symbol_count)} symbols as graph nodes when built)",
+            "",
+            "=" * 72,
+        ]
+    )
+    return lines
+
+
+def _emit_index_summary(lines: list[str], *, also_print: bool) -> None:
+    for line in lines:
+        logger.info("%s", line)
+    if also_print:
+        print("\n".join(lines), flush=True)
 
 
 def index_repo(
@@ -271,6 +401,7 @@ def index_repo(
     ignore_gitignore: bool = True,
     verbose: bool = False,
     build_embeddings: bool = True,
+    print_summary: bool = False,
 ) -> tuple[list[dict], str]:
     """
     Scan repo, extract symbols and dependencies, build graph, write to output.
@@ -280,6 +411,7 @@ def index_repo(
     verbose: if True, log each file indexed.
     build_embeddings: if True, build ChromaDB embedding index (default True).
       Set False for faster indexing when graph/repo_map only are needed.
+    print_summary: if True, print the multi-section index summary to stdout (also logged).
     """
     root = Path(root_dir).resolve()
     out = output_dir or str(root / SYMBOL_GRAPH_DIR)
@@ -305,17 +437,22 @@ def index_repo(
         db_path.unlink()
     from repo_graph.graph_builder import build_graph
 
-    build_graph(symbols, edges, str(db_path))
+    graph_stats = build_graph(symbols, edges, str(db_path))
 
     if build_embeddings:
-        _build_embedding_index(root_dir, symbols, out_path)
+        vector_stats = _build_embedding_index(root_dir, symbols, out_path)
+    else:
+        vector_stats = {"status": "skipped", "reason": "build_embeddings=False"}
 
+    repo_map_result: dict | None = None
+    repo_map_failed: str | None = None
     try:
         from repo_graph.repo_map_builder import build_repo_map
 
-        build_repo_map(str(root), str(out_path / REPO_MAP_JSON))
+        repo_map_result = build_repo_map(str(root), str(out_path / REPO_MAP_JSON))
         logger.info("[indexer] wrote %s under %s", REPO_MAP_JSON, out_path)
     except Exception as e:
+        repo_map_failed = str(e)
         logger.warning("[indexer] repo_map build failed: %s", e)
 
     logger.info(
@@ -325,6 +462,19 @@ def index_repo(
         json_path,
         db_path,
     )
+    summary_lines = _format_index_summary_lines(
+        root,
+        out_path,
+        json_path,
+        db_path,
+        symbol_count=len(symbols),
+        dependency_edges=len(edges),
+        graph_stats=graph_stats,
+        vector_stats=vector_stats,
+        repo_map_result=repo_map_result,
+        repo_map_failed=repo_map_failed,
+    )
+    _emit_index_summary(summary_lines, also_print=print_summary)
     return symbols, str(db_path)
 
 
@@ -435,8 +585,8 @@ def main():
 
     logging.basicConfig(level=logging.INFO)
     repo_path = sys.argv[1] if len(sys.argv) > 1 else "."
-    symbols, path = index_repo(repo_path)
-    print(f"Indexed {len(symbols)} symbols -> {path}")
+    symbols, path = index_repo(repo_path, print_summary=True)
+    print(f"\nIndexed {len(symbols)} symbols → {path}")
 
 
 if __name__ == "__main__":

@@ -185,6 +185,16 @@ def lookup_repo_map(query: str, project_root: str | None = None) -> list[dict]:
     equality. (4) Optional typo fallback (config): Levenshtein ≤ 1 on normalized
     identifier strings — only if (1)–(3) yield no matches.
     """
+    try:
+        from agent.retrieval.daemon_retrieval_client import remote_retrieval_enabled, try_daemon_repo_map_lookup
+
+        if remote_retrieval_enabled():
+            remote = try_daemon_repo_map_lookup(query, project_root)
+            if remote is not None:
+                return remote
+    except Exception:
+        pass
+
     root = Path(project_root or os.environ.get("SERENA_PROJECT_DIR", os.getcwd())).resolve()
     map_path = root / SYMBOL_GRAPH_DIR / REPO_MAP_JSON
     if not map_path.is_file():

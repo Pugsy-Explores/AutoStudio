@@ -35,11 +35,13 @@ def _resolve_symbol_to_id(name: str, name_to_id: dict[str, int]) -> int | None:
     return None
 
 
-def build_graph(symbols: list[dict], edges: list[dict], output_path: str) -> None:
+def build_graph(symbols: list[dict], edges: list[dict], output_path: str) -> dict:
     """
     Build graph from symbols and edges; write to SQLite.
     symbols: [{symbol_name, symbol_type, file, start_line, end_line, docstring}]
     edges: [{source_symbol, target_symbol, relation_type}]
+
+    Returns counts: nodes, edges_extracted, edges_stored, unresolved_endpoint_pairs.
     """
     storage = GraphStorage(output_path)
     storage._connect()  # Ensure schema exists even when symbols is empty
@@ -88,3 +90,9 @@ def build_graph(symbols: list[dict], edges: list[dict], output_path: str) -> Non
             sample,
         )
     storage.close()
+    return {
+        "nodes": len(symbols),
+        "edges_extracted": len(edges),
+        "edges_stored": edge_count,
+        "unresolved_endpoint_pairs": len(unresolved_pairs),
+    }

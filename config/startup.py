@@ -72,8 +72,16 @@ def _ensure_retrieval_daemon_running() -> None:
     # Run in foreground (no --daemon): avoids macOS fork+PyTorch MPS crash (SIGSEGV).
     # Daemon runs as subprocess; stays up for subsequent agent runs.
     try:
+        proj = os.environ.get("SERENA_PROJECT_DIR") or str(root)
         proc = subprocess.Popen(
-            [sys.executable, str(script), "--port", str(RETRIEVAL_DAEMON_PORT)],
+            [
+                sys.executable,
+                str(script),
+                "--port",
+                str(RETRIEVAL_DAEMON_PORT),
+                "--project-root",
+                proj,
+            ],
             cwd=str(root),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
