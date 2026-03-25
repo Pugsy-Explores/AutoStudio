@@ -30,10 +30,18 @@ const STATUS_BORDER_COLORS = {
   pending: '#94a3b8',
 };
 
+const LLM_BG = '#ede9fe';
+const LLM_BORDER = '#7c3aed';
+
 export const ExecutionNode: React.FC<ExecutionNodeProps> = ({ data, selected }) => {
   const { node } = data;
-  const bgColor = STATUS_COLORS[node.status as keyof typeof STATUS_COLORS] || '#ffffff';
-  const borderColor = STATUS_BORDER_COLORS[node.status as keyof typeof STATUS_BORDER_COLORS] || '#000000';
+  const isLlm = node.type === 'llm';
+  let bgColor = STATUS_COLORS[node.status as keyof typeof STATUS_COLORS] || '#ffffff';
+  let borderColor = STATUS_BORDER_COLORS[node.status as keyof typeof STATUS_BORDER_COLORS] || '#000000';
+  if (isLlm) {
+    bgColor = LLM_BG;
+    borderColor = LLM_BORDER;
+  }
 
   return (
     <div
@@ -50,7 +58,7 @@ export const ExecutionNode: React.FC<ExecutionNodeProps> = ({ data, selected }) 
       <Handle type="target" position={Position.Top} />
       
       <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '4px', fontWeight: 500 }}>
-        {node.type.toUpperCase()}
+        {isLlm ? '🧠 LLM' : node.type.toUpperCase()}
       </div>
       
       <div style={{ fontSize: '14px', fontWeight: 600, color: '#1f2937', marginBottom: '4px' }}>

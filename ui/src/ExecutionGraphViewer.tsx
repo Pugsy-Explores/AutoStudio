@@ -76,7 +76,9 @@ export const ExecutionGraphViewer: React.FC<ExecutionGraphViewerProps> = ({ grap
         <Controls />
         <MiniMap
           nodeColor={(node) => {
-            const status = (node.data.node as GraphNode)?.status;
+            const gn = node.data.node as GraphNode;
+            if (gn?.type === 'llm') return '#7c3aed';
+            const status = gn?.status;
             if (status === 'success') return '#28a745';
             if (status === 'failure') return '#dc3545';
             if (status === 'retry') return '#ffc107';
