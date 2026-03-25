@@ -1,0 +1,157 @@
+from types import SimpleNamespace
+
+from agent_v2.exploration.exploration_engine_v2 import ExplorationEngineV2
+from agent_v2.schemas.execution import ExecutionResult
+from agent_v2.schemas.exploration import (
+    ExplorationCandidate,
+    ExplorationDecision,
+    ExplorationState,
+    ExplorationTarget,
+    QueryIntent,
+)
+from agent_v2.schemas.tool import ToolResult
+from agent_v2.runtime.tool_mapper import map_tool_result_to_execution_result
+
+
+def _ok(tool_name: str, data: dict | None = None, summary: str = "ok") -> ExecutionResult:
+    tr = ToolResult(
+        tool_name=tool_name,
+        success=True,
+        data=data or {},
+        duration_ms=1,
+    )
+    result = map_tool_result_to_execution_result(tr, step_id="s1")
+    return result.model_copy(update={"output": result.output.model_copy(update={"summary": summary})})
+
+
+def test_no_relevant_candidate_terminates_without_inspection():
+    class _Parser:
+        def parse(self, instruction: str) -> QueryIntent:
+            return QueryIntent(symbols=["X"], keywords=["X"], intents=["debug"])
+
+    class _Selector:
+        def select_batch(self, instruction, candidates, seen_files, *, limit):
+            return None
+
+    class _Reader:
+        def inspect(self, selected, *, symbol, line, window, state):
+            raise AssertionError("inspect must not run when selector returns None")
+
+    class _Analyzer:
+        def analyze(self, instruction, file_path, snippet) -> ExplorationDecision:
+            raise AssertionError("analyzer must not run when selector returns None")
+
+    class _Graph:
+        def expand(self, symbol, file_path, state, *, max_nodes, max_depth):
+            return [], _ok("graph_query", data={})
+
+    class _Dispatcher:
+        def execute(self, step, state):
+            return _ok(
+                "search",
+                data={"results": [{"file_path": "a.py", "symbol": "X", "source": "grep"}]},
+                summary="found",
+            )
+
+    engine = ExplorationEngineV2(
+        dispatcher=_Dispatcher(),
+        intent_parser=_Parser(),
+        selector=_Selector(),
+        inspection_reader=_Reader(),
+        analyzer=_Analyzer(),
+        graph_expander=_Graph(),
+    )
+    result = engine.explore("find X", state=SimpleNamespace(context={}))
+    assert result.metadata.termination_reason == "no_relevant_candidate"
+    assert result.metadata.completion_status == "incomplete"
+
+
+def test_evidence_delta_key_is_file_symbol_read_source():
+    t = ExplorationTarget(
+        file_path="/repo/a.py",
+        symbol="Foo",
+        source="discovery",
+    )
+    k = ExplorationEngineV2._evidence_delta_key(
+        "/abs/a.py",
+        t,
+        {"mode": "symbol_body"},
+    )
+    assert k == ("/abs/a.py", "Foo", "symbol")
+    seen: set[tuple[str, str, str]] = {k}
+    assert not ExplorationEngineV2._is_meaningful_new_evidence(seen, k)
+    assert ExplorationEngineV2._is_meaningful_new_evidence(
+        seen,
+        ("/abs/a.py", "Foo", "line"),
+    )
+
+
+def test_read_source_for_delta_empty_for_unknown_mode():
+    assert ExplorationEngineV2._read_source_for_delta({}) == ""
+    assert ExplorationEngineV2._read_source_for_delta({"mode": "other"}) == ""
+
+
+def test_enqueue_ranked_skips_scoper_when_capped_len_at_or_below_skip_below(monkeypatch):
+    monkeypatch.setattr(
+        "agent_v2.exploration.exploration_engine_v2.EXPLORATION_SCOPER_SKIP_BELOW",
+        5,
+    )
+
+    class _Scoper:
+        def scope(self, instruction, candidates):
+            raise AssertionError("scoper should not run when len(capped) <= skip_below")
+
+    class _Sel:
+        def select_batch(self, instruction, candidates, seen_files, *, limit):
+            return candidates[:1]
+
+    engine = ExplorationEngineV2(
+        dispatcher=object(),
+        intent_parser=object(),
+        selector=_Sel(),
+        inspection_reader=object(),
+        analyzer=object(),
+        graph_expander=object(),
+        scoper=_Scoper(),
+    )
+    ex_state = ExplorationState(instruction="x")
+    cands = [
+        ExplorationCandidate(file_path=f"{i}.py", symbol="s", source="grep") for i in range(4)
+    ]
+    engine._enqueue_ranked("instr", cands, ex_state, limit=5)
+
+
+def test_enqueue_ranked_calls_scoper_when_capped_len_above_skip_below(monkeypatch):
+    monkeypatch.setattr(
+        "agent_v2.exploration.exploration_engine_v2.EXPLORATION_SCOPER_SKIP_BELOW",
+        5,
+    )
+
+    class _Scoper:
+        def __init__(self):
+            self.calls = 0
+
+        def scope(self, instruction, candidates):
+            self.calls += 1
+            return candidates[:2]
+
+    class _Sel:
+        def select_batch(self, instruction, candidates, seen_files, *, limit):
+            return candidates
+
+    scoper = _Scoper()
+    engine = ExplorationEngineV2(
+        dispatcher=object(),
+        intent_parser=object(),
+        selector=_Sel(),
+        inspection_reader=object(),
+        analyzer=object(),
+        graph_expander=object(),
+        scoper=scoper,
+    )
+    ex_state = ExplorationState(instruction="x")
+    cands = [
+        ExplorationCandidate(file_path=f"{i}.py", symbol="s", source="grep") for i in range(6)
+    ]
+    engine._enqueue_ranked("instr", cands, ex_state, limit=5)
+    assert scoper.calls == 1

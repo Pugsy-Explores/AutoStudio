@@ -14,11 +14,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import agent_v2.observability.langfuse_client as langfuse_client_mod
 from agent_v2.observability.langfuse_client import (
     LFGenerationHandle,
     LFSpanHandle,
     LFTraceHandle,
     _NoopTrace,
+    _langfuse_host,
     create_agent_trace,
     finalize_agent_trace,
     langfuse,
@@ -77,14 +79,52 @@ def _make_exploration_result() -> ExplorationResult:
     )
 
 
+def _make_exploration_result_complete() -> ExplorationResult:
+    """Minimal exploration result that passes mode_manager completion gate."""
+    return ExplorationResult(
+        exploration_id="exp_test_123",
+        instruction="test task",
+        items=[],
+        summary=ExplorationSummary(
+            overall="test summary",
+            key_findings=["finding1"],
+            knowledge_gaps=[],
+            knowledge_gaps_empty_reason="all found",
+        ),
+        metadata=ExplorationResultMetadata(
+            total_items=0,
+            created_at="2026-01-01T00:00:00Z",
+            completion_status="complete",
+        ),
+    )
+
+
 class TestLangfuseClientInit:
     """Test Step 1 — singleton client with env-based secrets."""
+
+    def test_langfuse_host_prefers_langfuse_host_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "LANGFUSE_HOST": "https://custom.example/api",
+                "LANGFUSE_BASE_URL": "http://ignored",
+            },
+            clear=False,
+        ):
+            assert _langfuse_host() == "https://custom.example/api"
+
+    def test_langfuse_host_falls_back_to_langfuse_base_url(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LANGFUSE_HOST", None)
+            os.environ["LANGFUSE_BASE_URL"] = "http://localhost:3000/"
+            assert _langfuse_host() == "http://localhost:3000"
 
     def test_no_keys_returns_noop_trace(self):
         """When LANGFUSE keys are missing, create_agent_trace returns _NoopTrace."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("LANGFUSE_PUBLIC_KEY", None)
             os.environ.pop("LANGFUSE_SECRET_KEY", None)
+            langfuse_client_mod._CLIENT = None
             trace = create_agent_trace(instruction="test", mode="act")
             assert isinstance(trace, _NoopTrace)
 
@@ -433,13 +473,21 @@ class TestLangfuseEndToEndWiring:
         )
         mock_arg_gen = MagicMock(generate=MagicMock(return_value={}))
 
+        from agent_v2.runtime.exploration_runner import ExplorationRunner
+
         runtime = AgentRuntime(
             planner=mock_planner,
             plan_argument_generator=mock_arg_gen,
             dispatch_fn=lambda step, state: mock_dispatcher.execute(step, state),
         )
 
-        result = runtime.run("test task", mode="act")
+        # Real V2 exploration needs a full stack; this test only checks Langfuse wiring through runtime.
+        with patch.object(
+            ExplorationRunner,
+            "run",
+            return_value=_make_exploration_result_complete(),
+        ):
+            result = runtime.run("test task", mode="act")
         assert "state" in result or "trace" in result
 
 

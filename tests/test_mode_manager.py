@@ -1,14 +1,46 @@
 """Tests for agent_v2 ModeManager: Phase 8 ACT / PLAN / DEEP_PLAN / plan_execute."""
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent_v2.runtime.mode_manager import ModeManager
+from agent_v2.schemas.plan import (
+    PlanDocument,
+    PlanMetadata,
+    PlanRisk,
+    PlanSource,
+    PlanStep,
+    PlanStepExecution,
+)
 from agent_v2.schemas.trace import Trace, TraceMetadata
 from agent_v2.state.agent_state import AgentState
 
 
-def _fake_plan_executor_return(doc, st: AgentState) -> dict:
+def _minimal_plan(*, plan_id: str = "p1") -> PlanDocument:
+    return PlanDocument(
+        plan_id=plan_id,
+        instruction="i",
+        understanding="u",
+        sources=[PlanSource(type="other", ref="r", summary="s")],
+        steps=[
+            PlanStep(
+                step_id="s1",
+                index=1,
+                type="explore",
+                goal="g",
+                action="search",
+                inputs={},
+                execution=PlanStepExecution(),
+            ),
+        ],
+        risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
+        completion_criteria=["c"],
+        metadata=PlanMetadata(created_at="2026-01-01T00:00:00Z", version=1),
+    )
+
+
+def _fake_plan_executor_return(doc, st: AgentState, **kwargs) -> dict:
     pid = getattr(doc, "plan_id", None) or "p1"
     return {
         "status": "success",
@@ -25,8 +57,7 @@ def _fake_plan_executor_return(doc, st: AgentState) -> dict:
 
 
 def _make_mocks_for_pipeline():
-    mock_doc = MagicMock()
-    mock_doc.model_dump.return_value = {"plan_id": "p1", "steps": [{"step_id": "s1"}]}
+    mock_doc = _minimal_plan()
     mock_planner = MagicMock()
     mock_planner.plan.return_value = mock_doc
 
@@ -50,12 +81,18 @@ class TestModeManager(unittest.TestCase):
         result = mode_manager.run(state, mode="act")
 
         mock_loop.run.assert_not_called()
-        mock_er.run.assert_called_once_with("do something")
+        mock_er.run.assert_called_once()
+        self.assertEqual(mock_er.run.call_args.args[0], "do something")
         mock_planner.plan.assert_called_once()
         call_kw = mock_planner.plan.call_args.kwargs
         self.assertEqual(call_kw.get("exploration"), mock_er.run.return_value)
         self.assertFalse(call_kw.get("deep"))
-        mock_pe.run.assert_called_once_with(mock_doc, state)
+        mock_pe.run.assert_called_once()
+        pe_call = mock_pe.run.call_args
+        self.assertIs(pe_call.args[0], mock_doc)
+        self.assertIs(pe_call.args[1], state)
+        self.assertIn("trace_emitter", pe_call.kwargs)
+        self.assertIsNotNone(pe_call.kwargs.get("trace_emitter"))
         self.assertIsInstance(result, dict)
         self.assertIn("trace", result)
         self.assertIs(result["state"], state)
@@ -64,12 +101,8 @@ class TestModeManager(unittest.TestCase):
     def test_plan_mode_explores_then_plans_no_execution(self):
         mock_loop = MagicMock()
         mock_planner = MagicMock()
-        mock_planner.plan.return_value = {
-            "steps": [
-                {"step": 1, "action": "SEARCH", "description": "find code"},
-                {"step": 2, "action": "EDIT", "description": "modify"},
-            ]
-        }
+        plan_doc = _minimal_plan(plan_id="plan-mode")
+        mock_planner.plan.return_value = plan_doc
         state = AgentState(instruction="add a feature")
         mock_exp = MagicMock()
         mock_exp.summary.overall = "sum"
@@ -81,19 +114,27 @@ class TestModeManager(unittest.TestCase):
         mode_manager = ModeManager(mock_er, mock_planner, mock_pe, loop=mock_loop)
         result = mode_manager.run(state, mode="plan")
 
-        mock_er.run.assert_called_once_with("add a feature")
-        mock_planner.plan.assert_called_once_with(
-            "add a feature", deep=False, exploration=mock_exp
-        )
+        mock_er.run.assert_called_once()
+        self.assertEqual(mock_er.run.call_args.args[0], "add a feature")
+        mock_planner.plan.assert_called_once()
+        p_kw = mock_planner.plan.call_args.kwargs
+        self.assertFalse(p_kw.get("deep"))
+        self.assertIs(p_kw.get("exploration"), mock_exp)
         mock_pe.run.assert_not_called()
         mock_loop.run.assert_not_called()
-        self.assertEqual(result.current_plan, mock_planner.plan.return_value["steps"])
+        self.assertIsInstance(result.current_plan, dict)
+        self.assertEqual(result.current_plan.get("plan_id"), "plan-mode")
         self.assertIs(result.exploration_result, mock_exp)
+        tr = result.metadata.get("trace")
+        self.assertIsNotNone(tr)
+        self.assertEqual(tr.plan_id, "plan-mode")
+        self.assertEqual(result.metadata.get("execution_trace_id"), tr.trace_id)
 
     def test_deep_plan_mode_explores_then_deep_plans_no_execution(self):
         mock_loop = MagicMock()
         mock_planner = MagicMock()
-        mock_planner.plan.return_value = {"steps": [{"step": 1, "action": "EXPLAIN", "description": "analyze"}]}
+        plan_doc = _minimal_plan(plan_id="deep-plan-mode")
+        mock_planner.plan.return_value = plan_doc
         state = AgentState(instruction="analyze code")
         mock_exp = MagicMock()
         mock_exp.summary.overall = "sum"
@@ -106,12 +147,15 @@ class TestModeManager(unittest.TestCase):
         result = mode_manager.run(state, mode="deep_plan")
 
         mock_er.run.assert_called_once()
-        mock_planner.plan.assert_called_once_with(
-            "analyze code", deep=True, exploration=mock_exp
-        )
+        mock_planner.plan.assert_called_once()
+        dp_kw = mock_planner.plan.call_args.kwargs
+        self.assertTrue(dp_kw.get("deep"))
+        self.assertIs(dp_kw.get("exploration"), mock_exp)
         mock_pe.run.assert_not_called()
         mock_loop.run.assert_not_called()
-        self.assertEqual(result.current_plan, mock_planner.plan.return_value["steps"])
+        self.assertEqual(result.current_plan.get("plan_id"), "deep-plan-mode")
+        self.assertIsNotNone(result.metadata.get("trace"))
+        self.assertEqual(result.metadata["trace"].plan_id, "deep-plan-mode")
 
     def test_unknown_mode_raises(self):
         mock_er, mock_planner, mock_pe, _, _ = _make_mocks_for_pipeline()
@@ -139,13 +183,19 @@ class TestModeManager(unittest.TestCase):
         state = AgentState(instruction="do thing")
         result = mode_manager.run(state, mode="plan_execute")
 
-        mock_er.run.assert_called_once_with("do thing")
+        mock_er.run.assert_called_once()
+        self.assertEqual(mock_er.run.call_args.args[0], "do thing")
         mock_planner.plan.assert_called_once()
         call_kw = mock_planner.plan.call_args.kwargs
         self.assertEqual(call_kw.get("exploration"), mock_er.run.return_value)
-        mock_pe.run.assert_called_once_with(mock_doc, state)
+        mock_pe.run.assert_called_once()
+        pe_call = mock_pe.run.call_args
+        self.assertIs(pe_call.args[0], mock_doc)
+        self.assertIs(pe_call.args[1], state)
+        self.assertIn("trace_emitter", pe_call.kwargs)
         self.assertIn("trace", result)
-        self.assertEqual(state.current_plan, {"plan_id": "p1", "steps": [{"step_id": "s1"}]})
+        dumped = mock_doc.model_dump(mode="json")
+        self.assertEqual(state.current_plan, dumped)
         self.assertEqual(state.context.get("exploration_summary_text"), "explore summary")
 
     def test_plan_mode_requires_exploration_runner(self):
@@ -158,6 +208,25 @@ class TestModeManager(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             mode_manager.run(state, mode="plan")
         self.assertIn("exploration_runner", str(ctx.exception).lower())
+
+    def test_planner_is_gated_when_exploration_incomplete(self):
+        mock_er, mock_planner, mock_pe, _, mock_loop = _make_mocks_for_pipeline()
+        mock_exp = MagicMock()
+        mock_exp.summary.overall = "incomplete exploration"
+        mock_exp.model_dump.return_value = {"exploration_id": "e_incomplete"}
+        mock_exp.metadata = SimpleNamespace(
+            completion_status="incomplete",
+            termination_reason="max_steps",
+        )
+        mock_er.run.return_value = mock_exp
+        mode_manager = ModeManager(mock_er, mock_planner, mock_pe, loop=mock_loop)
+        state = AgentState(instruction="do thing")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            mode_manager.run(state, mode="plan_execute")
+        self.assertIn("gated", str(ctx.exception).lower())
+        mock_planner.plan.assert_not_called()
+        mock_pe.run.assert_not_called()
 
 
 if __name__ == "__main__":

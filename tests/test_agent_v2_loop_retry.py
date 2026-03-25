@@ -1,3 +1,5 @@
+from agent_v2.observability.langfuse_client import create_agent_trace
+from agent_v2.observability.observability_context import ObservabilityContext
 from agent_v2.runtime.agent_loop import AgentLoop
 from agent_v2.state.agent_state import AgentState
 
@@ -85,6 +87,43 @@ def test_failure_observation_and_streak_recorded():
     assert out.last_error == "bad path"
     assert out.metadata.get("failure_streak") == 3
     assert out.history[-1]["observation"] == "ERROR: bad path"
+
+
+def test_standalone_run_populates_obs_and_langfuse_trace():
+    """When no obs, AgentLoop creates one trace and exposes it on metadata for downstream."""
+    state = AgentState(instruction="solo")
+    assert state.metadata.get("obs") is None
+
+    loop = AgentLoop(
+        dispatcher=_Dispatcher([{"success": True, "output": "done", "error": None}]),
+        validator=_Validator(),
+        action_generator=_ActionGenerator([_step(1)]),
+        observation_builder=_ObservationBuilder(),
+    )
+
+    loop.run(state)
+    assert state.metadata.get("langfuse_trace") is not None
+    assert state.metadata.get("obs") is not None
+    assert state.metadata["obs"].langfuse_trace is state.metadata["langfuse_trace"]
+
+
+def test_reuses_obs_langfuse_trace_same_handle():
+    """Phase 12.6.G — AgentLoop must not create a second root trace when obs is set."""
+    state = AgentState(instruction="one run")
+    shared = create_agent_trace(instruction="one run", mode="act")
+    state.metadata["obs"] = ObservabilityContext(langfuse_trace=shared)
+
+    loop = AgentLoop(
+        dispatcher=_Dispatcher([{"success": True, "output": "done", "error": None}]),
+        validator=_Validator(),
+        action_generator=_ActionGenerator([_step(1)]),
+        observation_builder=_ObservationBuilder(),
+    )
+
+    loop.run(state)
+    assert state.metadata.get("langfuse_trace") is shared
+    assert state.metadata.get("obs") is not None
+    assert state.metadata["obs"].langfuse_trace is shared
 
 
 def test_stops_after_retry_limit():

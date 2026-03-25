@@ -88,6 +88,35 @@ class TestTraceEmitter(unittest.TestCase):
         self.assertIsNotNone(tr.steps[0].error)
         self.assertEqual(tr.steps[0].error.type, ErrorType.not_found)
 
+    def test_read_snippet_trace_has_minimal_provenance(self):
+        em = TraceEmitter()
+        plan = _plan()
+        step = plan.steps[0]
+        res = ExecutionResult(
+            step_id=step.step_id,
+            success=True,
+            status="success",
+            output=ExecutionOutput(
+                summary="read snippet ok",
+                data={
+                    "file_path": "/repo/a.py",
+                    "symbol": "Foo.bar",
+                    "content": "def bar():\n    return 1\n",
+                    "mode": "symbol_body",
+                },
+            ),
+            error=None,
+            metadata=ExecutionMetadata(tool_name="read_snippet", duration_ms=5, timestamp=""),
+        )
+        em.record_step(step, res, step.index)
+        tr = em.build_trace("instr", plan.plan_id)
+        md = tr.steps[0].metadata
+        self.assertEqual(md.get("tool_name"), "read_snippet")
+        self.assertEqual(md.get("read_source"), "symbol")
+        self.assertEqual(md.get("file"), "/repo/a.py")
+        self.assertEqual(md.get("symbol"), "Foo.bar")
+        self.assertTrue(isinstance(md.get("snippet_preview"), str) and md.get("snippet_preview"))
+
 
 if __name__ == "__main__":
     unittest.main()

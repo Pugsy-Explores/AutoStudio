@@ -25,11 +25,12 @@ Phase map:
   1 — Pydantic schemas: round-trip JSON / invariants
   2 — Dispatcher: ToolResult → ExecutionResult (live: real SEARCH dispatch)
   3 — ExplorationRunner: bounded read-only loop + ExplorationResult
+  12.5 / 12.6.D — ExplorationEngineV2: staged loop + Schema 4 (live: real LLM + search + read_snippet for inspection)
   4 — PlannerV2 + PlanValidator → PlanDocument
   5 — plan_execute: exploration → plan → PlanExecutor (LLM arg gen + tools)
   6 — Per-step retry (final outcome only in trace); tests: test_plan_executor.py, test_dispatcher_fault_injection.py
   7 — Replanner loop; tests: test_replanner.py + fault_hooks HARD path in test_dispatcher_fault_injection.py
-  8 — ModeManager: act/plan_execute vs plan/deep_plan (executor skipped on plan-only modes)
+  8 — ModeManager: act/plan_execute vs plan/deep_plan (executor skipped on plan-only modes; plan/deep_plan still emit Phase 13 LLM trace)
   9 — TraceEmitter → Trace / TraceStep JSON-serializable observability
 """
 
@@ -101,6 +102,22 @@ def project_root(monkeypatch) -> Path:
 
 def _coerce_trace(obj: Any) -> Trace:
     return obj if isinstance(obj, Trace) else Trace.model_validate(obj)
+
+
+def _assert_exploration_result_schema4(exp: ExplorationResult) -> None:
+    """Schema 4 invariants used by planner input (items cap, gaps vs empty_reason, relevance)."""
+    assert len(exp.items) <= 6
+    assert exp.metadata.total_items == len(exp.items)
+    if exp.summary.knowledge_gaps:
+        assert exp.summary.knowledge_gaps_empty_reason is None
+    else:
+        assert exp.summary.knowledge_gaps_empty_reason
+        assert str(exp.summary.knowledge_gaps_empty_reason).strip()
+    for it in exp.items:
+        assert it.source.ref.strip()
+        assert it.content.summary.strip()
+        assert 0.0 <= it.relevance.score <= 1.0
+        assert it.metadata.tool_name in ("search", "open_file", "read_snippet", "shell", "other")
 
 
 def _fault_live_requested() -> bool:
@@ -213,7 +230,50 @@ class TestPhase3ExplorationLive:
         assert exp.summary.overall
         # Read-only: no edit/run_tests in exploration item tool names
         for it in exp.items:
-            assert it.metadata.tool_name in ("search", "open_file", "shell", "other"), it.metadata.tool_name
+            assert it.metadata.tool_name in ("search", "open_file", "read_snippet", "shell", "other"), it.metadata.tool_name
+
+
+@pytest.mark.timeout(900)
+@pytest.mark.slow
+@pytest.mark.agent_v2_live
+class TestPhase125ExplorationEngineV2Live:
+    """
+    Phase 12.5 — ExplorationEngineV2 behind ExplorationRunner (real reasoning model + dispatcher).
+
+    Run subset: AGENT_V2_LIVE=1 pytest ... -k Phase125
+    """
+
+    def test_exploration_v2_live_schema4_and_read_only_tools(self, require_live, project_root, monkeypatch):
+        monkeypatch.setenv("SKIP_STARTUP_CHECKS", "1")
+        monkeypatch.setenv("AGENT_V2_ENABLE_EXPLORATION_ENGINE_V2", "1")
+        from agent_v2.runtime.bootstrap import create_runtime
+
+        rt = create_runtime()
+        exp = rt.explore(
+            "Find where ExplorationRunner or ModeManager is defined under agent_v2; use repo search context."
+        )
+        assert isinstance(exp, ExplorationResult)
+        assert exp.exploration_id.startswith("exp_")
+        assert exp.instruction
+        _assert_exploration_result_schema4(exp)
+        for it in exp.items:
+            assert it.metadata.tool_name in ("search", "open_file", "read_snippet", "shell", "other"), it.metadata.tool_name
+
+    def test_exploration_legacy_live_when_v2_flag_off(self, require_live, project_root, monkeypatch):
+        """Cutover: AGENT_V2_ENABLE_EXPLORATION_ENGINE_V2=0 uses Phase 3 ReAct exploration loop."""
+        monkeypatch.setenv("SKIP_STARTUP_CHECKS", "1")
+        monkeypatch.setenv("AGENT_V2_ENABLE_EXPLORATION_ENGINE_V2", "0")
+        from agent_v2.runtime.bootstrap import create_runtime
+
+        rt = create_runtime()
+        exp = rt.explore("Find PlanExecutor class in agent_v2")
+        assert isinstance(exp, ExplorationResult)
+        assert len(exp.items) <= 6
+        assert exp.metadata.total_items == len(exp.items)
+        if exp.summary.knowledge_gaps:
+            assert exp.summary.knowledge_gaps_empty_reason is None
+        else:
+            assert exp.summary.knowledge_gaps_empty_reason
 
 
 @pytest.mark.timeout(900)
@@ -299,9 +359,9 @@ class TestPhase5PlanExecuteLive:
 @pytest.mark.slow
 @pytest.mark.agent_v2_live
 class TestPhase8ModesLive:
-    """Phase 8 — plan / deep_plan skip PlanExecutor; no trace envelope from runtime.run."""
+    """Phase 8 — plan / deep_plan skip PlanExecutor. Phase 13 — trace + graph from explore + planner LLMs."""
 
-    def test_plan_mode_has_no_trace_envelope(self, require_live, project_root, monkeypatch):
+    def test_plan_mode_includes_trace_and_graph(self, require_live, project_root, monkeypatch):
         monkeypatch.setenv("SKIP_STARTUP_CHECKS", "1")
         from agent_v2.runtime.bootstrap import create_runtime
 
@@ -311,15 +371,22 @@ class TestPhase8ModesLive:
             mode="plan",
         )
         assert isinstance(out, dict)
-        assert "trace" not in out or out.get("trace") is None
+        assert out.get("trace") is not None
+        assert out.get("graph") is not None
         assert "state" in out
         st = out["state"]
+        assert st.metadata.get("trace") is out["trace"]
+        assert st.metadata.get("execution_trace_id") == _coerce_trace(out["trace"]).trace_id
+        tr = _coerce_trace(out["trace"])
+        assert tr.plan_id
+        assert len(tr.steps) >= 1
+        assert any(getattr(s, "kind", "tool") == "llm" for s in tr.steps)
         assert st.exploration_result is not None
         assert st.current_plan is not None
         cp = st.current_plan
         assert isinstance(cp, dict) and cp.get("steps")
 
-    def test_deep_plan_mode_has_no_trace_envelope(self, require_live, project_root, monkeypatch):
+    def test_deep_plan_mode_includes_trace_and_graph(self, require_live, project_root, monkeypatch):
         monkeypatch.setenv("SKIP_STARTUP_CHECKS", "1")
         from agent_v2.runtime.bootstrap import create_runtime
 
@@ -329,8 +396,12 @@ class TestPhase8ModesLive:
             mode="deep_plan",
         )
         assert isinstance(out, dict)
-        assert "trace" not in out or out.get("trace") is None
+        assert out.get("trace") is not None
+        assert out.get("graph") is not None
         st = out["state"]
+        assert st.metadata.get("trace") is out["trace"]
+        tr = _coerce_trace(out["trace"])
+        assert any(getattr(s, "kind", "tool") == "llm" for s in tr.steps)
         assert st.current_plan is not None
         doc = st.current_plan
         assert isinstance(doc, dict)

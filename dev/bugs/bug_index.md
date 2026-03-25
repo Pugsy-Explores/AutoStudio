@@ -13,3 +13,5 @@
 | LIVE-TEST-001 | Search result visibility - LLM blind to search results | retrieval | critical | resolved |
 | LIVE-TEST-002 | Task mode validation - write actions for read-only tasks | planner | high | resolved |
 | LIVE-TEST-003 | Context size exceeded in Phase 10 integration | runtime | high | in_progress |
+| BUG-009 | Exploration inspection performed full-file reads instead of bounded read-time snippets | TBD | medium | backlog |
+| BUG-010 | exploration selector loop amplification and missing null termination | TBD | medium | backlog |

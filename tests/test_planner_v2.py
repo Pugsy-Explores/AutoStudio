@@ -114,6 +114,8 @@ class TestPlannerV2(unittest.TestCase):
         self.assertTrue(calls)
         self.assertIn("TASK:", calls[0])
         self.assertIn("EXPLORATION SUMMARY:", calls[0])
+        self.assertIn("EXPLORATION SOURCES:", calls[0])
+        self.assertIn("EXPLORATION ITEMS:", calls[0])
 
     def test_plan_from_replan_context(self):
         def gen(prompt: str) -> str:

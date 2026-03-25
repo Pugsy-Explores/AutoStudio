@@ -14,6 +14,8 @@ Validates:
 
 import pytest
 
+from agent.tools import filesystem_adapter
+from agent_v2.exploration.read_router import ReadRequest, read as bounded_read
 from agent_v2.runtime.exploration_runner import (
     MAX_STEPS,
     ExplorationRunner,
@@ -66,7 +68,7 @@ class _MockActionGenerator:
         self._idx = 0
         self.calls: list[tuple[str, list]] = []  # record (instruction, items snapshot)
 
-    def next_action_exploration(self, instruction: str, items: list):
+    def next_action_exploration(self, instruction: str, items: list, **kwargs):
         self.calls.append((instruction, list(items)))
         if self._idx >= len(self._steps):
             return None
@@ -105,7 +107,7 @@ def test_exploration_returns_exploration_result():
     """✅ ExplorationRunner exists and returns ExplorationResult."""
     gen = _MockActionGenerator([None])  # immediate stop
     disp = _MockDispatcher([])
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Find AgentLoop")
     assert isinstance(result, ExplorationResult)
 
@@ -114,7 +116,7 @@ def test_exploration_summary_always_present():
     """✅ summary present on ExplorationResult (even with no items)."""
     gen = _MockActionGenerator([None])
     disp = _MockDispatcher([])
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Find AgentLoop")
     assert result.summary.overall
     assert isinstance(result.summary.key_findings, list)
@@ -129,7 +131,7 @@ def test_exploration_steps_within_max():
     results = [_make_execution_result("search", summary=f"Search {i}") for i in range(10)]
     gen = _MockActionGenerator(steps)
     disp = _MockDispatcher(results)
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Find AgentLoop")
 
     assert len(result.items) <= MAX_STEPS
@@ -149,7 +151,7 @@ def test_exploration_forbidden_actions_never_dispatched():
     results = [_make_execution_result("search", summary="Found AgentLoop")]
     gen = _MockActionGenerator(steps)
     disp = _MockDispatcher(results)
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Fix a bug")
 
     # Only the "search" step should have been dispatched
@@ -174,7 +176,7 @@ def test_exploration_allowed_actions_only_in_result():
     ]
     gen = _MockActionGenerator(steps)
     disp = _MockDispatcher(results)
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Explore codebase")
 
     assert len(result.items) == 3
@@ -193,7 +195,7 @@ def test_exploration_finish_step_stops_loop():
     results = [_make_execution_result("search", summary="Done")]
     gen = _MockActionGenerator(steps)
     disp = _MockDispatcher(results)
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Task")
 
     assert len(result.items) == 1  # only first search dispatched
@@ -203,7 +205,7 @@ def test_exploration_empty_when_no_steps():
     """✅ Empty exploration returns valid ExplorationResult with correct knowledge_gaps_empty_reason."""
     gen = _MockActionGenerator([None])  # immediate stop
     disp = _MockDispatcher([])
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Unknown task")
 
     assert isinstance(result, ExplorationResult)
@@ -223,7 +225,7 @@ def test_exploration_non_empty_has_knowledge_gaps():
     results = [_make_execution_result("search", summary="AgentLoop found")]
     gen = _MockActionGenerator(steps)
     disp = _MockDispatcher(results)
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Explain AgentLoop")
 
     assert len(result.items) == 1
@@ -253,7 +255,7 @@ def test_exploration_state_isolation():
 
     gen = _MockActionGenerator(steps)
     disp = _TrackingDispatcher()
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     runner.run("Isolate me")
 
     # State passed to dispatcher must be the isolated _ExplorationState, not an external one
@@ -279,7 +281,7 @@ def test_exploration_result_schema_valid():
     ]
     gen = _MockActionGenerator(steps)
     disp = _MockDispatcher(results)
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Find AgentLoop")
 
     import json
@@ -313,7 +315,7 @@ def test_exploration_item_count_matches_metadata():
     ]
     gen = _MockActionGenerator(steps)
     disp = _MockDispatcher(results)
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Test")
 
     assert result.metadata.total_items == len(result.items)
@@ -325,7 +327,7 @@ def test_exploration_instruction_passed_to_action_generator():
     results = [_make_execution_result("search")]
     gen = _MockActionGenerator(steps)
     disp = _MockDispatcher(results)
-    runner = ExplorationRunner(action_generator=gen, dispatcher=disp)
+    runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     runner.run("My specific instruction")
 
     for instr, _ in gen.calls:
@@ -394,3 +396,153 @@ def test_extract_entities_deduped():
 
 def test_max_steps_constant_within_spec():
     assert 3 <= MAX_STEPS <= 6, "MAX_STEPS must be between 3 and 6 inclusive"
+
+
+def test_exploration_v2_path_returns_bounded_schema4_items():
+    """V2 engine stays bounded and returns schema-valid result."""
+    class _V2Dispatcher:
+        def execute(self, step, state):
+            action = step.get("_react_action_raw")
+            if action == "search":
+                data = {
+                    "results": [
+                        {"file": "agent_v2/runtime/mode_manager.py", "symbol": "ModeManager", "snippet": "class ModeManager:"}
+                    ]
+                }
+                return _make_execution_result("search", data=data, summary="Found ModeManager")
+            if action == "read_snippet":
+                return _make_execution_result(
+                    "read_snippet",
+                    data={
+                        "file_path": "agent_v2/runtime/mode_manager.py",
+                        "content": "class ModeManager:\n    pass\n",
+                        "start_line": 1,
+                        "end_line": 2,
+                        "mode": "symbol_body",
+                    },
+                    summary="Read mode manager file",
+                )
+            return _make_execution_result("search", data={}, summary="No-op")
+
+    runner = ExplorationRunner(
+        action_generator=_MockActionGenerator([]),
+        dispatcher=_V2Dispatcher(),
+        llm_generate_fn=lambda _: '{"symbols":["ModeManager"],"keywords":["mode"],"intents":["find_definition"]}',
+        enable_v2=True,
+    )
+    result = runner.run("Find ModeManager definition")
+    assert isinstance(result, ExplorationResult)
+    assert len(result.items) <= 6
+    assert result.metadata.total_items == len(result.items)
+    # Phase 12.6.E: bounded snippet + deterministic read_source tagging
+    inspected = [it for it in result.items if it.metadata.tool_name == "read_snippet"]
+    assert inspected, "Expected at least one inspection item from read_snippet"
+    for it in inspected:
+        assert it.read_source in ("symbol", "line", "head")
+        assert isinstance(it.snippet, str)
+        assert len(it.snippet) <= 600
+    ss = result.metadata.source_summary or {}
+    assert all(k in ss for k in ("symbol", "line", "head"))
+    assert ss["symbol"] >= 1
+
+
+def test_exploration_v2_inspection_uses_bounded_read_tool():
+    """Inspection in V2 must use read_snippet, not open_file."""
+    seen_actions: list[str] = []
+
+    class _V2Dispatcher:
+        def execute(self, step, state):
+            action = step.get("_react_action_raw")
+            if action:
+                seen_actions.append(str(action))
+            if action == "search":
+                return _make_execution_result(
+                    "search",
+                    data={
+                        "results": [
+                            {
+                                "file": "agent_v2/runtime/mode_manager.py",
+                                "symbol": "ModeManager",
+                                "snippet": "class ModeManager:",
+                            }
+                        ]
+                    },
+                    summary="Found ModeManager",
+                )
+            if action == "read_snippet":
+                return _make_execution_result(
+                    "read_snippet",
+                    data={
+                        "file_path": "agent_v2/runtime/mode_manager.py",
+                        "content": "class ModeManager:\n    pass\n",
+                        "start_line": 1,
+                        "end_line": 2,
+                        "mode": "symbol_body",
+                    },
+                    summary="Bounded read",
+                )
+            return _make_execution_result("search", data={"results": []}, summary="No-op")
+
+    runner = ExplorationRunner(
+        action_generator=_MockActionGenerator([]),
+        dispatcher=_V2Dispatcher(),
+        llm_generate_fn=lambda _: '{"symbols":["ModeManager"],"keywords":["mode"],"intents":["find_definition"]}',
+        enable_v2=True,
+    )
+    runner.run("Find ModeManager definition")
+
+    assert "read_snippet" in seen_actions
+    assert "open_file" not in seen_actions
+
+
+def test_exploration_v2_empty_discovery_sets_empty_reason():
+    """V2 sets knowledge_gaps_empty_reason when no evidence exists."""
+    class _EmptyDispatcher:
+        def execute(self, step, state):
+            return _make_execution_result("search", data={"results": []}, summary="No candidates")
+
+    runner = ExplorationRunner(
+        action_generator=_MockActionGenerator([]),
+        dispatcher=_EmptyDispatcher(),
+        llm_generate_fn=lambda _: '{"symbols":[],"keywords":[],"intents":["locate_logic"]}',
+        enable_v2=True,
+    )
+    result = runner.run("Unknown symbol")
+    assert result.items == []
+    assert result.summary.knowledge_gaps == []
+    assert result.summary.knowledge_gaps_empty_reason
+
+
+def test_exploration_engine_prioritizes_inspection_evidence_in_items():
+    """When discovery floods evidence, Schema 4 items must still include inspection (read_snippet)."""
+    from agent_v2.exploration.exploration_engine_v2 import ExplorationEngineV2
+
+    ev = [("discovery", {"query": f"q{i}"}, _make_execution_result("search")) for i in range(10)]
+    ev.insert(5, ("inspection", {"path": "x.py"}, _make_execution_result("read_snippet")))
+    ordered = ExplorationEngineV2._prioritize_evidence_for_items(ev)
+    assert ordered[0][0] == "inspection"
+
+
+def test_bounded_read_does_not_call_full_read(monkeypatch, tmp_path):
+    """Bound-before-I/O: bounded router should not invoke filesystem_adapter.read_file."""
+    p = tmp_path / "sample.py"
+    p.write_text("\n".join([f"line {i}" for i in range(1, 600)]), encoding="utf-8")
+
+    def _boom(path: str):  # pragma: no cover - should never be called
+        raise AssertionError("full read_file() should not be called for bounded reads")
+
+    monkeypatch.setattr(filesystem_adapter, "read_file", _boom)
+
+    class _State:
+        def __init__(self):
+            self.context = {"project_root": str(tmp_path)}
+
+    state = _State()
+    payload = bounded_read(
+        ReadRequest(path=str(p), line=250, window=20),
+        state=state,
+    )
+    content = payload.get("content") or ""
+    assert payload.get("mode") == "line_window"
+    assert isinstance(content, str) and content
+    assert "line 250" in content
