@@ -5,14 +5,14 @@ from __future__ import annotations
 import pytest
 
 from agent.retrieval.docs_retriever import build_docs_context, search_docs_candidates
-from tests.agent_eval.harness import _two_phase_parent_plan
+from tests.agent_eval.harness import two_phase_parent_plan
 from tests.agent_eval.suites.core12 import load_core12
 from tests.agent_eval.task_specs import resolve_repo_dir
 
 
 def test_two_phase_plan_has_subgoal_as_query_for_search_candidates():
     """SEARCH_CANDIDATES must receive subgoal as query; empty query returns no candidates."""
-    plan = _two_phase_parent_plan(
+    plan = two_phase_parent_plan(
         "Read benchmark_local/TRACE_NOTE.md and src/requests/sessions.py. Write explain_out.txt.",
         parent_plan_id="test",
     )
@@ -65,7 +65,7 @@ def test_build_docs_context_prefers_source_docs_over_junk(tmp_path):
 
 def test_phase0_has_build_context_step():
     """Phase 0 docs lane must include BUILD_CONTEXT so ranked_context is populated."""
-    plan = _two_phase_parent_plan("Find docs and explain the flow", parent_plan_id="test")
+    plan = two_phase_parent_plan("Find docs and explain the flow", parent_plan_id="test")
     phases = plan.get("phases") or []
     assert len(phases) >= 1
     steps = phases[0].get("steps") or []

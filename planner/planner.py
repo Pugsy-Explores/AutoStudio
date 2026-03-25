@@ -193,6 +193,7 @@ def plan(
     retry_context: dict | None = None,
     *,
     primary_intent: str | None = None,
+    deep: bool = False,
 ) -> dict:
     """
     Convert instruction into a structured plan: list of steps with action, description, reason.
@@ -201,6 +202,8 @@ def plan(
 
     Phase 5: retry_context may contain previous_attempts and critic_feedback; these are
     included in the prompt so the planner can produce a better plan on retry.
+
+    deep: When True, use richer reasoning (future: different prompt / more tokens). No-op for now.
     """
     print("[workflow] planner")
     prompt = instruction

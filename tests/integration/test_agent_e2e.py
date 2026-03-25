@@ -21,8 +21,8 @@ import pytest
 from agent.memory.state import AgentState
 from agent.memory.task_memory import load_task, save_task
 from agent.observability.trace_logger import finish_trace, log_event, start_trace
-from agent.orchestrator.deterministic_runner import run_deterministic
 from repo_index.indexer import index_repo
+from tests.utils.runtime_adapter import run_deterministic
 
 logger = logging.getLogger(__name__)
 

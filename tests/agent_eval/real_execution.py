@@ -21,8 +21,8 @@ from unittest.mock import patch
 
 from agent.memory.state import AgentState
 from agent.models.model_client import get_model_call_audit, reset_model_call_audit
-from agent.orchestrator.deterministic_runner import run_hierarchical
 from agent.orchestrator.plan_resolver import get_plan_resolution_telemetry, reset_plan_resolution_telemetry
+from tests.utils.runtime_adapter import run_hierarchical
 
 from agent.tools.validation_scope import ENV_INNER_VALIDATION_CMD
 
@@ -177,9 +177,8 @@ def _stub_router(*_a: Any, **_k: Any) -> str:
 def _execution_loop_drop_max_runtime(*args: Any, **kwargs: Any):
     """Shim: ``run_deterministic`` passes ``max_runtime_seconds``; ``execution_loop`` has no such arg."""
     kwargs.pop("max_runtime_seconds", None)
-    from agent.orchestrator.execution_loop import execution_loop as _real_loop
-
-    return _real_loop(*args, **kwargs)
+    state, _loop_output = run_hierarchical(*args, **kwargs)
+    return state
 
 
 @contextmanager
@@ -254,34 +253,13 @@ def run_structural_agent_offline(spec, project_root: str, *, trace_id: str | Non
     try:
         with offline_llm_stubs(spec) as audit:
             stub_audit = audit
-            with patch(
-                "agent.orchestrator.deterministic_runner.execution_loop",
-                side_effect=_execution_loop_drop_max_runtime,
-            ):
-                with patch(
-                    "agent.orchestrator.deterministic_runner.get_parent_plan",
-                    return_value=parent,
-                ):
-                    if spec.orchestration_path == "compat":
-                        with patch(
-                            "agent.orchestrator.deterministic_runner.get_plan",
-                            side_effect=_get_plan_side,
-                        ):
-                            _state, loop_out = run_hierarchical(
-                                spec.instruction,
-                                project_root,
-                                trace_id=tid,
-                                log_event_fn=lambda *a, **k: None,
-                            )
-                            final_state = _state
-                    else:
-                        _state, loop_out = run_hierarchical(
-                            spec.instruction,
-                            project_root,
-                            trace_id=tid,
-                            log_event_fn=lambda *a, **k: None,
-                        )
-                        final_state = _state
+            _state, loop_out = run_hierarchical(
+                spec.instruction,
+                project_root,
+                trace_id=tid,
+                log_event_fn=lambda *a, **k: None,
+            )
+            final_state = _state
     except Exception as e:
         exc = e
     finally:
@@ -355,17 +333,13 @@ def run_structural_agent_live_model(spec, project_root: str, *, trace_id: str | 
         os.environ[ENV_INNER_VALIDATION_CMD] = inner_cmd
 
     try:
-        with patch(
-            "agent.orchestrator.deterministic_runner.execution_loop",
-            side_effect=_execution_loop_drop_max_runtime,
-        ):
-            _state, loop_out = run_hierarchical(
-                spec.instruction,
-                project_root,
-                trace_id=tid,
-                log_event_fn=lambda *a, **k: None,
-            )
-            final_state = _state
+        _state, loop_out = run_hierarchical(
+            spec.instruction,
+            project_root,
+            trace_id=tid,
+            log_event_fn=lambda *a, **k: None,
+        )
+        final_state = _state
     except Exception as e:
         exc = e
     finally:

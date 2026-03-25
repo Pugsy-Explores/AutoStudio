@@ -10,6 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "openai>=1.0.0",
+    "pydantic>=2.0.0",
+    "langfuse>=2.0.0",
     "PyYAML>=6.0",
     "rapidfuzz>=3.0.0",
     "rank-bm25>=0.2.2",
@@ -36,6 +38,7 @@ markers = [
     "integration: marks test as integration test (requires real services, TEST_MODE=integration)",
     "explain_inject: EXPLAIN code-lane injected retrieval contract matrix (dispatch + helpers)",
     "replanner_regression: replanner prompt regression suite (8 scenarios, live LLM calls); every prompt change must pass",
+    "agent_v2_live: agent_v2 phased pipeline with real LLM (set AGENT_V2_LIVE=1); see tests/test_agent_v2_phases_live.py",
 ]
 # Benchmark fixtures contain pytest files for manual validation; do not collect them as AutoStudio tests.
 norecursedirs = [

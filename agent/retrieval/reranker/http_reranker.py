@@ -16,7 +16,10 @@ from config.retrieval_config import RETRIEVAL_DAEMON_PORT
 
 logger = logging.getLogger(__name__)
 
-_DAEMON_TIMEOUT = 30
+import os as _os
+# Cold-start (first inference) loads ONNX weights — allow up to 5 min.
+# Override with RERANKER_HTTP_TIMEOUT env var.
+_DAEMON_TIMEOUT = int(_os.getenv("RERANKER_HTTP_TIMEOUT", "300"))
 
 
 def _daemon_url(path: str, port: int = RETRIEVAL_DAEMON_PORT, host: str = "127.0.0.1") -> str:

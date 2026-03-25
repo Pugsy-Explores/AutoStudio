@@ -121,7 +121,7 @@ def run_plan_only(tasks: list[dict], metrics_filter: list[str] | None) -> dict:
 
 def run_full(tasks: list[dict], metrics_filter: list[str] | None) -> dict:
     """Full eval: run_agent. Computes all metrics."""
-    from agent.orchestrator.agent_loop import run_agent
+    from tests.utils.runtime_adapter import run_agent
     from agent.orchestrator.plan_resolver import get_plan
 
     results = []

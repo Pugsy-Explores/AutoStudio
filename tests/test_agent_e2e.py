@@ -21,7 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.memory.task_memory import load_task
-from agent.orchestrator.agent_controller import run_controller
+from tests.utils.runtime_adapter import run_controller
 from repo_index.indexer import index_repo
 
 logger = logging.getLogger(__name__)

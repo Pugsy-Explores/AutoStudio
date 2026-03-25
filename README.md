@@ -18,6 +18,7 @@ AutoStudio converts natural-language instructions into executable plans, runs co
 
 - [Architecture Overview](#architecture-overview)
 - [ReAct Architecture](#react-architecture)
+- [ReAct Tool Registry](#react-tool-registry)
 - [Quick Start](#quick-start)
 - [Project Structure](#project-structure)
 - [Core Components](#core-components)
@@ -156,8 +157,42 @@ Single attempt per edit step. No critic, no retry_planner.
 | `agent/orchestrator/execution_loop.py` | ReAct loop: _react_get_next_action, react_history |
 | `agent/execution/step_dispatcher.py` | _dispatch_react, _edit_react, _generate_patch_once |
 | `agent/execution/react_schema.py` | ALLOWED_ACTIONS, validate_action |
+| `agent/tools/react_registry.py` | Central ReAct tool registry (definitions + lookup) |
+| `agent/tools/react_tools.py` | ReAct tool handlers and `register_all_tools()` |
 | `agent/prompt_versions/react_action/v1.yaml` | Production ReAct system prompt |
 | `scripts/run_react_live.py` | Live execution with trace capture |
+
+## ReAct Tool Registry
+
+ReAct tools are centralized in `agent/tools/react_registry.py`.
+
+### What It Stores
+
+- `ToolDefinition`: `name`, `description`, `required_args`, `handler`
+- `register_tool(...)`: register a tool
+- `get_tool_by_name(name)`: lookup for schema validation and dispatch
+- `initialize_tool_registry()`: explicit one-time initialization at runtime start
+
+### Registered ReAct Tools
+
+- `search` → `SEARCH`
+- `open_file` → `READ`
+- `edit` → `EDIT`
+- `run_tests` → `RUN_TEST`
+- `finish` → terminal action (validated, not dispatched)
+
+### Why This Exists
+
+- Single source of truth for ReAct tool metadata and required args
+- `agent/execution/react_schema.py` validates from registry
+- `agent/execution/step_dispatcher.py` dispatches ReAct actions via registry handlers using `handler(args, state)`
+
+### Adding a New ReAct Tool
+
+1. Define the handler in `agent/tools/react_tools.py`
+2. Register it with `register_tool(ToolDefinition(...))`
+3. Ensure `initialize_tool_registry()` is called at runtime start
+4. Add prompt guidance in `agent/prompt_versions/react_action/v1.yaml`
 
 ---
 
@@ -341,6 +376,59 @@ All config values support env overrides. See [Docs/CONFIGURATION.md](Docs/CONFIG
 | `RERANKER_STARTUP` | 1 (default) or 0 — auto-init reranker at service startup. 0 = lazy-load on first use |
 | `HISTORY_WINDOW_TURNS` | Phase 14: last N turns kept raw (default 10) |
 | `HISTORY_SUMMARY_TURNS` | Phase 14: older turns summarized (default 30) |
+| `LANGFUSE_PUBLIC_KEY` | Phase 11: Langfuse public key (optional; when absent, observability is no-op) |
+| `LANGFUSE_SECRET_KEY` | Phase 11: Langfuse secret key (optional; when absent, observability is no-op) |
+| `LANGFUSE_HOST` | Phase 11: Langfuse host URL (default: `https://cloud.langfuse.com`) |
+
+---
+
+## Execution Graph UI (Phase 12)
+
+AutoStudio includes **Cursor/Devin-style execution visualization** with a graph UI showing nodes (steps, LLM calls, events) and edges (flow, retry, replan).
+
+### Quick Start
+
+```bash
+# Start FastAPI graph server
+python -m agent_v2.observability.server
+# Runs on http://localhost:8000
+
+# In another terminal, start React UI
+cd ui && npm install && npm run dev
+# Opens http://localhost:3000
+```
+
+### Python API
+
+```python
+from agent_v2.runtime.runtime import AgentRuntime
+
+runtime = AgentRuntime(...)
+result = runtime.run("Add logging to execute_step", mode="act")
+
+# result["trace"]  # Phase 9: internal Trace
+# result["graph"]  # Phase 12: ExecutionGraph (JSON)
+# result["state"]  # AgentState
+```
+
+### Graph Features
+
+- **Hierarchical layout** (dagre algorithm, not random)
+- **Status colors** (green=success, red=failure, yellow=retry)
+- **Interactive drill-down** (click node → detail panel)
+- **Retry visualization** (synthetic event nodes)
+- **Replan edges** (animated failure recovery)
+- **Minimap + zoom controls**
+
+### Graph API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Health check |
+| `/graph` | POST | Generate graph from trace |
+| `/` | GET | API info |
+
+See [Docs/architecture_freeze/PHASE_12_IMPLEMENTATION_SUMMARY.md](Docs/architecture_freeze/PHASE_12_IMPLEMENTATION_SUMMARY.md) for details.
 
 ---
 

@@ -5,7 +5,7 @@ import json
 import pytest
 
 from agent.execution.react_schema import ALLOWED_ACTIONS, validate_action
-from agent.orchestrator.execution_loop import _react_parse_response
+from agent_v2.runtime.bootstrap import _react_parse_response
 
 
 class TestValidateAction:

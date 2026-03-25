@@ -20,7 +20,7 @@ os.chdir(ROOT)
 
 from config.config_validator import validate_config
 from config.logging_config import configure_logging
-from agent.orchestrator.agent_controller import run_controller
+from agent_v2.runtime.bootstrap import create_runtime
 
 validate_config()
 configure_logging()
@@ -38,11 +38,9 @@ def main():
     print(f"[react_live] instruction={instruction[:80]}...")
     print("[react_live] Running...")
 
-    result = run_controller(instruction, project_root=str(ROOT))
-    state = result["state"]
-    loop_output = result.get("loop_output") or {}
-
-    react_history = loop_output.get("react_history") or state.context.get("react_history", [])
+    runtime = create_runtime()
+    state = runtime.run(instruction, mode="act")
+    react_history = state.history
 
     # Build JSON actions trace (thought, action, args per step)
     json_actions = []
@@ -63,10 +61,10 @@ def main():
     trace_data = {
         "instruction": instruction,
         "timestamp": ts,
-        "patches_applied": loop_output.get("patches_applied", 0),
-        "files_modified": loop_output.get("files_modified", []),
-        "errors_encountered": loop_output.get("errors_encountered", []),
-        "tool_calls": loop_output.get("tool_calls", 0),
+        "patches_applied": 0,
+        "files_modified": [],
+        "errors_encountered": [r.get("error") for r in state.step_results if r.get("error")],
+        "tool_calls": len(state.step_results),
         "react_history_count": len(react_history),
         "json_actions": json_actions,
         "react_history_full": react_history,
@@ -76,7 +74,7 @@ def main():
         json.dump(trace_data, f, indent=2, default=str)
 
     print(f"\n[react_live] Trace written to {trace_path}")
-    print(f"[react_live] Steps: {len(react_history)} | Patches: {loop_output.get('patches_applied', 0)} | Errors: {len(loop_output.get('errors_encountered', []))}")
+    print(f"[react_live] Steps: {len(react_history)} | Patches: 0 | Errors: {len(trace_data['errors_encountered'])}")
 
     print("\n--- JSON Actions ---")
     for a in json_actions:
@@ -84,10 +82,10 @@ def main():
 
     print("\n--- Step Results ---")
     for r in state.step_results:
-        status = "OK" if r.success else "FAIL"
-        print(f"  {r.step_id} [{r.action}] {status} {r.latency_seconds:.2f}s")
-        if r.error:
-            print(f"    error: {r.error[:150]}...")
+        status = "OK" if r.get("success") else "FAIL"
+        print(f"  {r.get('step_id')} [{r.get('action')}] {status}")
+        if r.get("error"):
+            print(f"    error: {str(r.get('error'))[:150]}...")
 
     return trace_path
 

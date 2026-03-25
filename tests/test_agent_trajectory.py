@@ -22,7 +22,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.memory.task_memory import load_task
-from agent.orchestrator.agent_controller import run_controller
+from tests.utils.runtime_adapter import run_controller
 from editing.conflict_resolver import resolve_conflicts
 from editing.test_repair_loop import run_with_repair
 from repo_index.indexer import index_repo

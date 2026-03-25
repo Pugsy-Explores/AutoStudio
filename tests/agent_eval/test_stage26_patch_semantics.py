@@ -23,7 +23,6 @@ from editing.grounded_patch_generator import (
     validate_semantic_grounded_candidate,
     _try_add_missing_function,
 )
-from editing.patch_generator import _try_grounded_generation
 from editing.test_runner_utils import (
     _workspace_has_stdlib_shadowing,
     _transform_pytest_cmd_for_shadowing,

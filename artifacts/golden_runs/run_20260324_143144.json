@@ -1,0 +1,46 @@
+{
+  "results": [
+    {
+      "id": "simple_case",
+      "passed": true,
+      "failures": [],
+      "metrics": {
+        "answer_supported": true
+      },
+      "decision": "PASS_NO_JUDGE",
+      "debug": {
+        "input": {
+          "instruction": "Where is load_config defined?"
+        },
+        "raw_output": {
+          "metrics": {
+            "answer_supported": true
+          }
+        }
+      }
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failure_types": {},
+    "coverage": {
+      "total_tests": 1,
+      "tests_with_structure": 0,
+      "tests_with_metrics": 1
+    },
+    "judge": {
+      "enabled_tests": 0,
+      "disagreements": 0,
+      "low_confidence": 0
+    },
+    "decisions": {
+      "PASS": 0,
+      "SOFT_FAIL": 0,
+      "HARD_FAIL": 0,
+      "UNCERTAIN_PASS": 0,
+      "PASS_NO_JUDGE": 1
+    }
+  }
+}

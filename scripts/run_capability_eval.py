@@ -113,7 +113,7 @@ def run_mock(tasks: list[dict]) -> dict:
 
 def run_full(tasks: list[dict]) -> dict:
     """Full eval: run_agent for each task, aggregate metrics."""
-    from agent.orchestrator.agent_loop import run_agent
+    from tests.utils.runtime_adapter import run_agent
     from agent.orchestrator.plan_resolver import get_plan
 
     results = []

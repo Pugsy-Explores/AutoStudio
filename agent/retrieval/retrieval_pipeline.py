@@ -734,13 +734,21 @@ def run_retrieval_pipeline(
     ctx = state.context or {}
     _src = ctx.get("source_root")
     _extra_roots = (str(_src),) if _src else None
-    results = filter_and_rank_search_results(
-        raw_results,
-        query,
-        str(project_root),
-        parent_instruction=ctx.get("parent_instruction"),
-        extra_path_roots=_extra_roots,
+    # v2: results are already validated and RRF-ranked; skip heuristic filter.
+    _v2_active = (
+        ctx.get("retrieval_v2_used", False)
+        and __import__("config.retrieval_config", fromlist=["RETRIEVAL_PIPELINE_V2"]).RETRIEVAL_PIPELINE_V2
     )
+    if _v2_active:
+        results = list(raw_results)
+    else:
+        results = filter_and_rank_search_results(
+            raw_results,
+            query,
+            str(project_root),
+            parent_instruction=ctx.get("parent_instruction"),
+            extra_path_roots=_extra_roots,
+        )
     for _r in results:
         if isinstance(_r, dict):
             _r["snippet"] = coerce_snippet_text(_r.get("snippet"))

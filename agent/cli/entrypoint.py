@@ -12,6 +12,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def _run_runtime(instruction: str, mode: str = "act"):
+    from agent_v2.runtime.bootstrap import create_runtime
+
+    runtime = create_runtime()
+    return runtime.run(instruction, mode=mode)
+
+
 def _project_root() -> Path:
     """Resolve project root from env or cwd."""
     root = os.environ.get("SERENA_PROJECT_DIR", os.getcwd())
@@ -39,30 +46,28 @@ def _get_latest_trace_id(project_root: Path) -> str | None:
 
 
 def cmd_explain(args: argparse.Namespace) -> int:
-    """Run explain instruction via controller."""
-    from agent.orchestrator.agent_controller import run_controller
+    """Run explain instruction via v2 runtime."""
 
     symbol = args.symbol or " ".join(args.remainder or [])
     if not symbol:
         print("Usage: autostudio explain <symbol>", file=sys.stderr)
         return 1
     instruction = f"Explain how {symbol} works"
-    result = run_controller(instruction, project_root=str(args.project_root))
-    _print_result(result)
+    state = _run_runtime(instruction, mode="act")
+    _print_runtime_result(state)
     return 0
 
 
 def cmd_edit(args: argparse.Namespace) -> int:
-    """Run edit instruction via controller."""
-    from agent.orchestrator.agent_controller import run_controller
+    """Run edit instruction via v2 runtime."""
 
     instr = getattr(args, "instruction", None)
     instruction = " ".join(instr) if isinstance(instr, list) else (instr or " ".join(args.remainder or []))
     if not instruction:
         print("Usage: autostudio edit <instruction>", file=sys.stderr)
         return 1
-    result = run_controller(instruction, project_root=str(args.project_root))
-    _print_result(result)
+    state = _run_runtime(instruction, mode="act")
+    _print_runtime_result(state)
     return 0
 
 
@@ -94,16 +99,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """Single-shot run (legacy). Pass instruction as remainder."""
-    from agent.orchestrator.agent_controller import run_controller
+    """Single-shot run. Pass instruction as remainder."""
 
     instr = getattr(args, "instruction", None) or args.remainder or []
     instruction = " ".join(instr).strip() if isinstance(instr, list) else str(instr or "").strip()
     if not instruction:
         print("Usage: autostudio run <instruction>", file=sys.stderr)
         return 1
-    result = run_controller(instruction, project_root=str(args.project_root))
-    _print_result(result)
+    state = _run_runtime(instruction, mode=getattr(args, "mode", "act"))
+    _print_runtime_result(state)
     return 0
 
 
@@ -218,6 +222,20 @@ def _print_result(result: dict) -> None:
         print(f"Errors: {result['errors']}")
 
 
+def _print_runtime_result(state) -> None:
+    from agent_v2.cli_adapter import format_output
+
+    result = format_output(state)
+    print("\n--- Runtime Result ---")
+    history = result.get("result") or []
+    print(f"History entries: {len(history)}")
+    if result.get("plan"):
+        print(f"Plan: {result['plan']}")
+    metadata = result.get("metadata") or {}
+    if metadata:
+        print(f"Metadata: {metadata}")
+
+
 def _print_workflow_result(result: dict) -> None:
     """Print workflow result summary."""
     print(f"\n--- Workflow {result.get('task_id', '?')} ---")
@@ -267,7 +285,8 @@ def main() -> int:
     p_chat.set_defaults(cmd=cmd_chat)
 
     # run <instruction> (single-shot)
-    p_run = subparsers.add_parser("run", help="Single-shot run (legacy)")
+    p_run = subparsers.add_parser("run", help="Single-shot run")
+    p_run.add_argument("--mode", choices=["act", "plan", "deep_plan"], default="act", help="Runtime mode")
     p_run.add_argument("instruction", nargs="*", help="Instruction to run")
     p_run.set_defaults(cmd=cmd_run)
 

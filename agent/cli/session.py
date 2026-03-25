@@ -1,4 +1,4 @@
-"""Interactive session mode: REPL loop with run_controller per turn."""
+"""Interactive session mode: REPL loop with agent_v2 runtime per turn."""
 
 import sys
 from pathlib import Path
@@ -10,15 +10,17 @@ if str(ROOT) not in sys.path:
 
 from agent.cli.command_parser import parse_command, to_instruction_with_hint
 from agent.memory.session_memory import SessionState
-from agent.orchestrator.agent_controller import run_controller
+from agent_v2.cli_adapter import format_output
+from agent_v2.runtime.bootstrap import create_runtime
 
 
 def run_session(project_root: str, live: bool = False) -> int:
     """
     Run interactive chat session. Reads user input, parses slash-commands,
-    calls run_controller per turn, updates session memory.
+    runs the v2 runtime per turn, updates session memory.
     """
     session = SessionState()
+    runtime = create_runtime()
     print("AutoStudio chat session. Commands: /explain, /fix, /refactor, /add-logging, /find")
     print("Or type a plain instruction. Ctrl+D or 'exit' to quit.\n")
 
@@ -48,7 +50,8 @@ def run_session(project_root: str, live: bool = False) -> int:
             print(f"[Live] {instruction[:80]}{'...' if len(instruction) > 80 else ''}")
 
         try:
-            result = run_controller(instruction, project_root=project_root)
+            state = runtime.run(instruction, mode="act")
+            result = format_output(state)
         finally:
             if live and event_fns:
                 from agent.cli.live_viz import uninstall_live_listeners
@@ -56,23 +59,20 @@ def run_session(project_root: str, live: bool = False) -> int:
                 uninstall_live_listeners(event_fns, stage_fns)
 
         # Update session memory
-        summary = f"steps={result.get('completed_steps', 0)}"
-        if result.get("errors"):
-            summary += f" errors={len(result['errors'])}"
+        history = result.get("result") or []
+        summary = f"steps={len(history)}"
         session.add_turn(
             instruction=instruction,
             summary=summary,
-            task_id=result.get("task_id", ""),
-            files_modified=result.get("files_modified"),
-            symbols_retrieved=result.get("retrieved_symbols"),
+            task_id="runtime-v2",
+            files_modified=[],
+            symbols_retrieved=[],
         )
 
         # Print result summary
-        print(f"  Task {result.get('task_id', '?')[:8]}... completed_steps={result.get('completed_steps', 0)}")
-        if result.get("files_modified"):
-            print(f"  Files modified: {result['files_modified']}")
-        if result.get("errors"):
-            print(f"  Errors: {result['errors']}")
+        print(f"  Task runtime-v2... completed_steps={len(history)}")
+        if result.get("plan"):
+            print(f"  Plan: {result['plan']}")
         print()
 
     return 0

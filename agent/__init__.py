@@ -18,8 +18,13 @@ def __getattr__(name: str):
     # planner -> agent.models.model_client loads agent; agent must not import agent_loop
     # (which imports plan_resolver -> planner). Same pattern for run_loop.
     if name == "run_agent":
-        from agent.orchestrator.agent_loop import run_agent
-        return run_agent
+        from agent_v2.runtime.bootstrap import create_runtime
+
+        def _run_agent(instruction: str):
+            runtime = create_runtime()
+            return runtime.run(instruction, mode="act")
+
+        return _run_agent
     if name == "run_loop":
         from agent.agent_loop import run_loop
         return run_loop

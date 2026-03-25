@@ -15,7 +15,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-from agent.observability.grounding_audit import _extract_context_tokens
 from agent.retrieval.result_contract import (
     RETRIEVAL_RESULT_TYPE_FILE_HEADER,
     RETRIEVAL_RESULT_TYPE_REGION_BODY,
@@ -35,6 +34,28 @@ FAILURE_WEIGHTS = {
 
 _TEST_PATH_RE = re.compile(r"(/tests/|/test/|(^|/)test_[^/]+\.py$)", re.I)
 _log = logging.getLogger(__name__)
+
+
+def _context_tokens_from_rows(rows: list[dict]) -> list[str]:
+    """Local token extraction to avoid private observability imports."""
+    tokens: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        text = " ".join(
+            str(v)
+            for v in (
+                row.get("file"),
+                row.get("symbol"),
+                row.get("snippet"),
+                row.get("code"),
+                row.get("content"),
+            )
+            if v
+        )
+        if text:
+            tokens.extend(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text.lower()))
+    return tokens
 
 
 def _check_bundle_selector_integrity(ctx: dict, rows: list[dict], selected_id_count: int) -> tuple[bool, list[str]]:
@@ -532,7 +553,7 @@ def build_retrieval_quality_record(spec: Any, state: Any, loop_out: dict[str, An
 
     grounding = ctx.get("grounding_debug") or {}
     exploration = ctx.get("exploration_debug") or {}
-    final_context_tokens = len(_extract_context_tokens(rows))
+    final_context_tokens = len(_context_tokens_from_rows(rows))
     out["final_has_signal"] = (
         (breakdown.get("implementation_body_present_count") or 0) >= 1
         or (breakdown.get("linked_row_count") or 0) >= 1
@@ -1428,8 +1449,6 @@ def test_verdict_stay_off_on_context_surge():
 
 
 def test_compute_ranked_context_breakdown():
-    from tests.agent_eval.check_retrieval_quality import _compute_ranked_context_breakdown
-
     rows = [
         {"file": "src/a.py", "candidate_kind": "symbol", "retrieval_result_type": RETRIEVAL_RESULT_TYPE_SYMBOL_BODY, "implementation_body_present": True, "relations": [{"kind": "import"}]},
         {"file": "src/b.py", "candidate_kind": "file", "retrieval_result_type": RETRIEVAL_RESULT_TYPE_FILE_HEADER},
@@ -1543,8 +1562,6 @@ def test_selector_hard_task_ids():
 
 
 def test_assert_architecture_quality():
-    from tests.agent_eval.check_retrieval_quality import _assert_architecture_quality
-
     # Good multi-hop: linked>=2, impl, not test-dominated, distinct_impl>=2
     good = _assert_architecture_quality(
         {"linked_row_count": 3, "implementation_body_present_count": 2, "impl_file_row_count": 4, "test_file_row_count": 1, "distinct_impl_file_count": 2},

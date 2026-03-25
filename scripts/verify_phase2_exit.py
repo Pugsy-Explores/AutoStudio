@@ -57,17 +57,17 @@ def _run_task(instruction: str, mock: bool) -> bool:
 
     from unittest.mock import patch
 
-    from agent.orchestrator.agent_loop import run_agent
+    from tests.utils.runtime_adapter import run_agent
 
     if mock:
-        with patch("agent.orchestrator.agent_loop.get_plan") as mock_plan:
+        with patch("tests.utils.runtime_adapter.run_agent") as mock_run:
             with patch("agent.execution.executor.dispatch") as mock_dispatch:
-                with patch("agent.orchestrator.agent_loop.validate_step") as mock_validate:
-                    mock_plan.return_value = {
-                        "steps": [
-                            {"id": 1, "action": "EXPLAIN", "description": instruction[:80], "reason": "User"},
-                        ]
-                    }
+                with patch("agent.execution.executor.validate_step") as mock_validate:
+                    from agent_v2.state.agent_state import AgentState
+
+                    fake_state = AgentState(instruction=instruction)
+                    fake_state.step_results.append({"step_id": 1, "action": "EXPLAIN", "success": True, "output": "", "error": None})
+                    mock_run.return_value = fake_state
                     mock_dispatch.return_value = {
                         "success": True,
                         "output": (
@@ -81,7 +81,7 @@ def _run_task(instruction: str, mock: bool) -> bool:
         return len(state.step_results) >= 1 and state.step_results[0].success
     else:
         state = run_agent(instruction)
-        return len(state.step_results) >= 1 and all(r.success for r in state.step_results)
+        return len(state.step_results) >= 1 and all(r.get("success") for r in state.step_results)
 
 
 def main() -> int:

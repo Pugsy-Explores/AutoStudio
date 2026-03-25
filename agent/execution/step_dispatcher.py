@@ -36,9 +36,11 @@ from agent.retrieval.result_contract import (
     normalize_result,
 )
 from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline
-from agent.tools import build_context, list_files, read_file, run_command, search_candidates, search_code
+from agent.tools import build_context, list_files, search_candidates, search_code
+from agent.tools.react_registry import get_tool_by_name
 from agent.tools.run_tests import run_tests
 from agent.tools.validation_scope import resolve_inner_loop_validation
+from agent_v2.primitives import get_editor, get_shell
 from config.agent_runtime import REACT_MODE
 from config.retrieval_config import (
     ANSWER_EVAL_SAMPLE_RATE,
@@ -47,6 +49,7 @@ from config.retrieval_config import (
     ENABLE_HYBRID_RETRIEVAL,
     ENABLE_VECTOR_SEARCH,
     RETRIEVAL_CACHE_SIZE,
+    RETRIEVAL_PIPELINE_V2,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,6 +172,16 @@ def _search_fn(query: str, state: AgentState):
         project_root = state.context.get("project_root") if state else None
         if project_root is None:
             project_root = os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+
+        # v2 pipeline: heuristic-free parallel retrieval + RRF.
+        # Bypasses all existing retrieval logic and filter_and_rank_search_results.
+        # Activate with RETRIEVAL_PIPELINE_V2=1.
+        if RETRIEVAL_PIPELINE_V2:
+            from agent.retrieval.retrieval_pipeline_v2 import retrieve_v2_as_legacy  # noqa: PLC0415
+            result = retrieve_v2_as_legacy(query, state=state, project_root=project_root)
+            if state:
+                state.context["retrieval_v2_used"] = True
+            return result
 
         # Repo map lookup and anchor detection (before retrieval)
         try:
@@ -390,7 +403,7 @@ def _infra_fn(step: dict, state: AgentState) -> dict:
     try:
         cmd = (step.get("description") or step.get("command") or "").strip() or "true"
         print(f"  [run_command] {cmd[:80]}{'...' if len(cmd) > 80 else ''}")
-        cmd_result = run_command(cmd)
+        cmd_result = get_shell(state).run(cmd)
         print("  [list_files] .")
         out = {"list_files": list_files("."), "run_command": cmd_result}
         out["returncode"] = cmd_result.get("returncode", -1)
@@ -1020,7 +1033,6 @@ def _edit_react(step: dict, state: AgentState) -> dict:
     """
     from agent.execution.edit_binding import build_edit_binding
     from agent.runtime.execution_loop import _rollback_snapshot, _snapshot_files
-    from editing.patch_executor import execute_patch
 
     instruction = (step.get("description") or "").strip()
     context = state.context
@@ -1065,7 +1077,7 @@ def _edit_react(step: dict, state: AgentState) -> dict:
         }
 
     snapshot = _snapshot_files(changes, project_root)
-    patch_result = execute_patch(patch_plan, project_root)
+    patch_result = get_editor(state).apply_patch(patch_plan, project_root=project_root)
     attempted_files = [c.get("file", "") for c in changes if c.get("file")]
     if not patch_result.get("success"):
         _rollback_snapshot(snapshot, project_root)
@@ -1144,11 +1156,16 @@ def _edit_react(step: dict, state: AgentState) -> dict:
 
 def _dispatch_react(step: dict, state: AgentState) -> dict:
     """
-    ReAct mode: direct tool execution, no policy_engine. Pure functions only.
+    ReAct mode: direct tool execution via registry. No policy_engine.
     Never blocks; all failures become observations (RETRYABLE, never FATAL).
     """
     action = (step.get("action") or "EXPLAIN").upper()
-    project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    react_name_by_action = {
+        Action.SEARCH.value: "search",
+        Action.READ.value: "open_file",
+        Action.EDIT.value: "edit",
+        Action.RUN_TEST.value: "run_tests",
+    }
 
     def _obs(err: str) -> dict:
         """Return failure as observation; model decides next action."""
@@ -1159,67 +1176,23 @@ def _dispatch_react(step: dict, state: AgentState) -> dict:
             "classification": ResultClassification.RETRYABLE_FAILURE.value,
         }
 
-    if action == Action.SEARCH.value:
-        query = (step.get("query") or step.get("description") or "").strip()
-        if not query:
-            return _obs("SEARCH requires non-empty query. Use Args: {\"query\": \"<search terms>\"}")
-        try:
-            raw = _search_react(query, state)
-            results = raw.get("results") or []
-            _persist_react_search_to_context(results, state, query)
-            return {
-                "success": True,
-                "output": raw,
-                "classification": ResultClassification.SUCCESS.value,
-            }
-        except Exception as e:
-            return _obs(f"Search failed: {e}")
-
-    if action == Action.READ.value:
-        path = step.get("path") or step.get("description") or step.get("file") or ""
-        if not path or not str(path).strip():
-            return _obs("READ requires path. Use Args: {\"path\": \"<file path>\"}")
-        try:
-            full_path = Path(path) if Path(path).is_absolute() else Path(project_root) / path
-            content = read_file(str(full_path.resolve()))
-            return {"success": True, "output": content, "classification": ResultClassification.SUCCESS.value}
-        except Exception as e:
-            return _obs(str(e))
-
-    if action == Action.EDIT.value:
-        instruction = (step.get("description") or "").strip()
-        if not instruction:
-            return _obs("EDIT requires non-empty instruction. Use Args: {\"instruction\": \"<what to change>\"}")
-        try:
-            raw = _edit_react(step, state)
-            return {
-                "success": raw.get("success", False),
-                "output": raw.get("output", {}),
-                "error": raw.get("error"),
-                "executed": raw.get("executed", True),
-                "classification": ResultClassification.RETRYABLE_FAILURE.value if not raw.get("success") else ResultClassification.SUCCESS.value,
-            }
-        except Exception as e:
-            return _obs(str(e))
-
-    if action == Action.RUN_TEST.value:
-        try:
-            val_scope = resolve_inner_loop_validation(project_root, state.context)
-            test_cmd = val_scope.get("test_cmd")
-            test_result = run_tests(project_root, timeout=120, test_cmd=test_cmd)
-            passed = test_result.get("passed", False)
-            stdout = test_result.get("stdout", "") or ""
-            stderr = test_result.get("stderr", "") or ""
-            return {
-                "success": passed,
-                "output": {"passed": passed, "stdout": stdout, "stderr": stderr},
-                "error": None if passed else (test_result.get("error_type") or "test_failure"),
-                "classification": ResultClassification.SUCCESS.value if passed else ResultClassification.RETRYABLE_FAILURE.value,
-            }
-        except Exception as e:
-            return _obs(str(e))
-
-    return _obs(f"Unknown action for ReAct: {action}. Use search, open_file, edit, run_tests, or finish.")
+    tool = get_tool_by_name(react_name_by_action.get(action, ""))
+    if tool is None or tool.handler is None:
+        return _obs(f"Unknown action for ReAct: {action}. Use search, open_file, edit, run_tests, or finish.")
+    try:
+        args = step.get("_react_args")
+        if not isinstance(args, dict):
+            args = {}
+            if action == Action.SEARCH.value:
+                args["query"] = step.get("query") or step.get("description") or ""
+            elif action == Action.READ.value:
+                args["path"] = step.get("path") or step.get("description") or step.get("file") or ""
+            elif action == Action.EDIT.value:
+                args["instruction"] = step.get("description") or ""
+                args["path"] = step.get("path") or step.get("edit_target_path") or ""
+        return tool.handler(args, state)
+    except Exception as e:
+        return _obs(str(e))
 
 
 def dispatch(step: dict, state: AgentState) -> dict:
@@ -1321,7 +1294,7 @@ def dispatch(step: dict, state: AgentState) -> dict:
         try:
             project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
             full_path = Path(path) if Path(path).is_absolute() else Path(project_root) / path
-            content = read_file(str(full_path.resolve()))
+            content = get_editor(state).read(str(full_path.resolve()))
             state.context["tool_node"] = chosen_tool
             return {"success": True, "output": content}
         except Exception as e:

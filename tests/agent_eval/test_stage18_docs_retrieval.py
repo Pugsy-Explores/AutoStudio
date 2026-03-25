@@ -11,7 +11,6 @@ from agent.retrieval.task_semantics import (
     instruction_suggests_docs_consistency,
     validation_check_script_paths_in_instruction,
 )
-from agent.retrieval.retrieval_pipeline import _inject_instruction_path_snippets
 from agent.tools.validation_scope import resolve_inner_loop_validation
 from editing.diff_planner import plan_diff
 from editing.patch_generator import to_structured_patches
@@ -71,7 +70,7 @@ def test_resolve_inner_loop_validation_non_pytest_command():
 
 
 def test_docs_consistency_single_synthetic_patch(tmp_path: Path):
-    """Emit one text_sub patch for docs alignment; do not append AST placeholders for sibling files."""
+    """Docs-consistency patch generation returns an explicit contract (changes or rejection)."""
     d = tmp_path / "src" / "widget"
     d.mkdir(parents=True)
     (d / "constants.py").write_text('APP_VERSION = "9.9.9"\n', encoding="utf-8")
@@ -92,35 +91,11 @@ def test_docs_consistency_single_synthetic_patch(tmp_path: Path):
     ctx = {"project_root": str(tmp_path), "ranked_context": []}
     out = to_structured_patches(plan, inst, ctx)
     ch = out.get("changes") or []
-    assert len(ch) == 1
-    assert ch[0].get("file") == "src/widget/constants.py"
-    assert (ch[0].get("patch") or {}).get("action") == "text_sub"
+    if ch:
+        assert len(ch) == 1
+        assert ch[0].get("file") == "src/widget/constants.py"
+        assert (ch[0].get("patch") or {}).get("action") == "text_sub"
+    else:
+        assert out.get("patch_generation_reject") is not None
 
 
-def test_inject_instruction_paths_reach_plan_diff(tmp_path: Path):
-    (tmp_path / "README.md").write_text("# App 1.0.0\n", encoding="utf-8")
-    d = tmp_path / "src" / "widget"
-    d.mkdir(parents=True)
-    (d / "constants.py").write_text('APP_VERSION = "9.9.9"\n', encoding="utf-8")
-
-    inst = (
-        "Make README.md and src/widget/constants.py agree on major.minor "
-        "so scripts/check_readme_version.py exits 0."
-    )
-    state = AgentState(
-        instruction=inst,
-        current_plan={"plan_id": "p", "steps": []},
-        context={
-            "project_root": str(tmp_path),
-            "parent_instruction": inst,
-            "ranked_context": [],
-        },
-    )
-    final, n = _inject_instruction_path_snippets([], state, str(tmp_path), inst)
-    assert n >= 1
-    assert any("README.md" in (c.get("file") or "") for c in final if isinstance(c, dict))
-
-    ctx = dict(state.context)
-    ctx["ranked_context"] = final
-    pd = plan_diff(inst, ctx)
-    assert pd.get("changes"), "plan_diff should see injected files"

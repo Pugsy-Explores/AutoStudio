@@ -152,3 +152,25 @@ ENABLE_EXPLORATION = _bool_env("ENABLE_EXPLORATION", "0")
 # Deep expansion budgets (region bounded read, file header join)
 MAX_LINES_PER_EXPANDED_UNIT = int(os.getenv("MAX_LINES_PER_EXPANDED_UNIT", "80"))
 MAX_FILE_HEADER_LINES = int(os.getenv("MAX_FILE_HEADER_LINES", "60"))
+
+# ── retrieval_pipeline_v2 ──────────────────────────────────────────────────
+# Set RETRIEVAL_PIPELINE_V2=1 to activate the heuristic-free v2 pipeline.
+# Default OFF — old pipeline remains active unless explicitly opted in.
+#
+# v2 pipeline: graph_lookup | bm25 | vector | serena → RRF → path_validate → prune
+# Reranker: OFF (Option A). RRF is the only ranking authority.
+# No filter_and_rank_search_results, no intent bias, no test-file penalties.
+RETRIEVAL_PIPELINE_V2 = _bool_env("RETRIEVAL_PIPELINE_V2", "1")
+
+# v2 tuning — override per environment without changing code
+V2_TOP_K_PER_SOURCE = int(os.getenv("V2_TOP_K_PER_SOURCE", "15"))
+V2_RRF_TOP_N = int(os.getenv("V2_RRF_TOP_N", "50"))
+V2_RRF_K = int(os.getenv("V2_RRF_K", "60"))
+V2_MAX_SNIPPETS = int(os.getenv("V2_MAX_SNIPPETS", "20"))
+V2_MAX_CHARS = int(os.getenv("V2_MAX_CHARS", "20000"))
+
+# v2 reranker — Option B: RRF → reranker → final.
+# Reranker is the SOLE ranking authority after this point (no score fusion).
+# Default ON when RERANKER_ENABLED=1; set V2_RERANKER_ENABLED=0 to disable just v2.
+V2_RERANKER_ENABLED = _bool_env("V2_RERANKER_ENABLED", "1")
+V2_RERANK_TOP_N = int(os.getenv("V2_RERANK_TOP_N", "30"))   # candidates passed to reranker

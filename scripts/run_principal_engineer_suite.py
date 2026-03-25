@@ -33,6 +33,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
+from agent_v2.runtime.bootstrap import create_runtime
 
 # Ensure AutoStudio root is on path
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,17 +78,21 @@ SMALL_EDIT_TASKS = [
 # ---------------------------------------------------------------------------
 
 
+def _run_state(instruction: str, mode: str = "act"):
+    runtime = create_runtime()
+    return runtime.run(instruction, mode=mode)
+
+
 def run_explain_tasks(count: int = 10) -> dict[str, bool]:
     """Run N explain tasks via run_agent. Returns {instruction: success}."""
-    from agent.orchestrator.agent_loop import run_agent
 
     tasks = EXPLAIN_TASKS[:count]
     results = {}
     for i, instruction in enumerate(tasks, 1):
         print(f"\n--- Explain {i}/{len(tasks)}: {instruction[:60]}... ---")
         try:
-            state = run_agent(instruction)
-            success = all(r.success for r in state.step_results) if state.step_results else False
+            state = _run_state(instruction, mode="act")
+            success = all(r.get("success") for r in state.step_results) if state.step_results else False
             results[instruction] = success
             print(f"  success={success} steps={len(state.step_results)}")
         except Exception as e:
@@ -97,15 +103,14 @@ def run_explain_tasks(count: int = 10) -> dict[str, bool]:
 
 def run_edit_tasks(count: int = 10) -> dict[str, bool]:
     """Run N small edit tasks via run_agent. Returns {instruction: success}."""
-    from agent.orchestrator.agent_loop import run_agent
 
     tasks = SMALL_EDIT_TASKS[:count]
     results = {}
     for i, instruction in enumerate(tasks, 1):
         print(f"\n--- Edit {i}/{len(tasks)}: {instruction[:60]}... ---")
         try:
-            state = run_agent(instruction)
-            success = all(r.success for r in state.step_results) if state.step_results else False
+            state = _run_state(instruction, mode="act")
+            success = all(r.get("success") for r in state.step_results) if state.step_results else False
             results[instruction] = success
             print(f"  success={success} steps={len(state.step_results)}")
         except Exception as e:
@@ -287,7 +292,6 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
     """
     from agent.memory.task_memory import load_task
     from agent.meta.failure_attribution import ensure_failure_reason
-    from agent.orchestrator.agent_controller import run_controller
 
     with open(scenarios_path, encoding="utf-8") as f:
         scenarios = json.load(f)
@@ -318,33 +322,22 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
 
         try:
             start = time.perf_counter()
-            if use_agent_loop:
-                from agent.orchestrator.agent_loop import run_agent
-
-                os.environ["SERENA_PROJECT_DIR"] = project_root_str
-                state = run_agent(instruction)
-                latency_sec = time.perf_counter() - start
-                counts = state.context.get("execution_counts", {})
-                replan_count = counts.get("replan_count")
-                tool_calls = counts.get("tool_calls")
-                completed_steps = len(state.completed_steps)
-                errors = [] if all(r.success for r in state.step_results) else [r.error or "step failed" for r in state.step_results if not r.success]
-                termination_reason = state.context.get("termination_reason")
-                # For expect_edit: check EDIT step outputs for files_modified
-                files_modified = []
-                for step, res in zip(state.completed_steps, state.step_results):
-                    if (step.get("action") or "").upper() == "EDIT" and res.success and isinstance(res.output, dict):
-                        files_modified.extend(res.output.get("files_modified", []))
-                result = {"task_id": None, "errors": errors, "_files_modified": files_modified}
-            else:
-                result = run_controller(instruction, project_root=project_root_str)
-                latency_sec = time.perf_counter() - start
-                completed_steps = result.get("completed_steps", 0)
-                errors = result.get("errors", [])
-                termination_reason = result.get("termination_reason")
-                lo = result.get("loop_output") or {}
-                et = lo.get("edit_telemetry") or {}
-                edit_failure_reason = et.get("edit_failure_reason")
+            os.environ["SERENA_PROJECT_DIR"] = project_root_str
+            state = _run_state(instruction, mode="act")
+            latency_sec = time.perf_counter() - start
+            completed_steps = len(state.step_results)
+            errors = [r.get("error") or "step failed" for r in state.step_results if not r.get("success")]
+            termination_reason = state.context.get("termination_reason")
+            tool_calls = len(state.step_results)
+            files_modified = []
+            result = {
+                "task_id": f"runtime-{uuid4()}",
+                "errors": errors,
+                "files_modified": files_modified,
+                "_files_modified": files_modified,
+                "termination_reason": termination_reason,
+                "loop_output": {},
+            }
 
             task_success = len(errors) == 0 and completed_steps >= expected_min_steps
 

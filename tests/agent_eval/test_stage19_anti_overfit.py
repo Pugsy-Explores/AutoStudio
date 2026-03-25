@@ -55,7 +55,7 @@ def test_no_task_id_branching_in_harness():
 
 def test_harness_uses_semantic_tags_not_task_id():
     """Phase plan selection must use tags/grading_mode, not task_id."""
-    from tests.agent_eval.harness import _is_docs_consistency_task, _is_explain_artifact_task
+    from tests.agent_eval.harness import is_docs_consistency_task, is_explain_artifact_task
 
     # Docs-consistency: tag-based
     docs_spec = TaskSpec(
@@ -66,7 +66,7 @@ def test_harness_uses_semantic_tags_not_task_id():
         instruction="align",
         tags=("docs", "consistency"),
     )
-    assert _is_docs_consistency_task(docs_spec) is True
+    assert is_docs_consistency_task(docs_spec) is True
 
     # Explain-artifact: grading_mode based
     explain_spec = TaskSpec(
@@ -77,7 +77,7 @@ def test_harness_uses_semantic_tags_not_task_id():
         instruction="explain",
         grading_mode="explain_artifact",
     )
-    assert _is_explain_artifact_task(explain_spec) is True
+    assert is_explain_artifact_task(explain_spec) is True
 
 
 # --- Validation pattern guards ---
