@@ -56,3 +56,6 @@ models/
 # Stage 12 agent eval runs (JSON artifacts; regenerate locally)
 artifacts/agent_eval/
 artifacts/agent_eval_runs/
+
+# Temporary test and audit reports
+tmp/
