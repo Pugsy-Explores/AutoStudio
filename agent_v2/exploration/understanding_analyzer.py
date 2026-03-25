@@ -4,6 +4,12 @@ import json
 import re
 from typing import Any, Callable
 
+from agent_v2.observability.langfuse_helpers import (
+    LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
+    langfuse_generation_end_with_usage,
+    langfuse_generation_input_with_prompt,
+    try_langfuse_generation,
+)
 from agent_v2.schemas.exploration import ExplorationDecision
 
 
@@ -20,40 +26,50 @@ class UnderstandingAnalyzer:
         snippet: str,
         *,
         lf_analyze_span: Any = None,
+        lf_exploration_parent: Any = None,
     ) -> ExplorationDecision:
-        if self._llm_generate is not None:
-            try:
-                prompt = (
-                    "Analyze if the snippet is relevant to instruction.\n"
-                    "Return STRICT JSON: "
-                    "{\"status\":\"wrong_target|partial|sufficient\","
-                    "\"needs\":[],"
-                    "\"reason\":\"...\","
-                    "\"next_action\":\"expand|refine|stop\"}.\n"
-                    "Allowed needs: more_code, callers, callees, definition, different_symbol.\n\n"
-                    f"Instruction:\n{instruction}\n\nFile:\n{file_path}\n\nSnippet:\n{snippet[:6000]}"
-                )
-                gen = None
-                if lf_analyze_span is not None and hasattr(lf_analyze_span, "generation"):
-                    try:
-                        gen = lf_analyze_span.generation(
-                            "exploration.analyze",
-                            input={"file_path": file_path[:500]},
-                        )
-                    except Exception:
-                        gen = None
-                raw = self._llm_generate(prompt)
-                parsed = self._parse_json_object(raw)
-                out = ExplorationDecision.model_validate(parsed)
-                if gen is not None:
-                    try:
-                        gen.end(output={"response": raw[:12000]})
-                    except Exception:
-                        pass
-                return out
-            except Exception:
-                pass
-        return self._heuristic_decision(instruction, snippet)
+        if self._llm_generate is None:
+            return self._heuristic_decision(instruction, snippet)
+
+        prompt = (
+            "Analyze if the snippet is relevant to instruction.\n"
+            "Return STRICT JSON: "
+            "{\"status\":\"wrong_target|partial|sufficient\","
+            "\"needs\":[],"
+            "\"reason\":\"...\","
+            "\"next_action\":\"expand|refine|stop\"}.\n"
+            "Allowed needs: more_code, callers, callees, definition, different_symbol.\n\n"
+            f"Instruction:\n{instruction}\n\nFile:\n{file_path}\n\nSnippet:\n{snippet[:6000]}"
+        )
+        gen = try_langfuse_generation(
+            lf_analyze_span,
+            lf_exploration_parent,
+            name="exploration.analyze",
+            input=langfuse_generation_input_with_prompt(
+                prompt,
+                extra={"file_path": file_path[:500]},
+            ),
+        )
+        try:
+            raw = self._llm_generate(prompt)
+            parsed = self._parse_json_object(raw)
+            out = ExplorationDecision.model_validate(parsed)
+            if gen is not None:
+                try:
+                    langfuse_generation_end_with_usage(
+                        gen,
+                        output={"response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]},
+                    )
+                except Exception:
+                    pass
+            return out
+        except Exception as e:
+            if gen is not None:
+                try:
+                    langfuse_generation_end_with_usage(gen, output={"error": str(e)[:2000]})
+                except Exception:
+                    pass
+            return self._heuristic_decision(instruction, snippet)
 
     @staticmethod
     def _heuristic_decision(instruction: str, snippet: str) -> ExplorationDecision:

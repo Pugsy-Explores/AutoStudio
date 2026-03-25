@@ -13,6 +13,12 @@ from agent.execution.react_schema import validate_action
 from agent.models.model_client import call_reasoning_model
 from agent.tools.react_registry import get_tool_by_name
 
+from agent_v2.observability.langfuse_helpers import (
+    LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
+    langfuse_generation_end_with_usage,
+    langfuse_generation_input_with_prompt,
+    try_langfuse_generation,
+)
 from agent_v2.schemas.plan import PlanStep
 
 
@@ -46,17 +52,15 @@ class PlanArgumentGenerator:
         lf = md.get("langfuse_trace")
         if obs is not None and getattr(obs, "langfuse_trace", None) is not None:
             lf = obs.langfuse_trace
-        gen = None
-        if span is not None and hasattr(span, "generation"):
-            gen = span.generation(
-                name="argument_generation",
-                input={"step_goal": step.goal, "action": step.action},
-            )
-        elif lf is not None and hasattr(lf, "generation"):
-            gen = lf.generation(
-                name="argument_generation",
-                input={"step_goal": step.goal, "action": step.action},
-            )
+        gen = try_langfuse_generation(
+            span,
+            lf,
+            name="argument_generation",
+            input=langfuse_generation_input_with_prompt(
+                prompt,
+                extra={"step_goal": step.goal, "action": step.action},
+            ),
+        )
         text = ""
         try:
             text = self._generate_fn(prompt)
@@ -64,7 +68,12 @@ class PlanArgumentGenerator:
         finally:
             if gen is not None:
                 try:
-                    gen.end(output={"response": (text or "")[:12000]})
+                    langfuse_generation_end_with_usage(
+                        gen,
+                        output={
+                            "response": (text or "")[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
+                        },
+                    )
                 except Exception:
                     pass
 

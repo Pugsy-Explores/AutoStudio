@@ -2,6 +2,8 @@
 
 Instruction-level routing before the planner. This layer classifies a user instruction into a high-level intent (SEARCH, DOC, EXPLAIN, EDIT, INFRA, COMPOUND, AMBIGUOUS), enabling cheap fast-paths and consistent planning behavior. Stage 38: unified production entrypoint; Stage 39: production-honest contract.
 
+**`agent_v2` note:** The default **`AgentRuntime.run(instruction)`** path does **not** import this module directly; classification may still be used by **CLI** or **`agent/`** orchestration helpers that branch before calling `create_runtime()`. For v2-only flows, **`PlannerV2`** consumes **`ExplorationResult`**, not `RoutedIntent`.
+
 ## Responsibilities
 
 - **Production entrypoint:** `route_production_instruction(instruction)` returns `RoutedIntent` — single source for plan_resolver.

@@ -14,15 +14,69 @@ Stage 28: Model call audit — record_model_call() is invoked only from _call_ch
 Stubbed benchmark paths never reach _call_chat, so audit counts are trustworthy.
 """
 
+import contextvars
 import json
 import logging
 import os
 import sys
 import threading
 import time
-from typing import Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
+
+# Last chat completion usage from `_call_chat` (for Langfuse / observability). Context-local.
+_last_chat_usage: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "_last_chat_usage", default=None
+)
+
+
+def get_last_chat_usage() -> dict[str, Any] | None:
+    """Token usage from the most recent ``_call_chat`` in this context, or ``None``."""
+    return _last_chat_usage.get()
+
+
+def _set_last_chat_usage(u: dict[str, Any] | None) -> None:
+    _last_chat_usage.set(u)
+
+
+def clear_last_chat_usage() -> None:
+    """Clear usage context before a new Langfuse generation (avoids stale token counts)."""
+    _set_last_chat_usage(None)
+
+
+def _usage_obj_to_dict(u: Any) -> dict[str, Any]:
+    """Normalize OpenAI-compatible ``usage`` to plain dict for Langfuse."""
+    if u is None:
+        return {}
+    if isinstance(u, dict):
+        raw = dict(u)
+    elif hasattr(u, "model_dump"):
+        raw = u.model_dump()
+    else:
+        raw = {
+            "prompt_tokens": getattr(u, "prompt_tokens", None),
+            "completion_tokens": getattr(u, "completion_tokens", None),
+            "total_tokens": getattr(u, "total_tokens", None),
+        }
+        ctd = getattr(u, "completion_tokens_details", None)
+        if ctd is not None:
+            if isinstance(ctd, dict):
+                raw["completion_tokens_details"] = ctd
+            elif hasattr(ctd, "model_dump"):
+                raw["completion_tokens_details"] = ctd.model_dump()
+            else:
+                rt = getattr(ctd, "reasoning_tokens", None)
+                if rt is not None:
+                    raw.setdefault("completion_tokens_details", {})["reasoning_tokens"] = rt
+    out: dict[str, Any] = {}
+    for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        if raw.get(k) is not None:
+            out[k] = raw[k]
+    ctd = raw.get("completion_tokens_details")
+    if isinstance(ctd, dict) and ctd.get("reasoning_tokens") is not None:
+        out["reasoning_tokens"] = ctd["reasoning_tokens"]
+    return out
 
 
 class GuardrailError(RuntimeError):
@@ -401,6 +455,7 @@ def _call_chat(
     _pretty_print_request(messages)
 
     def _do_call() -> str:
+        _set_last_chat_usage(None)
         try:
             from openai import OpenAI
         except ImportError:
@@ -417,6 +472,7 @@ def _call_chat(
                 method="POST",
             )
             content_parts: list[str] = []
+            last_usage: dict[str, Any] | None = None
             print("    [workflow] model response (streaming):")
             print("    " + "─" * _PRETTY_WIDTH)
             done = False
@@ -438,6 +494,9 @@ def _call_chat(
                                 chunk = json.loads(data)
                             except json.JSONDecodeError:
                                 continue
+                            u = chunk.get("usage")
+                            if u:
+                                last_usage = _usage_obj_to_dict(u)
                             choices = chunk.get("choices", [])
                             if not choices:
                                 continue
@@ -451,6 +510,7 @@ def _call_chat(
                                 _stream_chunk_to_terminal(delta)
             print()
             print("    " + "─" * _PRETTY_WIDTH)
+            _set_last_chat_usage(last_usage)
             content = "".join(content_parts).strip()
             if not content:
                 _debug_empty_response(None)
@@ -478,13 +538,22 @@ def _call_chat(
             create_kwargs["frequency_penalty"] = frequency_penalty
         if presence_penalty is not None:
             create_kwargs["presence_penalty"] = presence_penalty
-        stream = client.chat.completions.create(**create_kwargs)
+        try:
+            stream = client.chat.completions.create(
+                **create_kwargs, stream_options={"include_usage": True}
+            )
+        except TypeError:
+            stream = client.chat.completions.create(**create_kwargs)
         content_parts = []
         reasoning_parts: list[str] = []
         finish_reason = None
+        last_usage: dict[str, Any] | None = None
         print("    [workflow] model response (streaming):")
         print("    " + "─" * _PRETTY_WIDTH)
         for chunk in stream:
+            u = getattr(chunk, "usage", None)
+            if u is not None:
+                last_usage = _usage_obj_to_dict(u)
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -515,6 +584,7 @@ def _call_chat(
             logger.warning("[model_client] finish_reason=length; response truncated")
         if not content and not reasoning_parts:
             _debug_empty_response(None)
+        _set_last_chat_usage(last_usage)
         return content
 
     return _retry_with_exponential_backoff(_do_call)

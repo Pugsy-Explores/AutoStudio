@@ -28,6 +28,12 @@ from agent_v2.schemas.plan import (
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.replan import PlannerInput, ReplanContext
 from agent_v2.schemas.exploration import ExplorationResult
+from agent_v2.observability.langfuse_helpers import (
+    LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
+    langfuse_generation_end_with_usage,
+    langfuse_generation_input_with_prompt,
+    try_langfuse_generation,
+)
 from agent_v2.validation.plan_validator import PlanValidationError, PlanValidator
 
 DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
@@ -217,6 +223,11 @@ class PlannerV2:
                 langfuse_trace=lf,
                 parent_span=planning_span,
                 gen_name=gen_name,
+                generation_metadata={
+                    "prompt_chars": len(prompt),
+                    "deep": deep,
+                    "is_replan": isinstance(planner_input, ReplanContext),
+                },
             )
         finally:
             if planning_span is not None:
@@ -462,21 +473,32 @@ Return a single JSON object only.
         langfuse_trace: Any = None,
         parent_span: Any = None,
         gen_name: str = "planner",
+        generation_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         last_err: Optional[Exception] = None
         for attempt in range(2):
-            gen = None
-            gen_parent = parent_span if parent_span is not None else langfuse_trace
-            if gen_parent is not None:
-                gen = gen_parent.generation(
-                    name=gen_name,
-                    input={"prompt": prompt[:12000], "attempt": attempt},
-                )
+            gen = try_langfuse_generation(
+                parent_span,
+                langfuse_trace,
+                name=gen_name,
+                input=langfuse_generation_input_with_prompt(
+                    prompt,
+                    extra={"attempt": attempt},
+                ),
+            )
             try:
                 text = self._generate_fn(prompt)
                 if gen is not None:
                     try:
-                        gen.end(output={"response": text[:12000]})
+                        meta = dict(generation_metadata or {})
+                        meta["attempt"] = attempt
+                        langfuse_generation_end_with_usage(
+                            gen,
+                            output={
+                                "response": text[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
+                            },
+                            metadata=meta,
+                        )
                     except Exception:
                         pass
                 return _parse_json_object(text)
@@ -484,7 +506,13 @@ Return a single JSON object only.
                 last_err = e
                 if gen is not None:
                     try:
-                        gen.end(output={"error": str(e)[:2000]})
+                        meta = dict(generation_metadata or {})
+                        meta["attempt"] = attempt
+                        langfuse_generation_end_with_usage(
+                            gen,
+                            output={"error": str(e)[:2000]},
+                            metadata=meta,
+                        )
                     except Exception:
                         pass
                 if attempt == 0:

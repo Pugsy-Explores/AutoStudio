@@ -1,73 +1,25 @@
-# Planner Module
+# Planner Module (`planner/`)
 
-The planner converts a user instruction into a **sequence of atomic steps**. Each step corresponds to exactly one action category used by the router: **EDIT**, **SEARCH**, **EXPLAIN**, or **INFRA**.
+**Standalone legacy planner** used for **evaluation and offline JSON plan generation** (`planner_eval`). It produces a simple `{ "steps": [...] }` plan with coarse actions (`EDIT`, `SEARCH`, `EXPLAIN`, `INFRA`).
 
-> **Legacy path only.** When `REACT_MODE=1` (default), the primary flow is ReAct: run_hierarchical → execution_loop. The planner is not used. See [Docs/REACT_ARCHITECTURE.md](../Docs/REACT_ARCHITECTURE.md).
+## Production path
 
-## Architecture
+The **live** planner is **`agent_v2/planner/planner_v2.py` (`PlannerV2`)**, which emits a strict **`PlanDocument`** consumed by **`ModeManager`** and **`PlanExecutor`**. Production flows do **not** import `planner.plan` from this package.
 
-1. **Input**: A single user instruction (e.g. “Find the login handler and update JWT validation”).
-2. **LLM**: The instruction is sent to an LLM with `PLANNER_SYSTEM_PROMPT` (see [Docs/PROMPT_ARCHITECTURE.md](../Docs/PROMPT_ARCHITECTURE.md)), which asks for a strict JSON plan.
-3. **Parse**: The response is parsed as JSON (markdown code fences are stripped if present).
-4. **Validate & normalize**: Steps are validated and actions are normalized to the four allowed categories.
-5. **Output**: A structured plan: `{"steps": [{"id", "action", "description", "reason"}, ...]}`.
+## This package
 
-The planner uses the same endpoint and env vars as the router (`ROUTER_LLM_BASE_URL`, `ROUTER_LLM_MODEL`, `ROUTER_LLM_API_KEY`) but calls the API with a higher `max_tokens` (default 1024, overridable via `PLANNER_MAX_TOKENS`) so multi-step JSON plans are not truncated. No router code is modified.
+1. **Input:** User instruction string.
+2. **LLM:** `PLANNER_SYSTEM_PROMPT` (see `Docs/PROMPT_ARCHITECTURE.md`).
+3. **Output:** JSON steps with `id`, `action`, `description`, `reason`.
 
-## Step format
+## Evaluation
 
-Each step in the plan has:
+- `python -m router_eval` is separate; for planner metrics use **`planner_eval`** scripts in this directory (see `planner_eval.py` and docs in this folder).
+- Metrics: step count accuracy, action sequence accuracy, latency.
 
-| Field         | Type   | Description                                      |
-|---------------|--------|--------------------------------------------------|
-| `id`          | int    | Step index (1-based).                             |
-| `action`      | string | One of: `EDIT`, `SEARCH`, `EXPLAIN`, `INFRA`.    |
-| `description` | string | Short description of what this step does.        |
-| `reason`      | string | Optional rationale for this step.                |
+## When to use
 
-Steps are **atomic**: one step = one action. Order is logical (e.g. SEARCH before EDIT when the user says “find X then change Y”).
+- **Benchmarking** legacy plan format.
+- **Comparing** router + planner datasets without spinning full `agent_v2`.
 
-## Evaluation metrics
-
-The evaluation script (`planner_eval.py`) reports:
-
-- **step_count_accuracy**: Fraction of examples where the predicted number of steps equals the expected number.
-- **action_sequence_accuracy**: Fraction where the ordered list of actions (e.g. `["SEARCH", "EDIT"]`) matches the expected sequence exactly.
-- **average_plan_length**: Mean number of steps in the predicted plans over the dataset.
-- **latency**: Mean (and optionally P95) time per `plan()` call in seconds.
-
-Additional metrics: step count MAE (mean absolute error), P95 latency.
-
-## Integration with the agent
-
-Each planner step maps to **one** action. The agent loop:
-
-1. Calls `get_plan(instruction)` from plan_resolver — when `ENABLE_INSTRUCTION_ROUTER=1` (see [Docs/CONFIGURATION.md](../Docs/CONFIGURATION.md)), CODE_SEARCH/CODE_EXPLAIN/INFRA skip the planner and get a single-step plan; otherwise calls `plan(instruction)`.
-2. For each step, `dispatch` routes by `action` to the policy engine (SEARCH/EDIT/INFRA) or EXPLAIN.
-3. SEARCH uses retrieval order: retrieve_graph → retrieve_vector → retrieve_grep → Serena; EDIT uses diff planner (when `ENABLE_DIFF_PLANNER=1`) or read_file.
-
-See [Docs/AGENT_LOOP_WORKFLOW.md](../Docs/AGENT_LOOP_WORKFLOW.md) and [Docs/REPOSITORY_SYMBOL_GRAPH.md](../Docs/REPOSITORY_SYMBOL_GRAPH.md) for execution details.
-
-
-## Running evaluation
-
-From the AutoStudio project root:
-
-```bash
-python -m planner.planner_eval
-```
-
-Optional arguments:
-
-- `--dataset-path PATH`: Use a custom JSON dataset (default: `planner/planner_dataset.json`).
-- `--quiet`: Print only the final metrics summary.
-
-## Files
-
-| File                   | Purpose                                                |
-|------------------------|--------------------------------------------------------|
-| `planner_prompts.py`   | `PLANNER_SYSTEM_PROMPT` from `PromptRegistry.get_instructions("planner")`. |
-| `planner.py`           | `plan(instruction)` → structured plan dict.            |
-| `planner_utils.py`     | `validate_plan`, `normalize_actions`, `extract_step_sequence`. |
-| `planner_dataset.json`  | ~50 examples with `instruction` and `expected_steps`.  |
-| `planner_eval.py`      | Evaluation script and metrics.                         |
+For **architecture** of the current system, see [`README.md`](../README.md) and [`docs/architecture_freeze/PHASE_4_PLANNER_V2.md`](../Docs/architecture_freeze/PHASE_4_PLANNER_V2.md).

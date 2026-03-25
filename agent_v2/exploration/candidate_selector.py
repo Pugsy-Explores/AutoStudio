@@ -4,6 +4,12 @@ import json
 import re
 from typing import Any, Callable
 
+from agent_v2.observability.langfuse_helpers import (
+    LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
+    langfuse_generation_end_with_usage,
+    langfuse_generation_input_with_prompt,
+    try_langfuse_generation,
+)
 from agent_v2.schemas.exploration import ExplorationCandidate
 
 
@@ -60,6 +66,7 @@ class CandidateSelector:
         *,
         limit: int,
         lf_select_span: Any = None,
+        lf_exploration_parent: Any = None,
     ) -> list[ExplorationCandidate] | None:
         if not candidates or limit <= 0:
             return []
@@ -71,44 +78,50 @@ class CandidateSelector:
         if self._llm_generate is None:
             return fallback_ranked
 
-        gen = None
-        if lf_select_span is not None and hasattr(lf_select_span, "generation"):
-            try:
-                gen = lf_select_span.generation(
-                    "exploration.select",
-                    input={"candidates_in": len(top), "limit": limit},
-                )
-            except Exception:
-                gen = None
+        payload = [
+            {
+                "file_path": c.file_path,
+                "symbol": c.symbol,
+                "source": c.source,
+            }
+            for c in top
+        ]
+        prompt = (
+            "You are ranking code locations for exploration.\n"
+            "Return STRICT JSON only in one of these shapes:\n"
+            '1) {"selected":[{"file_path":"...","symbol":"..."}, ...]}\n'
+            '2) {"selected":[],"no_relevant_candidate":true}\n'
+            "Rules:\n"
+            "- Rank best-first.\n"
+            "- Prefer implementation files over tests and already explored files.\n"
+            "- If no candidates are relevant, set no_relevant_candidate=true.\n\n"
+            f"Instruction:\n{instruction}\n\n"
+            f"Limit: {limit}\n\n"
+            f"Candidates:\n{json.dumps(payload)}"
+        )
+        gen = try_langfuse_generation(
+            lf_select_span,
+            lf_exploration_parent,
+            name="exploration.select",
+            input=langfuse_generation_input_with_prompt(
+                prompt,
+                extra={"candidates_in": len(top), "limit": limit},
+            ),
+        )
 
         try:
-            payload = [
-                {
-                    "file_path": c.file_path,
-                    "symbol": c.symbol,
-                    "source": c.source,
-                }
-                for c in top
-            ]
-            prompt = (
-                "You are ranking code locations for exploration.\n"
-                "Return STRICT JSON only in one of these shapes:\n"
-                '1) {"selected":[{"file_path":"...","symbol":"..."}, ...]}\n'
-                '2) {"selected":[],"no_relevant_candidate":true}\n'
-                "Rules:\n"
-                "- Rank best-first.\n"
-                "- Prefer implementation files over tests and already explored files.\n"
-                "- If no candidates are relevant, set no_relevant_candidate=true.\n\n"
-                f"Instruction:\n{instruction}\n\n"
-                f"Limit: {limit}\n\n"
-                f"Candidates:\n{json.dumps(payload)}"
-            )
             raw = self._llm_generate(prompt)
             parsed = self._parse_json_object(raw)
             if bool(parsed.get("no_relevant_candidate")):
                 if gen is not None:
                     try:
-                        gen.end(output={"no_relevant_candidate": True, "response": raw[:12000]})
+                        langfuse_generation_end_with_usage(
+                            gen,
+                            output={
+                                "no_relevant_candidate": True,
+                                "response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS],
+                            },
+                        )
                     except Exception:
                         pass
                 return None
@@ -118,21 +131,26 @@ class CandidateSelector:
                 if ranked:
                     if gen is not None:
                         try:
-                            gen.end(output={"response": raw[:12000]})
+                            langfuse_generation_end_with_usage(
+                                gen,
+                                output={
+                                    "response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
+                                },
+                            )
                         except Exception:
                             pass
                     return ranked
         except Exception:
             if gen is not None:
                 try:
-                    gen.end(output={"error": "select_batch_failed"})
+                    langfuse_generation_end_with_usage(gen, output={"error": "select_batch_failed"})
                 except Exception:
                     pass
             pass
 
         if gen is not None:
             try:
-                gen.end(output={"fallback": True})
+                langfuse_generation_end_with_usage(gen, output={"fallback": True})
             except Exception:
                 pass
         return fallback_ranked

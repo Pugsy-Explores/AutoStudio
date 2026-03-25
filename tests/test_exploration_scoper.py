@@ -1,3 +1,5 @@
+from typing import Any
+
 from agent_v2.exploration.exploration_scoper import ExplorationScoper
 from agent_v2.schemas.exploration import ExplorationCandidate
 
@@ -35,6 +37,24 @@ def test_scope_pass_through_empty_selection():
     assert out == cands
 
 
+def test_scope_dedupe_same_file_path_expands_to_all_original_candidates():
+    """Duplicate file_path rows are merged for the LLM; selecting that slot returns every hit."""
+    calls: list[str] = []
+
+    def _llm(p: str) -> str:
+        calls.append(p)
+        assert "dup.py" in p and '"snippets"' in p and '"symbols"' in p
+        return '{"selected_indices": [0]}'
+
+    scoper = ExplorationScoper(llm_generate=_llm)
+    c0 = ExplorationCandidate(file_path="dup.py", symbol="a", snippet="one", source="grep")
+    c1 = ExplorationCandidate(file_path="dup.py", symbol="b", snippet="two", source="vector")
+    c2 = ExplorationCandidate(file_path="other.py", symbol=None, snippet="x", source="grep")
+    out = scoper.scope("task", [c0, c1, c2])
+    assert out == [c0, c1]
+    assert len(calls) == 1
+
+
 def test_scope_sorted_indices_not_llm_order():
     scoper = ExplorationScoper(
         llm_generate=lambda _: '{"selected_indices": [9, 2, 5]}',
@@ -59,6 +79,67 @@ def test_scope_no_llm_pass_through():
     cands = [_c(f"{i}.py") for i in range(6)]
     out = scoper.scope("instr", cands)
     assert out == cands
+
+
+def test_scope_langfuse_generation_includes_prompt_in_langfuse_input():
+    """Generation input must include prompt text (not only prompt_chars) for Langfuse UI."""
+    captured: list[dict] = []
+
+    class Span:
+        def generation(self, name: str, **kwargs: Any) -> Any:
+            inp = kwargs.get("input") or {}
+            captured.append(dict(inp))
+
+            class G:
+                def end(self, **_: Any) -> None:
+                    pass
+
+            return G()
+
+    scoper = ExplorationScoper(llm_generate=lambda _: '{"selected_indices": [0]}')
+    cands = [_c("a.py"), _c("b.py")]
+    scoper.scope(
+        "unique instruction for langfuse",
+        cands,
+        lf_scope_span=Span(),
+        lf_exploration_parent=None,
+    )
+    assert len(captured) == 1
+    inp = captured[0]
+    assert "prompt" in inp
+    assert "unique instruction for langfuse" in inp["prompt"]
+    assert inp.get("prompt_truncated") is False
+    assert inp["prompt_chars"] == len(inp["prompt"])
+
+
+def test_scope_langfuse_generation_falls_back_to_exploration_parent():
+    """If ``exploration.scope`` span cannot host a generation, attach under ``exploration``."""
+    gen_calls: list[str] = []
+
+    class BadSpan:
+        def generation(self, name: str, **kwargs: Any) -> Any:
+            raise RuntimeError("sdk glitch")
+
+    class GoodParent:
+        def generation(self, name: str, **kwargs: Any) -> Any:
+            gen_calls.append(name)
+
+            class G:
+                def end(self, **_: Any) -> None:
+                    pass
+
+            return G()
+
+    scoper = ExplorationScoper(llm_generate=lambda _: '{"selected_indices": [0]}')
+    cands = [_c("a.py"), _c("b.py")]
+    out = scoper.scope(
+        "instr",
+        cands,
+        lf_scope_span=BadSpan(),
+        lf_exploration_parent=GoodParent(),
+    )
+    assert out == [cands[0]]
+    assert gen_calls == ["exploration.scope"]
 
 
 def test_scope_snippet_truncated_in_prompt():

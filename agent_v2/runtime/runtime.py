@@ -1,6 +1,7 @@
 """Standalone runtime composition root for agent_v2."""
 # DO NOT import from agent.* here
 
+import uuid
 from typing import Any
 
 from agent_v2.runtime.action_generator import ActionGenerator
@@ -124,7 +125,7 @@ class AgentRuntime:
         state.context.setdefault("react_mode", mode in ("act", "plan_execute"))
         lf_trace = create_agent_trace(instruction=instruction, mode=mode)
         state.metadata["langfuse_trace"] = lf_trace
-        state.metadata["obs"] = ObservabilityContext(langfuse_trace=lf_trace)
+        state.metadata["obs"] = ObservabilityContext(langfuse_trace=lf_trace, owns_root=False)
         run_status = "unknown"
         plan_id_out: str | None = None
         try:
@@ -157,10 +158,18 @@ class AgentRuntime:
 
         This is the Phase 3 entry point: runs before planning, produces grounded
         context for the planner. Isolated from the main agent loop.
+
+        Observability: there is no planner ``plan_id`` on this path; finalize uses
+        an exploration correlation id (Langfuse ``trace_id`` when available) so
+        root trace output is not null.
         """
         lf = create_agent_trace(instruction=instruction, mode="explore")
-        obs = ObservabilityContext(langfuse_trace=lf)
+        obs = ObservabilityContext(langfuse_trace=lf, owns_root=False)
+        tid = getattr(lf, "trace_id", None)
+        explore_correlation = (
+            f"explore_{tid}" if isinstance(tid, str) and tid.strip() else f"explore_{uuid.uuid4().hex[:12]}"
+        )
         try:
             return self.exploration_runner.run(instruction, obs=obs)
         finally:
-            finalize_agent_trace(lf, status="explore_done", plan_id=None)
+            finalize_agent_trace(lf, status="explore_done", plan_id=explore_correlation)

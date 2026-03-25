@@ -147,6 +147,14 @@ span.name == generation.name
 
 **Naming rule:** Always use **fully qualified** span names (`exploration.scope`, `exploration.select`, …, `executor.step`) — **never** ambiguous short names (`scope`, `select`) in spec or instrumentation.
 
+### 5.1 `try_langfuse_generation` (implementation — fallback parent)
+
+**Module:** `agent_v2/observability/langfuse_helpers.py`
+
+When attaching a Langfuse **generation** to a parent, do not assume the **first** chosen span always accepts `.generation()` (span missing, noop facade, or SDK/runtime error). Use **`try_langfuse_generation(*parents, name=..., input=...)`**: pass **ordered fallback parents** (for example: intended child span → exploration or planning parent → root **`langfuse_trace`**). The helper tries each non-`None` parent once (deduped by identity), swallows failures, and returns `None` only if every attempt fails. **Model calls are unaffected**; only observability attachment may degrade to a coarser parent or drop the generation node if no parent works.
+
+This preserves **§5** naming (generation `name` stays the same) while avoiding **invisible** LLM rows in Langfuse when the preferred span cannot host a generation.
+
 ---
 
 ## 6. TraceEmitter vs Langfuse — **locked decision**

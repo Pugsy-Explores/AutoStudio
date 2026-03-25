@@ -1,28 +1,24 @@
-# Agent Runtime — Edit→Test→Fix Loop
+# Agent Runtime — Edit→Test→Fix (`agent/runtime/`)
 
-Runtime safety layer for the EDIT path: single repair mechanism with snapshot rollback, syntax validation, and deterministic stop conditions.
+Safety loop around **EDIT** and test execution: snapshots, syntax validation, rollback, optional sandbox. Consumed from **`agent/execution`** dispatch paths when an edit or test step runs.
 
-**ReAct mode:** EDIT uses `_run_edit_once` (generate_patch_once → execute_patch → run_tests). Single attempt per edit action. **Legacy / test repair:** `run_edit_test_fix_loop` provides the full retry loop with critic and retry_planner.
+## Relation to `agent_v2`
 
-## Purpose
-
-- **No git dependency:** Rollback is file-snapshot based; works in CI, zip archives, and non-git repos.
-- **Syntax before tests:** After patch apply, project syntax is validated (e.g. `py_compile`, `go build`, `cargo check`); on failure, rollback and return without running tests.
-- **Controlled retries:** Base instruction is fixed at loop start; retry hints are applied as `base_instruction + "\nRetry hint: " + hint` (no accumulation). Strategy explorer runs only when retries are exhausted.
-- **Observable:** Execution loop metrics (attempts, failures, syntax_validation_failures, rollback_count, strategy_explorer_usage) are recorded; see Docs/OBSERVABILITY.md.
+- **`agent_v2`** `PlanExecutor` drives high-level steps; **`step_dispatcher`** eventually invokes **`agent/runtime/execution_loop.py`** (and related) for edit/test repair behavior where wired.
+- This is **not** the same as **`agent_v2.runtime.agent_loop.AgentLoop`** (composable ReAct loop class).
 
 ## Modules
 
 | Module | Role |
 |--------|------|
-| `execution_loop.py` | `run_edit_test_fix_loop`: snapshot → apply patch → validate syntax → run tests; on failure: rollback, retry guard, critic + retry_planner; optional sandbox (ENABLE_SANDBOX). |
-| `syntax_validator.py` | `validate_project(project_root, modified_files?)`: manifest-based (pyproject.toml / package.json / go.mod / Cargo.toml) syntax check. |
-| `retry_guard.py` | `should_retry_strategy(failure_type, attempt, max_attempts)`: e.g. syntax_error/timeout retry once; unknown stop. |
+| `execution_loop.py` | `run_edit_test_fix_loop` and related; critic/retry paths when not in minimal ReAct edit |
+| `syntax_validator.py` | Project-level syntax check after patch |
+| `retry_guard.py` | Retry policy by failure type |
 
 ## Config
 
-All behaviour is driven by `config/agent_runtime.py`: MAX_EDIT_ATTEMPTS, MAX_PATCH_FILES, MAX_PATCH_LINES, MAX_SAME_ERROR_RETRIES, MAX_STRATEGIES, TEST_TIMEOUT, ENABLE_SANDBOX. See Docs/CONFIGURATION.md.
+`config/agent_runtime.py` — `MAX_EDIT_ATTEMPTS`, `MAX_PATCH_LINES`, `ENABLE_SANDBOX`, **`REACT_MODE`**, etc.
 
 ## Tests
 
-`tests/test_execution_loop.py`: successful patch, syntax error (skip tests + rollback), retry success, repeated-failure stop, rollback restore verification.
+`tests/test_execution_loop.py`, trajectory tests under `tests/test_agent_trajectory.py`.

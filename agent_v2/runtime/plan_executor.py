@@ -6,6 +6,7 @@ a new PlanDocument (validated via PlanValidator), and an iterative continue (no 
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -26,6 +27,26 @@ from agent_v2.runtime.trace_emitter import TraceEmitter, TraceEmitterFactory
 from agent_v2.validation.plan_validator import PlanValidator
 
 _LOG = logging.getLogger(__name__)
+
+_LANGFUSE_TOOL_ARG_STR_MAX = 4000
+_LANGFUSE_TOOL_ARG_LIST_MAX = 50
+
+
+def _tool_args_for_langfuse_input(args: dict[str, Any]) -> dict[str, Any]:
+    """JSON-friendly view of merged tool args for Langfuse ``executor.dispatch`` input."""
+    out: dict[str, Any] = {}
+    for k, v in (args or {}).items():
+        if isinstance(v, str) and len(v) > _LANGFUSE_TOOL_ARG_STR_MAX:
+            out[k] = v[:_LANGFUSE_TOOL_ARG_STR_MAX] + f"... ({len(v)} chars total)"
+        elif isinstance(v, (list, tuple)) and len(v) > _LANGFUSE_TOOL_ARG_LIST_MAX:
+            out[k] = list(v[:_LANGFUSE_TOOL_ARG_LIST_MAX]) + [f"... ({len(v)} items total)"]
+        else:
+            try:
+                json.dumps(v, default=str)
+                out[k] = v
+            except Exception:
+                out[k] = repr(v)[:_LANGFUSE_TOOL_ARG_STR_MAX]
+    return out
 
 
 def _execution_error_payload(err: ExecutionError | None) -> Any:
@@ -65,6 +86,61 @@ def _end_langfuse_step_span(span: Any, result: ExecutionResult | None) -> None:
         )
     except Exception:
         pass
+
+
+def _lf_executor_dispatch_span(parent: Any, step: PlanStep, tool_args: dict | None = None) -> Any:
+    """Child span under executor.step for tool/shell dispatch (I/O), not argument LLM."""
+    if parent is None or not hasattr(parent, "span"):
+        return None
+    try:
+        inp: dict[str, Any] = {
+            "action": step.action,
+            "step_index": step.index,
+            "step_id": step.step_id,
+        }
+        if tool_args is not None:
+            inp["tool_args"] = _tool_args_for_langfuse_input(tool_args)
+        return parent.span(
+            name="executor.dispatch",
+            input=inp,
+        )
+    except Exception:
+        return None
+
+
+def _lf_end_dispatch_span(span: Any, result: ExecutionResult | None) -> None:
+    if span is None:
+        return
+    try:
+        if result is not None and result.metadata is not None:
+            span.update(
+                metadata={
+                    "tool_name": result.metadata.tool_name,
+                    "duration_ms": result.metadata.duration_ms,
+                }
+            )
+            span.end(
+                output={
+                    "success": result.success,
+                    "summary": result.output.summary if result.output else None,
+                    "error": _execution_error_payload(result.error),
+                }
+            )
+        elif result is not None:
+            span.end(
+                output={
+                    "success": result.success,
+                    "summary": result.output.summary if result.output else None,
+                    "error": _execution_error_payload(result.error),
+                }
+            )
+        else:
+            span.end(output={"success": False, "error": "no_result"})
+    except Exception:
+        try:
+            span.end()
+        except Exception:
+            pass
 
 
 # Legacy ReAct dispatch expects uppercase internal actions (agent.core.actions.Action).
@@ -575,15 +651,19 @@ class PlanExecutor:
         args = self.argument_generator.generate(step, state)
         merged = self._merge_args(step, args)
 
-        if step.action == "shell":
-            result = self._dispatch_shell(step.step_id, merged, state)
+        parent = md.get("_current_langfuse_span")
+        dispatch_span = _lf_executor_dispatch_span(parent, step, merged)
+        result: ExecutionResult | None = None
+        try:
+            if step.action == "shell":
+                result = self._dispatch_shell(step.step_id, merged, state)
+            else:
+                dispatch_dict = self._to_dispatch_step(step, merged)
+                result = self.dispatcher.execute(dispatch_dict, state)
             self._ensure_execution_result_contract(result, step.step_id)
             return result
-
-        dispatch_dict = self._to_dispatch_step(step, merged)
-        result = self.dispatcher.execute(dispatch_dict, state)
-        self._ensure_execution_result_contract(result, step.step_id)
-        return result
+        finally:
+            _lf_end_dispatch_span(dispatch_span, result)
 
     def _merge_args(self, step: PlanStep, generated: dict) -> dict:
         base: dict = {}

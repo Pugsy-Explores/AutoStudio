@@ -1,45 +1,24 @@
 # Editing Module (`editing/`)
 
-Safe, validated code-editing pipeline. This module converts “what to change” into **bounded, validated patches**, applies them via AST-aware patching when possible, and provides rollback-safe execution.
+Safe, validated **patch pipeline**: diff planning → AST patch → validation → execution with rollback.
 
 ## Responsibilities
 
-- **Diff planning**: propose minimal, bounded edits.
-- **AST patching**: apply structured patches to parsed syntax trees (primary path).
-- **Patch validation**: reject unsafe or invalid patch plans.
-- **Patch execution**: apply patches with safeguards (max files/lines), reject forbidden paths, and rollback on failure.
-- **Repair loop**: integrate edit→test→fix retry strategies (when invoked via runtime loop).
+- **`plan_diff`** — propose bounded edits (`diff_planner.py`).
+- **`validate_patch`** — reject unsafe or invalid plans (`patch_validator.py`).
+- **`execute_patch`** — apply with path/budget guards (`patch_executor.py`).
+- **`ast_patcher.py`** — AST-aware apply when applicable.
+- **`test_repair_loop.py`** — `run_with_repair` for edit→test repair flows.
 
-## Public API (package exports)
+## Integration with `agent_v2`
 
-The package exports a curated surface in `editing/__init__.py`:
+`PlanExecutor` dispatches **EDIT** steps through **`agent/execution/step_dispatcher`**, which invokes editing and runtime helpers. The **plan** is fixed by `PlannerV2`; the editing module does not choose the next high-level step.
 
-- `plan_diff(...)` (`editing/diff_planner.py`)
-- `validate_patch(...)` (`editing/patch_validator.py`)
-- `execute_patch(...)` (`editing/patch_executor.py`)
-- AST helpers: `load_ast`, `apply_patch`, `generate_code` (`editing/ast_patcher.py`)
-- Merge/conflict utilities: `resolve_conflicts`, `merge_sequential`, `merge_three_way`
-- Repair helper: `run_with_repair` (`editing/test_repair_loop.py`)
+## Safety
 
-## Safety model (must-haves)
+- Paths must stay under `project_root`; forbidden patterns for secrets/env.
+- Budgets from `config/editing_config.py` and `config/agent_runtime.py`.
 
-`editing/patch_executor.py` enforces:
+## Extension
 
-- **File scope safety**: paths must resolve inside `project_root`.
-- **Forbidden targets**: refuses obvious secret/env patterns (`.env`, `secrets/`, keys, credentials).
-- **Budget limits**: maximum unique files per edit and maximum patch size (lines).
-- **Validation-first**: validate patch output before writing; on validation failure, rollback to original content.
-
-This module is one of the core safety layers; avoid bypassing it.
-
-## Integration points
-
-- Called from agent execution for EDIT steps (via dispatcher/policy engine).
-- Works with runtime loop (`agent/runtime/`) to validate syntax before tests and to rollback deterministically.
-
-## Extension points
-
-- **New patch validators**: extend `patch_validator.py` (keep behavior deterministic and explainable).
-- **Additional languages**: add syntax/validator hooks carefully; preserve existing Python AST path.
-- **Merge strategies**: implement in `merge_strategies.py` without changing the public API.
-
+Add validators or language hooks in **`patch_validator.py`** / **`ast_patcher.py`** without changing public call sites in dispatch.

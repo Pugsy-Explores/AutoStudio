@@ -14,6 +14,12 @@ from agent.execution.step_dispatcher import _dispatch_react
 from agent.models.model_client import call_reasoning_model
 from agent.prompt_system.registry import get_registry
 from agent_v2.config import get_execution_policy
+from agent_v2.observability.langfuse_helpers import (
+    LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
+    langfuse_generation_end_with_usage,
+    langfuse_generation_input_with_prompt,
+    try_langfuse_generation,
+)
 from agent_v2.planner.planner_v2 import PlannerV2
 from agent_v2.runtime.plan_argument_generator import PlanArgumentGenerator
 from agent_v2.schemas.exploration import ExplorationResult
@@ -156,19 +162,26 @@ def _react_get_next_action(
             "react_json_action_list": json_action_list_for_mode(mode),
         },
     )
-    gen = None
-    if langfuse_trace is not None:
-        gen = langfuse_trace.generation(
-            name="exploration_step",
-            input={"instruction": instruction[:4000], "task": "REACT_ACTION"},
-        )
+    gen = try_langfuse_generation(
+        langfuse_trace,
+        name="exploration_step",
+        input=langfuse_generation_input_with_prompt(
+            prompt,
+            extra={"task": "REACT_ACTION"},
+        ),
+    )
     out = ""
     try:
         out = call_reasoning_model(prompt, task_name="REACT_ACTION")
     finally:
         if gen is not None:
             try:
-                gen.end(output={"response": (out or "")[:12000]})
+                langfuse_generation_end_with_usage(
+                    gen,
+                    output={
+                        "response": (out or "")[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
+                    },
+                )
             except Exception:
                 pass
     thought, action_raw, args = _react_parse_response(out)

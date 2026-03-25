@@ -3,8 +3,13 @@ Phase 12.6.F — LLM breadth reduction before CandidateSelector.select_batch.
 
 Internal only; does not change ExplorationResult (Schema 4).
 
+Before the scoping LLM call, discovery candidates are **deduplicated by ``file_path``**
+(first-seen order): snippets, sources, and symbols are aggregated into parallel lists per
+file. The model returns indices into that deduplicated list; the implementation expands
+each chosen slot back to **all** original ``ExplorationCandidate`` rows for that path.
+
 Orchestration (cap K, skip-below) lives in ExplorationEngineV2 — this class is a pure
-index-based subset transform when called.
+subset transform when called.
 """
 
 from __future__ import annotations
@@ -14,6 +19,12 @@ import logging
 import re
 from typing import Any, Callable
 
+from agent_v2.observability.langfuse_helpers import (
+    LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
+    langfuse_generation_end_with_usage,
+    langfuse_generation_input_with_prompt,
+    try_langfuse_generation,
+)
 from agent_v2.schemas.exploration import ExplorationCandidate
 
 _LOG = logging.getLogger(__name__)
@@ -37,11 +48,15 @@ class ExplorationScoper:
         candidates: list[ExplorationCandidate],
         *,
         lf_scope_span: Any = None,
+        lf_exploration_parent: Any = None,
     ) -> list[ExplorationCandidate]:
         """
         Return a subset of candidates by stable index order, or pass-through on failure/empty selection.
 
         Caller must not invoke when len(candidates)==0. Skip-when-trivial is handled by the engine.
+
+        ``lf_exploration_parent`` is the ``exploration`` span: used as a fallback parent for the
+        Langfuse generation when the ``exploration.scope`` span is missing or ``.generation`` fails.
         """
         input_n = len(candidates)
         if input_n == 0:
@@ -55,18 +70,19 @@ class ExplorationScoper:
             )
             return list(candidates)
 
-        payload = self._wire_payload(candidates)
+        payload, dedupe_orig_indices = self._aggregate_payload_by_file_path(candidates)
+        dedupe_n = len(payload)
         prompt = self._build_prompt(instruction, payload)
 
-        gen = None
-        if lf_scope_span is not None and hasattr(lf_scope_span, "generation"):
-            try:
-                gen = lf_scope_span.generation(
-                    "exploration.scope",
-                    input={"input_count": input_n},
-                )
-            except Exception:
-                gen = None
+        gen = try_langfuse_generation(
+            lf_scope_span,
+            lf_exploration_parent,
+            name="exploration.scope",
+            input=langfuse_generation_input_with_prompt(
+                prompt,
+                extra={"input_count": input_n, "dedupe_count": dedupe_n},
+            ),
+        )
 
         try:
             raw = self._llm_generate(prompt)
@@ -80,7 +96,7 @@ class ExplorationScoper:
             )
             if gen is not None:
                 try:
-                    gen.end(output={"error": "parse_failed"})
+                    langfuse_generation_end_with_usage(gen, output={"error": "parse_failed"})
                 except Exception:
                     pass
             return list(candidates)
@@ -94,20 +110,21 @@ class ExplorationScoper:
             )
             if gen is not None:
                 try:
-                    gen.end(output={"error": "invalid_shape", "input_count": input_n})
+                    langfuse_generation_end_with_usage(
+                        gen, output={"error": "invalid_shape", "input_count": input_n}
+                    )
                 except Exception:
                     pass
             return list(candidates)
 
-        n = len(candidates)
-        valid: set[int] = set()
+        valid_dedupe: set[int] = set()
         for x in selected_raw:
             if isinstance(x, bool) or not isinstance(x, int):
                 continue
-            if 0 <= x < n:
-                valid.add(int(x))
+            if 0 <= int(x) < dedupe_n:
+                valid_dedupe.add(int(x))
 
-        if not valid:
+        if not valid_dedupe:
             _LOG.debug(
                 "exploration_scoper pass_through: empty_selection scoper_input_n=%s scoper_output_n=%s",
                 input_n,
@@ -115,12 +132,17 @@ class ExplorationScoper:
             )
             if gen is not None:
                 try:
-                    gen.end(output={"error": "empty_selection", "input_count": input_n})
+                    langfuse_generation_end_with_usage(
+                        gen, output={"error": "empty_selection", "input_count": input_n}
+                    )
                 except Exception:
                     pass
             return list(candidates)
 
-        sorted_indices = sorted(valid)
+        valid_orig: set[int] = set()
+        for j in valid_dedupe:
+            valid_orig.update(dedupe_orig_indices[j])
+        sorted_indices = sorted(valid_orig)
         out = [candidates[i] for i in sorted_indices]
         output_n = len(out)
         ratio = output_n / input_n if input_n else 0.0
@@ -133,27 +155,67 @@ class ExplorationScoper:
         )
         if gen is not None:
             try:
-                gen.end(
+                langfuse_generation_end_with_usage(
+                    gen,
                     output={
                         "input_count": input_n,
                         "output_count": output_n,
-                        "response": raw[:12000] if isinstance(raw, str) else str(raw)[:12000],
-                    }
+                        "response": (
+                            raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
+                            if isinstance(raw, str)
+                            else str(raw)[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
+                        ),
+                    },
                 )
             except Exception:
                 pass
         return out
 
-    def _wire_payload(self, candidates: list[ExplorationCandidate]) -> list[dict]:
-        return [
-            {
-                "index": i,
-                "file_path": c.file_path,
-                "source": c.source,
-                "snippet": (c.snippet or "")[: self._max_snippet_chars],
-            }
-            for i, c in enumerate(candidates)
-        ]
+    def _aggregate_payload_by_file_path(
+        self, candidates: list[ExplorationCandidate]
+    ) -> tuple[list[dict], list[list[int]]]:
+        """
+        One LLM row per unique ``file_path`` (first-seen order). Aggregate snippets,
+        sources, and symbols from all discovery rows sharing that path.
+
+        Returns:
+            payload rows for the prompt, and ``dedupe_orig_indices[j]`` = original
+            candidate indices for dedupe slot ``j`` (for expanding the LLM selection).
+        """
+        path_order: list[str] = []
+        path_to_orig_indices: dict[str, list[int]] = {}
+        for i, c in enumerate(candidates):
+            fp = c.file_path
+            if fp not in path_to_orig_indices:
+                path_to_orig_indices[fp] = []
+                path_order.append(fp)
+            path_to_orig_indices[fp].append(i)
+
+        cap = self._max_snippet_chars
+        payload: list[dict] = []
+        dedupe_orig_indices: list[list[int]] = []
+        for j, fp in enumerate(path_order):
+            orig_ixs = path_to_orig_indices[fp]
+            dedupe_orig_indices.append(orig_ixs)
+            rows = [candidates[k] for k in orig_ixs]
+            sources: list[str] = []
+            snippets: list[str] = []
+            symbols: list[str | None] = []
+            for c in rows:
+                if c.source not in sources:
+                    sources.append(c.source)
+                snippets.append((c.snippet or "")[:cap])
+                symbols.append(c.symbol)
+            payload.append(
+                {
+                    "index": j,
+                    "file_path": fp,
+                    "sources": sources,
+                    "snippets": snippets,
+                    "symbols": symbols,
+                }
+            )
+        return payload, dedupe_orig_indices
 
     @staticmethod
     def _build_prompt(instruction: str, payload: list[dict]) -> str:
@@ -162,9 +224,11 @@ class ExplorationScoper:
             "You are selecting which code locations are worth exploring for a task.\n\n"
             "You are given:\n"
             "- an instruction\n"
-            "- a list of candidate code snippets from a repository\n\n"
+            "- a list of candidates from a repository (one entry per **unique file path**)\n"
+            "- each entry may aggregate multiple discovery hits on the same file "
+            "(snippets, sources, symbols as parallel lists)\n\n"
             "Your job:\n"
-            "Return a subset of candidate indices that are likely relevant to solving the instruction.\n\n"
+            "Return a subset of candidate **indices** that are likely relevant to solving the instruction.\n\n"
             "Guidelines:\n"
             "- Prefer implementation logic over tests, mocks, or configs\n"
             "- Prefer files that appear to contain core logic related to the task\n"
@@ -173,7 +237,7 @@ class ExplorationScoper:
             "- Selecting all candidates is usually a mistake unless all are clearly relevant\n"
             "- Do NOT rank or order — only select indices\n\n"
             "IMPORTANT:\n"
-            "- Only choose from the given indices\n"
+            "- Indices refer to the numbered list below (0 .. N-1 for N unique file paths)\n"
             "- Do not invent new files or indices\n"
             "- If none are relevant, return an empty list\n\n"
             "---\n\n"

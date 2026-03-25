@@ -105,13 +105,14 @@ def test_standalone_run_populates_obs_and_langfuse_trace():
     assert state.metadata.get("langfuse_trace") is not None
     assert state.metadata.get("obs") is not None
     assert state.metadata["obs"].langfuse_trace is state.metadata["langfuse_trace"]
+    assert state.metadata["obs"].owns_root is True
 
 
 def test_reuses_obs_langfuse_trace_same_handle():
     """Phase 12.6.G — AgentLoop must not create a second root trace when obs is set."""
     state = AgentState(instruction="one run")
     shared = create_agent_trace(instruction="one run", mode="act")
-    state.metadata["obs"] = ObservabilityContext(langfuse_trace=shared)
+    state.metadata["obs"] = ObservabilityContext(langfuse_trace=shared, owns_root=False)
 
     loop = AgentLoop(
         dispatcher=_Dispatcher([{"success": True, "output": "done", "error": None}]),
@@ -124,6 +125,7 @@ def test_reuses_obs_langfuse_trace_same_handle():
     assert state.metadata.get("langfuse_trace") is shared
     assert state.metadata.get("obs") is not None
     assert state.metadata["obs"].langfuse_trace is shared
+    assert state.metadata["obs"].owns_root is False
 
 
 def test_stops_after_retry_limit():

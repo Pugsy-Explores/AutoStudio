@@ -57,6 +57,25 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')")
 
 
+@pytest.fixture(autouse=True)
+def _pytest_langfuse_root_name(request, monkeypatch):
+    """
+    Unified Langfuse root span naming for any test that calls ``create_agent_trace``.
+
+    Consumed via ``AGENT_V2_LANGFUSE_ROOT_NAME`` (see ``agent_v2.observability.langfuse_client``).
+
+    - ``@pytest.mark.agent_v2_live``: ``live::<pytest node id>``
+    - all other tests: ``<pytest node id> - offline``
+    """
+    nodeid = request.node.nodeid
+    monkeypatch.setenv("AGENT_V2_PYTEST_NODEID", nodeid)
+    if request.node.get_closest_marker("agent_v2_live") is not None:
+        label = f"live::{nodeid}"
+    else:
+        label = f"{nodeid} - offline"
+    monkeypatch.setenv("AGENT_V2_LANGFUSE_ROOT_NAME", label)
+
+
 @pytest.fixture(scope="session")
 def e2e_use_mock(request):
     """

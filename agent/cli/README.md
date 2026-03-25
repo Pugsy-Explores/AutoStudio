@@ -1,15 +1,25 @@
 # CLI Subsystem (`agent/cli/`)
 
-Command-line UX for AutoStudio. This package wires user-facing CLI commands to the orchestrator/controller and workflow helpers, and provides interactive session support.
+Command-line UX for AutoStudio. Commands are **thin wrappers** around **`agent_v2.runtime.bootstrap.create_runtime()`** and **`format_output`** (`agent_v2/cli_adapter.py`).
 
 ## Responsibilities
 
-- Define the **`autostudio`** CLI entrypoint (via `pyproject.toml`).
-- Provide command handlers for single-shot runs (`edit`, `explain`), trace tooling (`trace`, `debug`), and workflow commands (`issue`, `fix`, `pr`, `review`, `ci`).
-- Keep CLI logic thin: it should not implement agent logic; it should call the orchestrator/workflow layers.
+- Define the **`autostudio`** entrypoint (`pyproject.toml` → `agent.cli.entrypoint:main`).
+- **Session / single-shot** — `session.py`, `run_agent.py` call `AgentRuntime.run(instruction, mode=...)` with optional `--mode=`.
 
-## Key entrypoints
+## Key files
 
-- `agent/cli/entrypoint.py`: console script target (`autostudio = agent.cli.entrypoint:main`)
-- `agent/cli/__init__.py`: `run_agent_main()` convenience wrapper
+| File | Role |
+|------|------|
+| `entrypoint.py` | Main CLI dispatch |
+| `run_agent.py` | Run agent with formatted JSON output |
+| `session.py` | Interactive REPL; one runtime per turn |
 
+## Modes
+
+Parsed by `agent_v2.cli_adapter.parse_mode`: **`act`**, **`plan`**, **`deep_plan`**, **`plan_execute`**.
+
+## Invariants
+
+- No agent business logic here beyond argument parsing and I/O.
+- Do not import removed **`agent.orchestrator.run_controller`**.

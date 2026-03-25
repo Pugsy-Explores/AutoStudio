@@ -2,7 +2,7 @@
 # DO NOT import from agent.* here
 
 from agent_v2.schemas.execution import ExecutionResult
-from agent_v2.observability.observability_context import get_or_create_root_trace
+from agent_v2.observability.observability_context import get_obs, get_or_create_root_trace
 from agent_v2.runtime.react_context import (
     MAX_OBS_CHARS,
     normalize_path_for_dedup,
@@ -64,11 +64,13 @@ class AgentLoop:
         failure_streak = int(state.metadata.get("failure_streak", 0) or 0)
         state.metadata.setdefault("retry_count", 0)
         mode = str(state.metadata.get("mode") or "act")
-        trace, owns_root_trace = get_or_create_root_trace(
+        trace = get_or_create_root_trace(
             state,
             instruction=state.instruction,
             mode=mode,
         )
+        obs_ctx = get_obs(state)
+        owns_root_trace = bool(obs_ctx and obs_ctx.owns_root)
         try:
             while True:
                 step = self.action_generator.next_action(state)
@@ -181,7 +183,7 @@ class AgentLoop:
                 # Parent (e.g. AgentRuntime) owns root lifecycle via finalize_agent_trace; do not end root.
                 try:
                     trace.event(
-                        name="react_loop_finished",
+                        name="react_loop.completed",
                         metadata={"steps": n_steps},
                     )
                 except Exception:

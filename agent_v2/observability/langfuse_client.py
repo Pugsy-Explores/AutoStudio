@@ -210,20 +210,68 @@ class LFTraceHandle:
             fn()
 
 
-def create_agent_trace(*, instruction: str, mode: str) -> LFTraceHandle | _NoopTrace:
-    """Create root Langfuse observation for one agent run (Phase 11 Step 2)."""
+_LANGFUSE_ROOT_NAME_MAX = 200
+# Pytest sets ``AGENT_V2_LANGFUSE_ROOT_NAME`` per test (see tests/conftest.py):
+# ``live::<nodeid>`` for ``@pytest.mark.agent_v2_live``, else ``<nodeid> - offline``.
+
+
+def _sanitize_langfuse_root_name(label: str) -> str:
+    """Observation names must be printable, bounded length (Langfuse UI / API limits)."""
+    s = (label or "").strip()
+    if not s:
+        return "agent_run"
+    if " (" in s:
+        s = s.split(" (", 1)[0].strip()
+    out = "".join(ch if ch.isprintable() and ch not in "\r\n\t" else "_" for ch in s)
+    if len(out) > _LANGFUSE_ROOT_NAME_MAX:
+        out = out[: _LANGFUSE_ROOT_NAME_MAX - 3] + "..."
+    return out or "agent_run"
+
+
+def _resolve_root_trace_metadata(explicit_name: Optional[str]) -> tuple[str, dict[str, Any]]:
+    """
+    Root span ``name`` for Langfuse + optional metadata (e.g. full pytest node id).
+
+    Priority: explicit ``name`` → ``AGENT_V2_LANGFUSE_ROOT_NAME`` → ``agent_run``.
+    """
+    extra: dict[str, Any] = {}
+    if explicit_name is not None and str(explicit_name).strip():
+        return _sanitize_langfuse_root_name(str(explicit_name)), extra
+    env_nodeid = os.environ.get("AGENT_V2_LANGFUSE_ROOT_NAME", "").strip()
+    if env_nodeid:
+        raw_nid = os.environ.get("AGENT_V2_PYTEST_NODEID", "").strip()
+        if raw_nid:
+            extra["pytest_nodeid"] = raw_nid[:500]
+        extra["langfuse_test_label"] = env_nodeid[:500]
+        return _sanitize_langfuse_root_name(env_nodeid), extra
+    return "agent_run", extra
+
+
+def create_agent_trace(
+    *,
+    instruction: str,
+    mode: str,
+    name: Optional[str] = None,
+) -> LFTraceHandle | _NoopTrace:
+    """Create root Langfuse observation for one agent run (Phase 11 Step 2).
+
+    When ``name`` is omitted, the root span name is ``agent_run`` unless
+    ``AGENT_V2_LANGFUSE_ROOT_NAME`` is set (pytest: ``live::…`` or ``… - offline``; see tests/conftest.py).
+    """
     client = _get_client()
     if client is None or TraceContext is None:
         return _NoopTrace()
 
+    root_name, meta_extra = _resolve_root_trace_metadata(name)
     trace_id = client.create_trace_id()
     tc = TraceContext(trace_id=trace_id)
+    md = {"runtime": "agent_v2", **meta_extra}
     root = client.start_observation(
-        name="agent_run",
+        name=root_name,
         as_type="span",
         trace_context=tc,
         input={"instruction": instruction, "mode": mode},
-        metadata={"runtime": "agent_v2"},
+        metadata=md,
     )
     return LFTraceHandle(client, root, trace_id)
 
@@ -234,7 +282,11 @@ def finalize_agent_trace(
     status: str,
     plan_id: Optional[str] = None,
 ) -> None:
-    """Phase 11 Step 9 — final trace output + end."""
+    """Phase 11 Step 9 — final trace output + end.
+
+    ``plan_id`` is the planner's id when a plan exists; explore-only entrypoints
+    pass a correlation id (e.g. ``explore_<langfuse_trace_id>``) so output is not null.
+    """
     if lf is None or isinstance(lf, _NoopTrace):
         return
     try:
@@ -278,6 +330,7 @@ class _LangfuseFacade:
         return create_agent_trace(
             instruction=(input or {}).get("instruction", ""),
             mode=(input or {}).get("mode", "act"),
+            name=(input or {}).get("trace_name"),
         )
 
 

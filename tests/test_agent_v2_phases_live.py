@@ -329,9 +329,13 @@ class TestPhase5PlanExecuteLive:
         assert trace.metadata.total_duration_ms >= 0
         for step in trace.steps:
             assert step.step_id
-            assert step.plan_step_index >= 1
             assert step.action
             assert step.duration_ms >= 0
+            if step.plan_step_index == 0:
+                # TraceEmitter may use 0 for LLM rows not keyed to a 1-based plan step (exploration, planner, arg gen).
+                assert step.kind == "llm"
+            else:
+                assert step.plan_step_index >= 1
             if step.success:
                 assert step.error is None
             else:

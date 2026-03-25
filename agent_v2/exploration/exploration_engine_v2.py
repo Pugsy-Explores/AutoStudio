@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -48,6 +50,35 @@ def _lf_end(span: Any) -> None:
         span.end()
     except Exception:
         pass
+
+
+def _exploration_inspect_langfuse_output(
+    snippet: str | None, inspect_result: ExecutionResult
+) -> dict[str, Any]:
+    """Rich span output for Langfuse (summary + bounded snippet lines + data preview)."""
+    out: dict[str, Any] = {
+        "tool": getattr(inspect_result.metadata, "tool_name", None),
+        "success": inspect_result.success,
+    }
+    summary = None
+    if inspect_result.output:
+        summary = inspect_result.output.summary
+    out["summary"] = summary
+    text = (snippet or "").strip()
+    if text:
+        lines = text.splitlines()
+        out["output_lines"] = lines[:80]
+        out["output_line_count"] = len(lines)
+        out["truncated"] = len(lines) > 80
+    data = inspect_result.output.data if inspect_result.output else {}
+    if isinstance(data, dict) and data:
+        keys = list(data.keys())[:20]
+        preview = {k: data[k] for k in keys}
+        try:
+            out["data_preview"] = json.dumps(preview, default=str)[:4000]
+        except Exception:
+            out["data_preview"] = str(preview)[:4000]
+    return out
 
 
 def _emit_exploration_phase_events(exploration_span: Any, termination_reason: str) -> None:
@@ -153,19 +184,11 @@ class ExplorationEngineV2:
         stagnation_counter = 0
 
         intent = self._intent_parser.parse(instruction)
+        t_disc0 = time.perf_counter()
         candidates, discovery_records = self._discovery(intent, state, ex_state)
+        discovery_ms = int((time.perf_counter() - t_disc0) * 1000)
         evidence.extend(discovery_records)
-        if exploration_outer is not None:
-            try:
-                srcs = sorted({str(getattr(c, "source", "") or "unknown") for c in candidates})
-                exploration_outer.update(
-                    metadata={
-                        "candidate_count": len(candidates),
-                        "sources": srcs,
-                    }
-                )
-            except Exception:
-                pass
+        t_enq0 = time.perf_counter()
         selection_none = self._enqueue_ranked(
             instruction,
             candidates,
@@ -174,6 +197,20 @@ class ExplorationEngineV2:
             expl_parent=exploration_outer,
             obs=obs,
         )
+        initial_enqueue_ms = int((time.perf_counter() - t_enq0) * 1000)
+        if exploration_outer is not None:
+            try:
+                srcs = sorted({str(getattr(c, "source", "") or "unknown") for c in candidates})
+                exploration_outer.update(
+                    metadata={
+                        "candidate_count": len(candidates),
+                        "sources": srcs,
+                        "discovery_ms": discovery_ms,
+                        "initial_enqueue_ms": initial_enqueue_ms,
+                    }
+                )
+            except Exception:
+                pass
         if selection_none and not ex_state.pending_targets:
             termination_reason = "no_relevant_candidate"
 
@@ -241,10 +278,7 @@ class ExplorationEngineV2:
                 if inspect_span is not None and inspect_result is not None:
                     try:
                         inspect_span.end(
-                            output={
-                                "tool": getattr(inspect_result.metadata, "tool_name", None),
-                                "success": inspect_result.success,
-                            }
+                            output=_exploration_inspect_langfuse_output(snippet, inspect_result)
                         )
                     except Exception:
                         _lf_end(inspect_span)
@@ -298,6 +332,7 @@ class ExplorationEngineV2:
                         target.file_path,
                         snippet,
                         lf_analyze_span=analyze_span,
+                        lf_exploration_parent=exploration_outer,
                     )
                 finally:
                     if obs is not None:
@@ -366,6 +401,11 @@ class ExplorationEngineV2:
                 or self._definition_like(instruction)
             ):
                 completion_status = "complete"
+        # pending_exhausted: ranked queue drained without early abort (not no_relevant_candidate,
+        # stalled, or max_steps). Listing / broad tasks may never get analyzer "sufficient" but
+        # still finished the worklist — treat as complete for planner gating (ModeManager).
+        if termination_reason == "pending_exhausted":
+            completion_status = "complete"
         if termination_reason == "unknown":
             termination_reason = "max_steps" if ex_state.steps_taken >= EXPLORATION_MAX_STEPS else "stopped"
         self._last_termination_reason = termination_reason
@@ -438,7 +478,12 @@ class ExplorationEngineV2:
                 scope_span = None
         try:
             if need_scope_llm:
-                scoped = self._scoper.scope(instruction, capped, lf_scope_span=scope_span)
+                scoped = self._scoper.scope(
+                    instruction,
+                    capped,
+                    lf_scope_span=scope_span,
+                    lf_exploration_parent=expl_parent,
+                )
             else:
                 scoped = capped
                 if self._scoper is not None:
@@ -478,6 +523,7 @@ class ExplorationEngineV2:
                 local_seen_files,
                 limit=min(limit, len(scoped)),
                 lf_select_span=select_span,
+                lf_exploration_parent=expl_parent,
             )
         finally:
             if obs is not None:
