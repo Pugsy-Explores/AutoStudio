@@ -88,6 +88,11 @@ EXPLORATION_UTILITY_NO_IMPROVEMENT_STREAK: int = _int_env(
 MAX_RETRIES: int = _int_env("AGENT_V2_MAX_RETRIES", 2)
 MAX_REPLANS: int = _int_env("AGENT_V2_MAX_REPLANS", 2)
 
+# Planner–Explorer controller loop (ModeManager ACT path; default on). Set AGENT_V2_PLANNER_CONTROLLER_LOOP=0 to disable.
+PLANNER_CONTROLLER_LOOP: bool = _int_env("AGENT_V2_PLANNER_CONTROLLER_LOOP", 1) == 1
+MAX_SUB_EXPLORATIONS_PER_TASK: int = _int_env("AGENT_V2_MAX_SUB_EXPLORATIONS_PER_TASK", 2)
+MAX_PLANNER_CONTROLLER_CALLS: int = _int_env("AGENT_V2_MAX_PLANNER_CONTROLLER_CALLS", 16)
+
 # Executor guards (Phase 10 Step 8)
 MAX_EXECUTOR_DISPATCHES: int = _int_env("AGENT_V2_MAX_EXECUTOR_DISPATCHES", 20)
 MAX_RUNTIME_SECONDS: int = _int_env("AGENT_V2_MAX_RUNTIME_SECONDS", 600)
@@ -110,10 +115,20 @@ class PytestConfig:
 
 
 @dataclass(frozen=True)
+class PlannerLoopConfig:
+    """ModeManager ACT controller loop (planner returns structured controller JSON); executor stays a pure step runner."""
+
+    controller_loop_enabled: bool
+    max_sub_explorations_per_task: int
+    max_planner_controller_calls: int
+
+
+@dataclass(frozen=True)
 class AgentV2Config:
     planner: PlannerConfig
     exploration: ExplorationConfig
     pytest: PytestConfig
+    planner_loop: PlannerLoopConfig
 
 
 def _build_config() -> AgentV2Config:
@@ -130,6 +145,11 @@ def _build_config() -> AgentV2Config:
             allow_partial_for_plan_mode=allow_partial,
         ),
         pytest=PytestConfig(ignore_dirs=ignore_dirs),
+        planner_loop=PlannerLoopConfig(
+            controller_loop_enabled=PLANNER_CONTROLLER_LOOP,
+            max_sub_explorations_per_task=MAX_SUB_EXPLORATIONS_PER_TASK,
+            max_planner_controller_calls=MAX_PLANNER_CONTROLLER_CALLS,
+        ),
     )
 
 
@@ -145,6 +165,10 @@ def get_project_root() -> str:
 
 
 def validate_config(config: AgentV2Config) -> None:
+    if config.planner_loop.max_sub_explorations_per_task < 0:
+        raise ValueError("config.planner_loop.max_sub_explorations_per_task must be >= 0")
+    if config.planner_loop.max_planner_controller_calls < 1:
+        raise ValueError("config.planner_loop.max_planner_controller_calls must be >= 1")
     if config.exploration.max_steps < 1:
         raise ValueError("config.exploration.max_steps must be >= 1")
     if not config.planner.allowed_actions_read_only:
