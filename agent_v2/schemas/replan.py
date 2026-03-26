@@ -17,7 +17,7 @@ except ImportError:
     from typing_extensions import TypeAlias
 
 from .execution import ErrorType
-from .exploration import ExplorationResult
+from .final_exploration import FinalExplorationSchema
 
 
 class ReplanFailureError(BaseModel):
@@ -48,13 +48,16 @@ class ReplanContext(BaseModel):
     Schema 4b — minimal planner-consumable input for replanning.
     failure_context MUST be complete (same semantics as ReplanRequest.failure_context).
     completed_steps MAY be empty when failure occurs before any step completed.
+
+    trigger: failure = tool/step failure path; insufficiency = evidence/gaps without tool error.
     """
     failure_context: ReplanFailureContext
     completed_steps: list[ReplanCompletedStep]
     exploration_summary: Optional[ReplanExplorationSummary] = None
+    trigger: Literal["failure", "insufficiency"] = "failure"
 
 
-PlannerInput: TypeAlias = Union[ExplorationResult, ReplanContext]
+PlannerInput: TypeAlias = Union[FinalExplorationSchema, ReplanContext]
 
 
 class ReplanOriginalPlan(BaseModel):

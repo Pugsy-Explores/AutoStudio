@@ -19,6 +19,7 @@ from .execution import (
 from .plan import (
     PlanDocument,
     PlanMetadata,
+    PlannerControllerOutput,
     PlanRisk,
     PlanSource,
     PlanStep,
@@ -26,6 +27,7 @@ from .plan import (
     PlanStepFailure,
     PlanStepLastResult,
 )
+from .plan_state import PlanState, plan_state_from_plan_document
 from .exploration import (
     ExplorationCandidate,
     ExplorationContent,
@@ -99,12 +101,15 @@ __all__ = [
     # plan
     "PlanDocument",
     "PlanMetadata",
+    "PlannerControllerOutput",
     "PlanRisk",
     "PlanSource",
     "PlanStep",
     "PlanStepExecution",
     "PlanStepFailure",
     "PlanStepLastResult",
+    "PlanState",
+    "plan_state_from_plan_document",
     # exploration
     "ExplorationCandidate",
     "ExplorationContent",

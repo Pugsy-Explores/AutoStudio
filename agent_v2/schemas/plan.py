@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .execution import ErrorType
 
@@ -75,6 +75,17 @@ class PlanMetadata(BaseModel):
     version: int = 1
 
 
+class PlannerControllerOutput(BaseModel):
+    """
+    Structured decision from the planner LLM (ModeManager interprets; no guessing).
+    action is the single source of truth for explore vs continue vs replan.
+    """
+
+    action: Literal["continue", "replan", "explore"] = "continue"
+    next_step_instruction: str = ""
+    exploration_query: str = ""
+
+
 class PlanDocument(BaseModel):
     """
     Single source of truth for execution. Defines what to do, in what order,
@@ -88,3 +99,7 @@ class PlanDocument(BaseModel):
     risks: list[PlanRisk]
     completion_criteria: list[str]
     metadata: PlanMetadata
+    controller: Optional[PlannerControllerOutput] = Field(
+        default=None,
+        description="Parsed from planner JSON when present; used by controller loop.",
+    )
