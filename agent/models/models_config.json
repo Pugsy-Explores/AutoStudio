@@ -7,15 +7,15 @@
   },
   "models": {
     "SMALL": {
-      "name": "Qwen 2B",
+      "name": "Qwen2B",
       "endpoint": "http://localhost:8082/v1/chat/completions"
     },
     "REASONING": {
-      "name": "Qwen 9B",
+      "name": "Qwen2.5-Coder-7B",
       "endpoint": "http://localhost:8081/v1/chat/completions"
     },
     "REASONING_V2": {
-      "name": "Qwen 14B",
+      "name": "Qwen14B",
       "endpoint": "http://localhost:8003/v1/chat/completions"
     }
   },
@@ -39,7 +39,16 @@
     "issue_parsing": "REASONING",
     "pr_generation": "REASONING",
     "code_review": "REASONING",
-    "code_review_summary": "REASONING"
+    "code_review_summary": "REASONING",
+    "PLANNER_V2": "REASONING",
+    "bundle_selector": "REASONING",
+    "EXPLORATION_V2": "REASONING",
+    "EXPLORATION_QUERY_INTENT": "REASONING",
+    "EXPLORATION_SCOPER": "REASONING",
+    "EXPLORATION_SELECTOR": "REASONING",
+    "EXPLORATION_SELECTOR_SINGLE": "REASONING",
+    "EXPLORATION_SELECTOR_BATCH": "REASONING",
+    "EXPLORATION_ANALYZER": "REASONING"
   },
   "reranker": {
     "gpu_model": "Qwen/Qwen3-Reranker-0.6B",
@@ -143,6 +152,56 @@
       "temperature": 0.0,
       "max_tokens": 32456,
       "request_timeout_seconds": 120
+    },
+    "PLANNER_V2": {
+      "temperature": 0.0,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "bundle_selector": {
+      "temperature": 0.0,
+      "max_tokens": 8192,
+      "request_timeout_seconds": 120
+    },
+    "EXPLORATION_V2": {
+      "temperature": 0.0,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_QUERY_INTENT": {
+      "temperature": 0.0,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_SCOPER": {
+      "temperature": 0.0,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_SELECTOR": {
+      "temperature": 0.0,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_SELECTOR_SINGLE": {
+      "temperature": 0.0,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_SELECTOR_BATCH": {
+      "temperature": 0.0,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_ANALYZER": {
+      "temperature": 0.2,
+      "max_tokens": 8000,
+      "top_p": 0.9,
+      "frequency_penalty": 0.6,
+      "presence_penalty": 0.3,
+      "top_k": 50,
+      "repetition_penalty": 1.12,
+      "request_timeout_seconds": 600
     }
   }
 }

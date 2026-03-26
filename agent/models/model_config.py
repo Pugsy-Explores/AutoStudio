@@ -29,6 +29,14 @@ _DEFAULT_TASK_MODELS = {
     "planner": "REASONING",
     "context_ranking": "REASONING",
     "bundle_selector": "SMALL",
+    # Exploration stages (phase-level + per-stage LLM calls)
+    "EXPLORATION_V2": "REASONING",
+    "EXPLORATION_QUERY_INTENT": "REASONING",
+    "EXPLORATION_SCOPER": "REASONING",
+    "EXPLORATION_SELECTOR": "REASONING",
+    "EXPLORATION_SELECTOR_SINGLE": "REASONING",
+    "EXPLORATION_SELECTOR_BATCH": "REASONING",
+    "EXPLORATION_ANALYZER": "REASONING",
 }
 
 _DEFAULT_API_KEY = "none"
@@ -279,3 +287,32 @@ MODEL_REQUEST_TIMEOUT = _parse_timeout(_env_to) if _env_to not in (None, "") els
 
 # Task/step -> model name (SMALL | REASONING); each workflow step reads this to choose which model to call
 TASK_MODELS = _loaded.get("task_models", _DEFAULT_TASK_MODELS)
+
+
+def get_model_for_task(task_name: str) -> str:
+    """
+    Return the model registry key for a task from models_config.json ``task_models``.
+
+    Single source of truth for task → model mapping; aligns with ``call_reasoning_model``:
+    unknown or missing task → ``REASONING``.
+    """
+    tn = (task_name or "").strip()
+    if not tn:
+        return "REASONING"
+    return TASK_MODELS.get(tn) or "REASONING"
+
+
+def get_prompt_model_name_for_task(task_name: str) -> str:
+    """
+    Return display model name used for prompt-version model routing.
+
+    Option B contract:
+    prompt model variants are keyed by normalized display model name from
+    ``models.<MODEL_KEY>.name`` in ``models_config.json``.
+    """
+    model_key = get_model_for_task(task_name)
+    name = (get_model_name(model_key) or "").strip()
+    if name and name.lower() != "unknown":
+        return name
+    # Safe fallback: keep deterministic routing even with malformed config.
+    return model_key

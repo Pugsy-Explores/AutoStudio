@@ -228,6 +228,11 @@ def _try_emit_llm_trace(
 
 
 _ENABLE_GUARDRAILS = os.getenv("ENABLE_PROMPT_GUARDRAILS", "1").lower() in ("1", "true", "yes")
+_MODEL_CHAT_ROLE_SUPPORT = os.getenv("MODEL_CHAT_ROLE_SUPPORT", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # Use config from same package
 from agent.models.model_config import (
@@ -415,6 +420,38 @@ def _stream_chunk_to_terminal(text: str) -> None:
     if text:
         sys.stdout.write(text)
         sys.stdout.flush()
+
+
+def _flatten_messages_with_role_tags(messages: list[dict]) -> str:
+    """
+    Deterministic fallback serialization for backends that do not support role messages.
+    Uses strict tags to reduce role confusion on small models.
+    """
+    system_parts: list[str] = []
+    user_parts: list[str] = []
+    other_parts: list[str] = []
+    for m in messages or []:
+        role = str(m.get("role") or "").strip().lower()
+        content = str(m.get("content") or "")
+        if role == "system":
+            system_parts.append(content)
+        elif role == "user":
+            user_parts.append(content)
+        else:
+            other_parts.append(content)
+    system_text = "\n\n".join(x for x in system_parts if x.strip()).strip()
+    user_text = "\n\n".join(x for x in user_parts if x.strip()).strip()
+    if other_parts:
+        user_text = (user_text + "\n\n" if user_text else "") + "\n\n".join(
+            x for x in other_parts if x.strip()
+        ).strip()
+    return f"[SYSTEM]\n{system_text}\n\n---\n\n[USER]\n{user_text}".strip()
+
+
+def _normalize_messages_for_backend(messages: list[dict]) -> list[dict]:
+    if _MODEL_CHAT_ROLE_SUPPORT:
+        return messages
+    return [{"role": "user", "content": _flatten_messages_with_role_tags(messages)}]
 
 
 def _call_chat(
@@ -683,7 +720,7 @@ def call_small_model(
         t0 = time.perf_counter()
         response = _call_chat(
             endpoint,
-            messages,
+            _normalize_messages_for_backend(messages),
             max_tokens=limit,
             temperature=temperature,
             request_timeout=params.get("request_timeout_seconds"),
@@ -748,11 +785,11 @@ def call_reasoning_model(
     Guardrails: injection check on prompt before call (always when ENABLE_PROMPT_GUARDRAILS=1).
     """
     _run_guardrails_pre(prompt)
-    from agent.models.model_config import TASK_MODELS
+    from agent.models.model_config import get_model_for_task
 
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
-    model_key = model_type or (TASK_MODELS.get(task_name or "") if task_name else None) or "REASONING"
+    model_key = model_type or get_model_for_task(task_name or "")
     endpoint = get_endpoint_for_model(model_key)
     _sys = None if system_prompt is None else (system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt)
     logger.info(
@@ -788,7 +825,7 @@ def call_reasoning_model(
         t0 = time.perf_counter()
         response = _call_chat(
             endpoint,
-            messages,
+            _normalize_messages_for_backend(messages),
             max_tokens=limit,
             temperature=temperature,
             request_timeout=params.get("request_timeout_seconds"),
@@ -831,4 +868,68 @@ def call_reasoning_model(
             logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
             raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
     logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
+    raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
+
+
+def call_reasoning_model_messages(
+    messages: list[dict],
+    *,
+    task_name: Optional[str] = None,
+    model_type: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    prompt_name: Optional[str] = None,
+) -> str:
+    """
+    Message-native reasoning model call. Keeps legacy wrappers untouched.
+    """
+    user_prompt = "\n\n".join(
+        str(m.get("content") or "")
+        for m in (messages or [])
+        if str(m.get("role") or "").lower() == "user"
+    )
+    system_prompt = "\n\n".join(
+        str(m.get("content") or "")
+        for m in (messages or [])
+        if str(m.get("role") or "").lower() == "system"
+    )
+    _run_guardrails_pre(user_prompt)
+    from agent.models.model_config import get_model_for_task
+
+    params = get_model_call_params(task_name)
+    limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
+    model_key = model_type or get_model_for_task(task_name or "")
+    endpoint = get_endpoint_for_model(model_key)
+    model_name = get_model_name(model_key)
+    base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
+    _record_model_call("reasoning", callsite=task_name or "call_reasoning_model_messages", model_name=model_name, base_url=base_url)
+    last_msg = ""
+    tn = task_name or "REASONING"
+    backend_messages = _normalize_messages_for_backend(messages)
+    for attempt in range(_GUARDRAIL_MAX_ATTEMPTS):
+        temperature = 0 if attempt > 0 else params.get("temperature")
+        t0 = time.perf_counter()
+        response = _call_chat(
+            endpoint,
+            backend_messages,
+            max_tokens=limit,
+            temperature=temperature,
+            request_timeout=params.get("request_timeout_seconds"),
+            frequency_penalty=params.get("frequency_penalty"),
+            presence_penalty=params.get("presence_penalty"),
+        )
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        valid, msg = _run_guardrails_post(prompt_name, response, user_prompt)
+        if valid:
+            _try_emit_llm_trace(
+                task_name=tn,
+                prompt=user_prompt,
+                system_prompt=system_prompt or None,
+                output_text=response,
+                latency_ms=latency_ms,
+                model_name=model_name,
+            )
+            return response
+        last_msg = msg or "unknown"
+        if attempt >= _GUARDRAIL_MAX_ATTEMPTS - 1:
+            raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
     raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")

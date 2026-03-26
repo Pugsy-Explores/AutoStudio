@@ -23,6 +23,11 @@ _PROMPT_NAMES = [
     "edit_proposal_user",
     "retry_planner_user",
     "react_action",
+    "exploration.query_intent_parser",
+    "exploration.scoper",
+    "exploration.selector.single",
+    "exploration.selector.batch",
+    "exploration.analyzer",
 ]
 
 
@@ -159,11 +164,16 @@ Produce retry hints as JSON."""
 
 
 def test_react_action_prompt_variables():
-    """react_action prompt substitutes instruction and react_history correctly."""
+    """react_action prompt substitutes template fields correctly."""
     registry = get_registry()
     rendered = registry.get_instructions(
         "react_action",
-        variables={"instruction": "Fix the bug in foo.py", "react_history": "(none yet)"},
+        variables={
+            "instruction": "Fix the bug in foo.py",
+            "react_history": "(none yet)",
+            "react_task_section": "## TASK TYPE (test)\n\nRead-only.",
+            "react_json_action_list": "search|open_file|finish",
+        },
     )
     assert "Fix the bug in foo.py" in rendered
     assert "(none yet)" in rendered
