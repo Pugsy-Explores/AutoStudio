@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +30,11 @@ from agent_v2.config import (
     EXPLORATION_ROUTING_COMPLEX_MAX_LINES,
     EXPLORATION_CONTEXT_MAX_TOTAL_LINES,
     EXPLORATION_CONTEXT_TOP_K_RANGES,
+    ENABLE_GAP_DRIVEN_EXPANSION,
+    ENABLE_GAP_QUALITY_FILTER,
+    ENABLE_REFINE_COOLDOWN,
+    ENABLE_UTILITY_STOP,
+    EXPLORATION_UTILITY_NO_IMPROVEMENT_STREAK,
     get_project_root,
 )
 from agent_v2.observability.langfuse_helpers import lf_span_end_output
@@ -169,6 +175,122 @@ class ExplorationEngineV2:
     """Deterministic staged exploration state machine."""
 
     MAX_SNIPPET_CHARS: int = 600  # Phase 12.6.E safety cap (deterministic, not heuristic)
+    _GENERIC_GAP_MARKERS: tuple[str, ...] = (
+        "more context",
+        "need more context",
+        "insufficient context",
+        "missing details",
+        "unclear",
+        "unknown",
+        "more code",
+    )
+
+    @classmethod
+    def _classify_gap_category(cls, gap: str) -> str:
+        """Deterministic gap category for directed expansion (substring rules)."""
+        low = (gap or "").lower()
+        if "callee" in low or "callees" in low:
+            return "callee"
+        if "caller" in low or "call site" in low or "who calls" in low:
+            return "caller"
+        if "defin" in low or "definition" in low or "where defined" in low or "locate" in low:
+            return "definition"
+        if "config" in low or "setting" in low or " env" in low or " flag" in low:
+            return "config"
+        if (
+            "usage" in low
+            or " used" in low
+            or low.startswith("used ")
+            or "reference" in low
+            or "where used" in low
+        ):
+            return "usage"
+        if "flow" in low or "sequence" in low or "pipeline" in low:
+            return "flow"
+        if cls._gap_contains_probable_symbol(low):
+            return "usage_symbol_fallback"
+        return "none"
+
+    _SYMBOL_FALLBACK_STOP: frozenset[str] = frozenset(
+        {
+            "missing",
+            "need",
+            "more",
+            "the",
+            "for",
+            "and",
+            "chain",
+            "path",
+            "context",
+            "details",
+            "information",
+            "insufficient",
+            "unclear",
+            "unknown",
+            "some",
+            "another",
+            "code",
+            "logic",
+            "how",
+            "what",
+            "when",
+            "where",
+            "this",
+            "that",
+        }
+    )
+
+    @classmethod
+    def _gap_contains_probable_symbol(cls, low: str) -> bool:
+        for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", low):
+            if len(tok) >= 3 and tok.lower() not in cls._SYMBOL_FALLBACK_STOP:
+                return True
+        return False
+
+    @classmethod
+    def _extract_inject_keywords(cls, gap: str, category: str) -> list[str]:
+        """1–2 keywords merged into discovery text channel (engine-local)."""
+        out: list[str] = []
+        low = (gap or "").lower()
+        if category == "definition":
+            out.append("definition")
+        elif category == "config":
+            out.append("config")
+        elif category in ("usage", "usage_symbol_fallback"):
+            out.append("usage")
+        stop = frozenset(
+            {
+                "missing",
+                "need",
+                "more",
+                "the",
+                "for",
+                "and",
+                "chain",
+                "path",
+                "context",
+                "details",
+            }
+        )
+        for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", gap or ""):
+            tl = tok.lower()
+            if len(tok) >= 2 and tl not in stop:
+                out.append(tok)
+        return list(dict.fromkeys(out))[:2]
+
+    @staticmethod
+    def _merge_expand_direction(
+        prev: str | None, new: str | None
+    ) -> str | None:
+        if not new:
+            return prev
+        if not prev:
+            return new
+        if prev == new:
+            return prev
+        if prev in ("callers", "callees") and new in ("callers", "callees"):
+            return "both"
+        return new
 
     def __init__(
         self,
@@ -505,6 +627,20 @@ class ExplorationEngineV2:
                         lf_exploration_parent=exploration_outer,
                     )
                     decision = self._decision_mapper.to_exploration_decision(understanding)
+                    decision = self._apply_gap_driven_decision(
+                        decision,
+                        understanding,
+                        ex_state,
+                        exploration_outer=exploration_outer,
+                    )
+                    utility_stop, utility_reason = self._update_utility_and_should_stop(
+                        understanding,
+                        ex_state,
+                        exploration_outer=exploration_outer,
+                    )
+                    if utility_stop:
+                        termination_reason = utility_reason
+                        break
                 finally:
                     if obs is not None:
                         obs.current_span = None
@@ -534,6 +670,13 @@ class ExplorationEngineV2:
                 break
 
             action = self._next_action(decision)
+            action = self._apply_refine_cooldown(
+                action,
+                decision,
+                target,
+                ex_state,
+                exploration_outer=exploration_outer,
+            )
             if self._should_expand(action, decision, target, ex_state):
                 expand_span: Any = None
                 if exploration_outer is not None and hasattr(exploration_outer, "span"):
@@ -547,6 +690,8 @@ class ExplorationEngineV2:
                         )
                     except Exception:
                         expand_span = None
+                dir_hint = getattr(ex_state, "expand_direction_hint", None)
+                skip_files, skip_symbols = self._expand_skip_sets(ex_state)
                 try:
                     expanded, expand_result = self._graph_expander.expand(
                         target.symbol or "",
@@ -554,6 +699,9 @@ class ExplorationEngineV2:
                         state,
                         max_nodes=EXPLORATION_EXPAND_MAX_NODES,
                         max_depth=EXPLORATION_EXPAND_MAX_DEPTH,
+                        direction_hint=dir_hint,
+                        skip_files=skip_files,
+                        skip_symbols=skip_symbols,
                     )
                 except Exception as exc:
                     lf_span_end_output(
@@ -561,6 +709,8 @@ class ExplorationEngineV2:
                         output={"tool": "expand", "error": str(exc)[:2000]},
                     )
                     raise
+                gk = (getattr(ex_state, "gap_bundle_key_for_expansion", None) or "").strip().lower()
+                expanded = self._prefilter_expansion_targets(ex_state, expanded, gk)
                 lf_span_end_output(
                     expand_span,
                     output=_expand_tool_langfuse_output(expanded, expand_result),
@@ -569,10 +719,15 @@ class ExplorationEngineV2:
                 if expanded:
                     ex_state.relationships_found = True
                     self._enqueue_targets(ex_state, expanded)
+                    ex_state.expansion_depth += 1
+                ex_state.refine_used_last_step = False
+                ex_state.expand_direction_hint = None
+                ex_state.gap_bundle_key_for_expansion = ""
                 continue
 
             if self._should_refine(action, decision, ex_state):
                 ex_state.backtracks += 1
+                ex_state.refine_used_last_step = True
                 candidates, discovery_records, _ = self._run_discovery_traced(
                     exploration_outer,
                     "refine",
@@ -705,6 +860,12 @@ class ExplorationEngineV2:
 
         symbol_queries = list(dict.fromkeys(intent.symbols))[:DISCOVERY_SYMBOL_CAP]
         text_queries = list(dict.fromkeys(intent.keywords))[:DISCOVERY_TEXT_CAP]
+        inject_kw = list(dict.fromkeys(getattr(ex_state, "discovery_keyword_inject", None) or []))[
+            :2
+        ]
+        if inject_kw:
+            text_queries = list(dict.fromkeys(text_queries + inject_kw))[:DISCOVERY_TEXT_CAP]
+            ex_state.discovery_keyword_inject = []
         regex_src = getattr(intent, "regex_patterns", None)
         if not isinstance(regex_src, list):
             regex_src = []
@@ -954,6 +1115,48 @@ class ExplorationEngineV2:
                 return False
         return True
 
+    def _expand_skip_sets(self, ex_state: ExplorationState) -> tuple[set[str], set[str]]:
+        """Skip files/symbols already seen or pending before graph expansion."""
+        base_root = get_project_root()
+        skip_files: set[str] = set(ex_state.seen_files)
+        skip_symbols: set[str] = set(ex_state.seen_symbols)
+        for fp, _sym in ex_state.explored_location_keys:
+            if fp:
+                skip_files.add(fp)
+        for t in ex_state.pending_targets:
+            canon = self._canonical_path(t.file_path, base_root=base_root)
+            if canon:
+                skip_files.add(canon)
+            if t.symbol and str(t.symbol).strip():
+                skip_symbols.add(str(t.symbol).strip())
+        return skip_files, skip_symbols
+
+    def _prefilter_expansion_targets(
+        self,
+        ex_state: ExplorationState,
+        targets: list[ExplorationTarget],
+        gap_bundle_key: str,
+    ) -> list[ExplorationTarget]:
+        """Drop duplicates before enqueue; record (gap, file, symbol) attempts."""
+        base_root = get_project_root()
+        gk = (gap_bundle_key or "").strip().lower()
+        out: list[ExplorationTarget] = []
+        for t in targets:
+            canon = self._canonical_path(t.file_path, base_root=base_root)
+            sym = (t.symbol or "").strip()
+            if not self._may_enqueue(ex_state, canon, t.symbol):
+                continue
+            tri = (gk, canon, sym)
+            if gk and tri in ex_state.attempted_gap_targets:
+                continue
+            if gk:
+                ex_state.attempted_gap_targets.add(tri)
+            if canon and canon != t.file_path:
+                out.append(t.model_copy(update={"file_path": canon}))
+            else:
+                out.append(t)
+        return out
+
     @staticmethod
     def _definition_like(instruction: str) -> bool:
         """
@@ -970,12 +1173,251 @@ class ExplorationEngineV2:
         )
 
     def _enqueue_targets(self, ex_state: ExplorationState, targets: list[ExplorationTarget]) -> None:
-        for target in targets:
+        scored: list[tuple[float, int, ExplorationTarget]] = []
+        for idx, target in enumerate(targets):
+            edge_hash = self._edge_hash_for_target(ex_state.current_target, target)
+            if edge_hash in ex_state.seen_relation_edges:
+                continue
             if not self._may_enqueue(ex_state, target.file_path, target.symbol):
                 continue
+            score = self._target_priority_score(target, ex_state)
+            scored.append((score, idx, target))
+            ex_state.seen_relation_edges.add(edge_hash)
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        for _score, _idx, target in scored:
             key = self._make_location_key(target.file_path, target.symbol)
-            canon = key[0]
-            ex_state.pending_targets.append(target.model_copy(update={"file_path": canon}))
+            ex_state.pending_targets.append(target.model_copy(update={"file_path": key[0]}))
+
+    def _apply_gap_driven_decision(
+        self,
+        decision: ExplorationDecision,
+        understanding: Any,
+        ex_state: ExplorationState,
+        *,
+        exploration_outer: Any = None,
+    ) -> ExplorationDecision:
+        if not ENABLE_GAP_DRIVEN_EXPANSION:
+            return decision
+        gaps = getattr(understanding, "knowledge_gaps", None) or []
+        if not isinstance(gaps, list):
+            return decision
+        accepted: list[str] = []
+        rejected: list[dict[str, str]] = []
+        for gap in gaps:
+            gap_s = str(gap or "").strip()
+            if not gap_s:
+                continue
+            normalized = gap_s.lower()
+            if ENABLE_GAP_QUALITY_FILTER and normalized in ex_state.attempted_gaps:
+                rejected.append({"gap": gap_s, "reason": "already_attempted"})
+                continue
+            if ENABLE_GAP_QUALITY_FILTER and self._is_generic_gap(normalized):
+                rejected.append({"gap": gap_s, "reason": "too_generic"})
+                continue
+            accepted.append(gap_s)
+        if exploration_outer is not None and hasattr(exploration_outer, "event"):
+            try:
+                exploration_outer.event(
+                    name="exploration.gap_filter",
+                    metadata={
+                        "accepted_count": len(accepted),
+                        "rejected": rejected[:10],
+                    },
+                )
+            except Exception:
+                pass
+        if not accepted:
+            return decision
+        ex_state.attempted_gaps.update(g.lower() for g in accepted)
+        ex_state.gap_expand_attempts += 1
+        ex_state.last_expand_was_gap_driven = False
+        ex_state.expand_direction_hint = None
+        ex_state.discovery_keyword_inject = []
+        ex_state.gap_bundle_key_for_expansion = ""
+
+        bundle_key = "|".join(sorted(g[:200].lower() for g in accepted))[:500]
+        ex_state.gap_bundle_key_for_expansion = bundle_key
+
+        needs = list(dict.fromkeys(list(decision.needs or [])))
+        inject_keywords: list[str] = []
+        any_refine = False
+        direction: str | None = None
+
+        for gap in accepted:
+            cat = self._classify_gap_category(gap)
+            if cat in ("usage", "definition", "config", "usage_symbol_fallback"):
+                any_refine = True
+                inject_keywords.extend(self._extract_inject_keywords(gap, cat))
+            elif cat == "caller":
+                if "callers" not in needs:
+                    needs.append("callers")
+                direction = self._merge_expand_direction(direction, "callers")
+            elif cat == "callee":
+                if "callees" not in needs:
+                    needs.append("callees")
+                direction = self._merge_expand_direction(direction, "callees")
+            elif cat == "flow":
+                if "callers" not in needs:
+                    needs.append("callers")
+                if "callees" not in needs:
+                    needs.append("callees")
+                direction = self._merge_expand_direction(direction, "both")
+            elif cat == "none":
+                # Legacy substring pass for callers/callees/definition
+                low = gap.lower()
+                if "caller" in low and "callers" not in needs:
+                    needs.append("callers")
+                    direction = self._merge_expand_direction(direction, "callers")
+                if "callee" in low and "callees" not in needs:
+                    needs.append("callees")
+                    direction = self._merge_expand_direction(direction, "callees")
+                if "defin" in low and "definition" not in needs:
+                    needs.append("definition")
+                if not any(
+                    x in low for x in ("caller", "callee", "defin")
+                ):
+                    if "more_code" not in needs:
+                        needs.append("more_code")
+
+        inject_keywords = list(dict.fromkeys(inject_keywords))[:2]
+
+        if any_refine:
+            ex_state.discovery_keyword_inject = inject_keywords
+            ex_state.last_expand_was_gap_driven = False
+            return decision.model_copy(
+                update={"next_action": "refine", "needs": needs or ["more_code"]}
+            )
+
+        if not needs:
+            needs = ["more_code"]
+        elif "more_code" not in needs and not (
+            {"callers", "callees"} & set(needs)
+        ):
+            needs.append("more_code")
+
+        ex_state.expand_direction_hint = direction
+        ex_state.last_expand_was_gap_driven = True
+        return decision.model_copy(update={"next_action": "expand", "needs": needs})
+
+    def _apply_refine_cooldown(
+        self,
+        action: str,
+        decision: ExplorationDecision,
+        target: ExplorationTarget,
+        ex_state: ExplorationState,
+        *,
+        exploration_outer: Any = None,
+    ) -> str:
+        if not ENABLE_REFINE_COOLDOWN:
+            return action
+        if not ex_state.refine_used_last_step:
+            return action
+        if action != "refine":
+            return action
+        if not self._should_expand("expand", decision, target, ex_state):
+            return action
+        if target.symbol:
+            ex_state.expanded_symbols.discard(target.symbol)
+        if exploration_outer is not None and hasattr(exploration_outer, "event"):
+            try:
+                exploration_outer.event(
+                    name="exploration.refine_cooldown",
+                    metadata={"forced_action": "expand"},
+                )
+            except Exception:
+                pass
+        return "expand"
+
+    def _update_utility_and_should_stop(
+        self,
+        understanding: Any,
+        ex_state: ExplorationState,
+        *,
+        exploration_outer: Any = None,
+    ) -> tuple[bool, str]:
+        if not ENABLE_UTILITY_STOP:
+            return False, ""
+        relevance = str(getattr(understanding, "relevance", "medium") or "medium")
+        gaps = getattr(understanding, "knowledge_gaps", None) or []
+        actionable_gaps = [g for g in gaps if str(g or "").strip()]
+        signature = (
+            bool(getattr(understanding, "sufficient", False)),
+            relevance,
+            len(actionable_gaps),
+        )
+        prev = ex_state.last_improvement_signature
+        improved = (
+            prev is None
+            or (not prev[0] and signature[0])
+            or self._relevance_rank(signature[1]) > self._relevance_rank(prev[1])
+            or signature[2] < prev[2]
+        )
+        gap_reduced = prev is not None and signature[2] < prev[2]
+        gap_to_success = False
+        if ex_state.last_expand_was_gap_driven and gap_reduced:
+            ex_state.gap_expand_successes += 1
+            gap_to_success = True
+        # Metric-only latch reset: expansion attribution is single-step.
+        ex_state.last_expand_was_gap_driven = False
+        if improved:
+            ex_state.no_improvement_streak = 0
+        else:
+            ex_state.no_improvement_streak += 1
+        ex_state.last_improvement_signature = signature
+        if exploration_outer is not None and hasattr(exploration_outer, "event"):
+            try:
+                exploration_outer.event(
+                    name="exploration.utility_signal",
+                    metadata={
+                        "improved": improved,
+                        "gap_reduced": gap_reduced,
+                        "gap_to_successful_expansion": gap_to_success,
+                        "gap_expand_attempts": ex_state.gap_expand_attempts,
+                        "gap_expand_successes": ex_state.gap_expand_successes,
+                        "no_improvement_streak": ex_state.no_improvement_streak,
+                        "signature": {
+                            "sufficient": signature[0],
+                            "relevance": signature[1],
+                            "actionable_gaps": signature[2],
+                        },
+                    },
+                )
+            except Exception:
+                pass
+        if ex_state.no_improvement_streak >= EXPLORATION_UTILITY_NO_IMPROVEMENT_STREAK:
+            return True, "no_improvement_streak"
+        return False, ""
+
+    @classmethod
+    def _is_generic_gap(cls, normalized_gap: str) -> bool:
+        if len(normalized_gap) < 8:
+            return True
+        return any(marker in normalized_gap for marker in cls._GENERIC_GAP_MARKERS)
+
+    @staticmethod
+    def _target_priority_score(target: ExplorationTarget, ex_state: ExplorationState) -> float:
+        score = 0.0
+        if target.symbol and target.symbol not in ex_state.seen_symbols:
+            score += 1.0
+        if target.file_path not in ex_state.seen_files:
+            score += 1.0
+        if target.source == "expansion":
+            score += 0.5
+        return score
+
+    @staticmethod
+    def _edge_hash_for_target(current: ExplorationTarget | None, nxt: ExplorationTarget) -> str:
+        src = (current.file_path, current.symbol or "") if current is not None else ("", "")
+        dst = (nxt.file_path, nxt.symbol or "")
+        return f"{src[0]}::{src[1]}=>{dst[0]}::{dst[1]}"
+
+    @staticmethod
+    def _relevance_rank(value: str) -> int:
+        if value == "high":
+            return 3
+        if value == "medium":
+            return 2
+        return 1
 
     @staticmethod
     def _merge_candidates(
@@ -1037,6 +1479,8 @@ class ExplorationEngineV2:
         if not wants_expand:
             return False
         if not target.symbol:
+            return False
+        if ex_state.expansion_depth >= EXPLORATION_EXPAND_MAX_DEPTH:
             return False
         if target.symbol in ex_state.expanded_symbols:
             return False

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from agent_v2.config import EXPLORATION_EXPAND_MAX_DEPTH, EXPLORATION_EXPAND_MAX_NODES
@@ -28,6 +29,9 @@ class GraphExpander:
         *,
         max_nodes: int = EXPLORATION_EXPAND_MAX_NODES,
         max_depth: int = EXPLORATION_EXPAND_MAX_DEPTH,
+        direction_hint: str | None = None,
+        skip_files: set[str] | None = None,
+        skip_symbols: set[str] | None = None,
     ) -> tuple[list[ExplorationTarget], ExecutionResult]:
         if not symbol.strip():
             return [], self._make_result("empty symbol", {}, success=False)
@@ -39,12 +43,39 @@ class GraphExpander:
         ctx = getattr(state, "context", None)
         if isinstance(ctx, dict):
             project_root = str(ctx.get("project_root") or "")
-        graph_rows, warnings = fetch_graph(symbol, project_root=project_root, top_k=max_nodes)
+        graph_rows, warnings = fetch_graph(symbol, project_root=project_root, top_k=max_nodes * 2)
+        skip_files = skip_files or set()
+        skip_symbols = skip_symbols or set()
+
+        def _norm_file(fp: str) -> str:
+            raw = str(fp or "").strip()
+            if not raw:
+                return ""
+            p = Path(raw)
+            if not p.is_absolute() and project_root:
+                p = Path(project_root) / raw
+            try:
+                return str(p.resolve())
+            except Exception:
+                return str(p)
+
         if graph_rows:
+            filtered_rows: list[dict] = []
+            for row in graph_rows:
+                if not isinstance(row, dict):
+                    continue
+                fp = _norm_file(str(row.get("file") or ""))
+                sym = str(row.get("symbol") or "").strip() if row.get("symbol") else ""
+                if fp and fp in skip_files:
+                    continue
+                if sym and sym in skip_symbols:
+                    continue
+                filtered_rows.append(row)
+
             callers: list[ExplorationTarget] = []
             callees: list[ExplorationTarget] = []
             related: list[ExplorationTarget] = []
-            for row in graph_rows[:max_nodes]:
+            for row in filtered_rows[: max_nodes * 2]:
                 target = ExplorationTarget(
                     file_path=str(row.get("file") or ""),
                     symbol=(str(row.get("symbol")).strip() if row.get("symbol") else None),
@@ -58,17 +89,36 @@ class GraphExpander:
                     callees.append(target)
                 else:
                     related.append(target)
+
+            hint = (direction_hint or "").strip().lower() or None
+            if hint == "callers":
+                combined = list(callers)
+                if not combined:
+                    combined = list(related)
+            elif hint == "callees":
+                combined = list(callees)
+                if not combined:
+                    combined = list(related)
+            elif hint == "both":
+                combined = (callers + callees)[:max_nodes]
+                if not combined:
+                    combined = list(related)
+            else:
+                combined = (callers + callees + related)[:max_nodes]
+
+            combined = combined[:max_nodes]
             result_data = {
-                "results": [t.model_dump(mode="json") for t in (callers + callees + related)[:max_nodes]],
+                "results": [t.model_dump(mode="json") for t in combined],
                 "callers": [t.model_dump(mode="json") for t in callers[:max_nodes]],
                 "callees": [t.model_dump(mode="json") for t in callees[:max_nodes]],
                 "related": [t.model_dump(mode="json") for t in related[:max_nodes]],
                 "warnings": warnings,
                 "max_depth": max_depth,
                 "anchor_file": file_path,
+                "direction_hint": hint,
             }
-            return (callers + callees + related)[:max_nodes], self._make_result(
-                f"Graph expansion returned {len(result_data['results'])} target(s) for {symbol}",
+            return combined, self._make_result(
+                f"Graph expansion returned {len(combined)} target(s) for {symbol}",
                 result_data,
                 success=True,
             )
@@ -85,7 +135,24 @@ class GraphExpander:
         }
         result = self._dispatcher.execute(step, state)
         data = result.output.data if result.output else {}
-        return self._extract_targets(data)[:max_nodes], result
+        raw_targets = self._extract_targets(data)
+        out: list[ExplorationTarget] = []
+        for t in raw_targets[:max_nodes]:
+            fp = _norm_file(t.file_path)
+            sym = (t.symbol or "").strip()
+            if fp and fp in skip_files:
+                continue
+            if sym and sym in skip_symbols:
+                continue
+            out.append(
+                ExplorationTarget(
+                    file_path=fp or t.file_path,
+                    symbol=t.symbol,
+                    line=t.line,
+                    source="expansion",
+                )
+            )
+        return out[:max_nodes], result
 
     @staticmethod
     def _extract_targets(data: dict) -> list[ExplorationTarget]:

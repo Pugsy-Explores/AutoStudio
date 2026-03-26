@@ -10,6 +10,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+ExpandDirectionHint = Literal["callers", "callees", "both"]
+
 
 FailureReason = Literal[
     "no_results",
@@ -221,3 +223,20 @@ class ExplorationState(BaseModel):
     primary_symbol: Optional[str] = None
     relationships_found: bool = False
     last_decision: Optional[str] = None
+    refine_used_last_step: bool = False
+    no_improvement_streak: int = 0
+    last_improvement_signature: Optional[tuple[bool, str, int]] = None
+    attempted_gaps: set[str] = Field(default_factory=set)
+    seen_relation_edges: set[str] = Field(default_factory=set)
+    gap_expand_attempts: int = 0
+    gap_expand_successes: int = 0
+    last_expand_was_gap_driven: bool = False
+    # Directed expansion / multi-hop depth (additive; backward compatible defaults)
+    expansion_depth: int = 0
+    expand_direction_hint: Optional[ExpandDirectionHint] = None
+    # (normalized gap bundle key, canonical file, symbol) — avoid repeat gap→target expansion
+    attempted_gap_targets: set[tuple[str, str, str]] = Field(default_factory=set)
+    # Merged into discovery text queries for refine-only gap paths (engine-local; parser unchanged)
+    discovery_keyword_inject: list[str] = Field(default_factory=list)
+    # Key for attempted_gap_targets and prefilter (set during gap-driven decision; cleared after expand)
+    gap_bundle_key_for_expansion: str = ""
