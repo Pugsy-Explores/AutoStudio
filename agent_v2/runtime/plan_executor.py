@@ -160,7 +160,7 @@ class PlanArgumentGeneratorProtocol(Protocol):
 
 
 RunEvent = Union[
-    tuple[str],  # ("completed",) | ("deadlock",) | ("aborted",)
+    tuple[str],  # ("completed",) | ("deadlock",) | ("aborted",) | ("progress",)
     tuple[str, PlanStep, ExecutionResult],  # ("failed", step, result)
 ]
 
@@ -382,6 +382,130 @@ class PlanExecutor:
 
         self._emit_deadlock_observation(state)
         return ("deadlock",)
+
+    def _execute_next_single_step(self, plan: PlanDocument, state: Any) -> RunEvent:
+        """
+        Run at most one runnable non-completed step (or finish). Returns ("progress",) after
+        a successful non-terminal tool step. No Replanner — failures surface to ModeManager.
+        """
+        ordered = sorted(plan.steps, key=lambda s: s.index)
+        abort = self._guard_executor_limits(state)
+        if abort:
+            _LOG.error("PlanExecutor scheduling abort: %s", abort)
+            self._metadata_dict(state)["plan_executor_abort"] = abort
+            self._emit_executor_abort_observation(state, abort)
+            return ("aborted",)
+
+        for step in ordered:
+            if step.execution.status == "completed":
+                continue
+            if not self._can_execute(step, plan):
+                continue
+
+            if not isinstance(step, PlanStep):
+                raise TypeError(f"Expected PlanStep, got {type(step).__name__}")
+
+            state.plan_index = step.index
+
+            if step.action == "finish":
+                lf_fin = self._metadata_dict(state).get("langfuse_trace")
+                if lf_fin is not None and hasattr(lf_fin, "span"):
+                    try:
+                        sp = lf_fin.span(
+                            name="executor.step",
+                            input={
+                                "step_index": step.index,
+                                "action": step.action,
+                                "step_id": step.step_id,
+                                "goal": step.goal,
+                            },
+                        )
+                        sp.end(
+                            output={
+                                "success": True,
+                                "summary": "Finished per plan.",
+                                "error": None,
+                            }
+                        )
+                    except Exception:
+                        pass
+                self._mark_step_completed_no_dispatch(step, success=True, summary="Finished per plan.")
+                fin = ExecutionResult(
+                    step_id=step.step_id,
+                    success=True,
+                    status="success",
+                    output=ExecutionOutput(summary="Finished per plan.", data={}),
+                    error=None,
+                    metadata=ExecutionMetadata(
+                        tool_name="finish", duration_ms=0, timestamp=self._utc_now()
+                    ),
+                )
+                self._ensure_execution_result_contract(fin, step.step_id)
+                self.trace_emitter.record_step(step, fin, step.index)
+                self._update_state(state, step, "Finished per plan.")
+                return ("completed",)
+
+            result = self._run_with_retry(step, state)
+            self._ensure_execution_result_contract(result, step.step_id)
+            self.trace_emitter.record_step(step, result, step.index)
+
+            obs = ""
+            if result.output is not None:
+                obs = str(result.output.summary or "")
+            self._update_state(state, step, obs)
+
+            if not result.success:
+                return ("failed", step, result)
+            return ("progress",)
+
+        self._emit_deadlock_observation(state)
+        return ("deadlock",)
+
+    def run_one_step(
+        self,
+        plan: PlanDocument,
+        state: Any,
+        *,
+        trace_emitter: TraceEmitter | None = None,
+    ) -> dict[str, Any]:
+        """
+        Execute exactly one next runnable plan step (including per-step retries).
+        Does not invoke Replanner — ModeManager owns closed-loop replanning.
+        """
+        if not isinstance(plan, PlanDocument):
+            raise TypeError(f"PlanExecutor.run_one_step expected PlanDocument, got {type(plan).__name__}")
+        if getattr(state, "current_plan", None) is None:
+            raise ValueError(
+                "PlanExecutor.run_one_step requires state.current_plan before execution "
+                "(ModeManager must attach the plan first)."
+            )
+
+        self.trace_emitter = trace_emitter if trace_emitter is not None else self._trace_emitter_factory()
+        self._pin_active_plan(state, plan)
+        self._run_start_mono = time.perf_counter()
+        md0 = self._metadata_dict(state)
+        md0["executor_dispatch_count"] = int(md0.get("executor_dispatch_count") or 0)
+        md0.pop("plan_executor_abort", None)
+
+        event = self._execute_next_single_step(plan, state)
+        if event[0] == "completed":
+            return self._finalize_run(state, plan, "success")
+        if event[0] in ("deadlock", "aborted"):
+            return self._finalize_run(state, plan, "failed")
+        if event[0] == "failed":
+            _, failed_step, result = event
+            md = self._metadata_dict(state)
+            md["plan_executor_status"] = "failed_step"
+            md["last_failed_step_id"] = failed_step.step_id
+            return {
+                "status": "failed_step",
+                "failed_step": failed_step,
+                "result": result,
+                "state": state,
+            }
+        if event[0] == "progress":
+            return {"status": "progress", "state": state}
+        raise RuntimeError(f"Unexpected run_one_step event: {event!r}")
 
     def _emit_deadlock_observation(self, state: Any) -> None:
         md = self._metadata_dict(state)

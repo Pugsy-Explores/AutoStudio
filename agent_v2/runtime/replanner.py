@@ -148,6 +148,7 @@ class Replanner:
             failure_context=request.failure_context,
             completed_steps=list(request.execution_context.completed_steps),
             exploration_summary=exploration_summary,
+            trigger="failure",
         )
 
     def replan(
@@ -242,6 +243,22 @@ def _exploration_context_from_state(state: Any) -> ReplanExplorationContext:
         key_findings=[str(x) for x in kf],
         knowledge_gaps=[str(x) for x in kg],
     )
+
+
+def validate_completed_steps_immutable(old: PlanDocument, new: PlanDocument) -> None:
+    """
+    Completed steps must not change goal/action/inputs. Planner may only append or edit pending steps.
+    """
+    old_by_id = {s.step_id: s for s in old.steps}
+    for ns in new.steps:
+        o = old_by_id.get(ns.step_id)
+        if o is None or o.execution.status != "completed":
+            continue
+        if (o.goal, o.action, o.inputs) != (ns.goal, ns.action, ns.inputs):
+            raise ValueError(
+                f"Immutable completed step {ns.step_id!r} must not change goal/action/inputs "
+                f"(old action={o.action!r}, new action={ns.action!r})"
+            )
 
 
 def merge_preserved_completed_steps(old: PlanDocument, new: PlanDocument) -> PlanDocument:
