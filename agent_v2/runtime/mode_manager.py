@@ -149,7 +149,7 @@ class ModeManager:
         try:
             exploration = self.exploration_runner.run(state.instruction, obs=obs, langfuse_trace=lf)
             state.exploration_result = exploration
-            state.context["exploration_summary_text"] = exploration.summary.overall
+            state.context["exploration_summary_text"] = exploration.exploration_summary.overall
             state.context["exploration_result"] = exploration.model_dump(mode="json")
             if not _exploration_is_complete(exploration):
                 raise RuntimeError(
@@ -200,7 +200,7 @@ class ModeManager:
         try:
             exploration = self.exploration_runner.run(state.instruction, obs=obs, langfuse_trace=lf)
             state.exploration_result = exploration
-            state.context["exploration_summary_text"] = exploration.summary.overall
+            state.context["exploration_summary_text"] = exploration.exploration_summary.overall
             state.context["exploration_result"] = exploration.model_dump(mode="json")
             if not _exploration_is_complete(exploration):
                 raise RuntimeError(
@@ -237,7 +237,7 @@ class ModeManager:
         try:
             exploration = self.exploration_runner.run(state.instruction, obs=obs, langfuse_trace=lf)
             state.exploration_result = exploration
-            state.context["exploration_summary_text"] = exploration.summary.overall
+            state.context["exploration_summary_text"] = exploration.exploration_summary.overall
             state.context["exploration_result"] = exploration.model_dump(mode="json")
             if not _exploration_is_complete(exploration):
                 raise RuntimeError(

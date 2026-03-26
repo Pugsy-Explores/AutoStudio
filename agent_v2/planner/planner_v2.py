@@ -27,7 +27,7 @@ from agent_v2.schemas.plan import (
 )
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.replan import PlannerInput, ReplanContext
-from agent_v2.schemas.exploration import ExplorationResult
+from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
     langfuse_generation_end_with_usage,
@@ -253,7 +253,7 @@ class PlannerV2:
     ) -> str:
         if isinstance(planner_input, ReplanContext):
             return self._build_replan_prompt(instruction, planner_input, deep, task_mode=task_mode)
-        if isinstance(planner_input, ExplorationResult):
+        if isinstance(planner_input, FinalExplorationSchema):
             return self._build_exploration_prompt(instruction, planner_input, deep, task_mode=task_mode)
         raise TypeError(f"Unsupported planner_input type: {type(planner_input)!r}")
 
@@ -291,14 +291,15 @@ class PlannerV2:
     def _build_exploration_prompt(
         self,
         instruction: str,
-        exploration: ExplorationResult,
+        exploration: FinalExplorationSchema,
         deep: bool,
         task_mode: Optional[str] = None,
     ) -> str:
-        key_findings = "\n".join(f"- {k}" for k in exploration.summary.key_findings) or "(none)"
-        knowledge_gaps = "\n".join(f"- {g}" for g in exploration.summary.knowledge_gaps) or "(none)"
+        es = exploration.exploration_summary
+        key_findings = "\n".join(f"- {k}" for k in es.key_findings) or "(none)"
+        knowledge_gaps = "\n".join(f"- {g}" for g in es.knowledge_gaps) or "(none)"
         sources_lines = "\n".join(
-            f"- {item.source.ref} ({item.type})" for item in exploration.items
+            f"- {item.source.ref} ({item.type})" for item in exploration.evidence
         ) or "(no exploration items)"
         md = getattr(exploration, "metadata", None)
         source_summary = getattr(md, "source_summary", None) if md is not None else None
@@ -310,7 +311,7 @@ class PlannerV2:
             ss_symbol = ss_line = ss_head = 0
 
         item_lines: list[str] = []
-        for item in exploration.items:
+        for item in exploration.evidence:
             ref = item.source.ref
             rs = item.read_source or "unknown"
             snippet = (item.snippet or "").strip()
@@ -346,7 +347,7 @@ TASK:
 {instruction}
 
 EXPLORATION SUMMARY:
-{exploration.summary.overall}
+{exploration.exploration_summary.overall}
 
 EXPLORATION SOURCES:
 - symbol reads: {ss_symbol}

@@ -2,7 +2,7 @@
 Phase 3 — Exploration Runner.
 
 Bounded, read-only intelligence stage that runs BEFORE planning.
-Produces ExplorationResult (SCHEMAS.md Schema 4) from structured exploration of
+Produces FinalExplorationSchema (planner contract) from structured exploration of
 the repository, so the planner receives grounded context rather than hallucinating.
 
 Hard constraints (non-negotiable):
@@ -10,7 +10,7 @@ Hard constraints (non-negotiable):
   - MAX_STEPS = 5 (hard limit: must not exceed 6 per spec)
   - Isolated state — exploration scratch state MUST NOT pollute main AgentLoop state
   - Dispatcher returns ExecutionResult (Phase 2 contract)
-  - Always returns ExplorationResult — never raises on empty
+  - Always returns FinalExplorationSchema — never raises on empty
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from typing import Any, Optional
 from agent_v2.schemas.execution import ExecutionResult
 from agent_v2.config import (
     ENABLE_EXPLORATION_ENGINE_V2,
+    ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS,
     ENABLE_EXPLORATION_SCOPER,
     EXPLORATION_STEPS,
     get_project_root,
@@ -32,6 +33,7 @@ from agent.models.model_client import call_reasoning_model, call_reasoning_model
 from agent.models.model_config import get_model_for_task, get_prompt_model_name_for_task
 from agent_v2.exploration.candidate_selector import CandidateSelector
 from agent_v2.exploration.exploration_engine_v2 import ExplorationEngineV2
+from agent_v2.exploration.exploration_result_adapter import final_from_legacy_phase3_exploration_result
 from agent_v2.exploration.exploration_scoper import ExplorationScoper
 from agent_v2.exploration.exploration_task_names import (
     EXPLORATION_TASK_ANALYZER,
@@ -55,6 +57,7 @@ from agent_v2.schemas.exploration import (
     ExplorationSource,
     ExplorationSummary,
 )
+from agent_v2.schemas.final_exploration import FinalExplorationSchema
 
 # ---------------------------------------------------------------------------
 # Action constraints (Step 2)
@@ -112,7 +115,7 @@ class ExplorationRunner:
            ↓
         ExplorationRunner   ← this class
            ↓
-        ExplorationResult
+        FinalExplorationSchema
            ↓
         Planner
 
@@ -121,7 +124,7 @@ class ExplorationRunner:
       - Max steps: 5 (hard cap ≤ 6)
       - Exploration state is fully isolated from the main agent loop
       - Dispatcher.execute() returns ExecutionResult (Phase 2 contract)
-      - Returns a valid ExplorationResult even when no steps succeed
+      - Returns a valid FinalExplorationSchema even when no steps succeed
     """
 
     def __init__(
@@ -197,6 +200,21 @@ class ExplorationRunner:
                 max_snippet_chars=ExplorationEngineV2.MAX_SNIPPET_CHARS,
                 model_name=_mn_s,
             )
+        _llm_result_syn = None
+        _mn_syn: str | None = None
+        if ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS:
+            if llm_generate_fn is not None:
+                _llm_result_syn = llm_generate_fn
+                _mn_syn = (
+                    model_name
+                    if model_name is not None
+                    else get_prompt_model_name_for_task(EXPLORATION_TASK_V2)
+                )
+            else:
+                _llm_result_syn = lambda p: call_reasoning_model(
+                    p, task_name=EXPLORATION_TASK_V2
+                )
+                _mn_syn = get_prompt_model_name_for_task(EXPLORATION_TASK_V2)
         self._engine_v2 = ExplorationEngineV2(
             dispatcher=dispatcher,
             intent_parser=QueryIntentParser(
@@ -220,6 +238,8 @@ class ExplorationRunner:
             ),
             graph_expander=GraphExpander(dispatcher=dispatcher),
             scoper=scoper_v2,
+            result_synthesis_llm=_llm_result_syn,
+            result_synthesis_model_name=_mn_syn,
         )
 
     # ------------------------------------------------------------------
@@ -232,9 +252,9 @@ class ExplorationRunner:
         *,
         obs: Any = None,
         langfuse_trace: Any = None,
-    ) -> ExplorationResult:
+    ) -> FinalExplorationSchema:
         """
-        Run the bounded exploration loop and return a structured ExplorationResult.
+        Run the bounded exploration loop and return the planner-facing FinalExplorationSchema.
 
         The loop:
           1. Asks action_generator for the next step (exploration context given).
@@ -282,7 +302,8 @@ class ExplorationRunner:
             result = self.dispatcher.execute(step, state)
             collected.append((step, result))
 
-        return self._build_result(instruction, collected)
+        legacy = self._build_result(instruction, collected)
+        return final_from_legacy_phase3_exploration_result(legacy)
 
     # ------------------------------------------------------------------
     # Action constraint gate (Step 2)
