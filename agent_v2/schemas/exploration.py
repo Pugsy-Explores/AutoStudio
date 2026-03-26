@@ -93,9 +93,12 @@ class ExplorationResultMetadata(BaseModel):
 
 class ExplorationResult(BaseModel):
     """
-    Schema 4 — authoritative normative type from SCHEMAS.md.
-    Exploration is bounded (≤ 6 items). Items must have summary + key_points.
-    Sources must be real (no hallucinated refs).
+    Legacy Schema 4 bundle (items + summary + metadata).
+
+    **Planner contract:** use ``FinalExplorationSchema`` from
+    ``agent_v2/schemas/final_exploration.py`` — produced by ``ExplorationEngineV2.explore()``.
+    ``ExplorationResult`` is only constructed inside ``agent_v2/exploration`` (e.g. legacy
+    runner glue) and must not be imported by planner / downstream stages.
     """
     exploration_id: str
     instruction: str

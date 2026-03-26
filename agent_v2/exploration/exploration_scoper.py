@@ -20,9 +20,7 @@ from typing import Any, Callable
 
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
-    langfuse_generation_end_with_usage,
-    langfuse_generation_input_with_prompt,
-    try_langfuse_generation,
+    exploration_llm_call,
 )
 from agent.prompt_system.registry import get_registry
 from agent_v2.schemas.exploration import ExplorationCandidate
@@ -74,64 +72,65 @@ class ExplorationScoper:
         dedupe_n = len(payload)
         prompt = self._build_prompt(instruction, payload)
 
-        gen = try_langfuse_generation(
+        holder: list[list[ExplorationCandidate]] = []
+
+        def _invoke() -> str:
+            return self._llm_generate(prompt)
+
+        def _complete(raw: str) -> tuple[dict[str, Any], dict[str, Any]]:
+            parsed = JSONExtractor.extract_final_json(raw)
+            selected_raw = parsed.get("selected_indices")
+            if not isinstance(selected_raw, list):
+                raise ValueError("ExplorationScoper expected `selected_indices` list in parsed JSON.")
+            valid_dedupe: set[int] = set()
+            for x in selected_raw:
+                if isinstance(x, bool) or not isinstance(x, int):
+                    continue
+                if 0 <= int(x) < dedupe_n:
+                    valid_dedupe.add(int(x))
+            if not valid_dedupe:
+                raise ValueError("ExplorationScoper selected no valid indices in strict mode.")
+            valid_orig: set[int] = set()
+            for j in valid_dedupe:
+                valid_orig.update(dedupe_orig_indices[j])
+            sorted_indices = sorted(valid_orig)
+            out = [candidates[i] for i in sorted_indices]
+            holder.append(out)
+            output_n = len(out)
+            ratio = output_n / input_n if input_n else 0.0
+            _LOG.debug(
+                "exploration_scoper ok: scoper_skipped=false scoper_input_n=%s scoper_output_n=%s "
+                "scoper_selected_ratio=%.4f",
+                input_n,
+                output_n,
+                ratio,
+            )
+            return (
+                {
+                    "input_count": input_n,
+                    "output_count": output_n,
+                    "response": (
+                        raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
+                        if isinstance(raw, str)
+                        else str(raw)[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
+                    ),
+                },
+                {"stage": "scope", "ok": True},
+            )
+
+        exploration_llm_call(
             lf_scope_span,
             lf_exploration_parent,
             name="exploration.scope",
-            input=langfuse_generation_input_with_prompt(
-                prompt,
-                extra={"input_count": input_n, "dedupe_count": dedupe_n},
-            ),
+            prompt=prompt,
+            prompt_registry_key=_EXPLORATION_SCOPER_KEY,
+            invoke=_invoke,
+            stage="scope",
+            model_name=self._model_name,
+            input_extra={"input_count": input_n, "dedupe_count": dedupe_n},
+            on_complete=_complete,
         )
-
-        raw = self._llm_generate(prompt)
-        parsed = JSONExtractor.extract_final_json(raw)
-
-        selected_raw = parsed.get("selected_indices")
-        if not isinstance(selected_raw, list):
-            raise ValueError("ExplorationScoper expected `selected_indices` list in parsed JSON.")
-
-        valid_dedupe: set[int] = set()
-        for x in selected_raw:
-            if isinstance(x, bool) or not isinstance(x, int):
-                continue
-            if 0 <= int(x) < dedupe_n:
-                valid_dedupe.add(int(x))
-
-        if not valid_dedupe:
-            raise ValueError("ExplorationScoper selected no valid indices in strict mode.")
-
-        valid_orig: set[int] = set()
-        for j in valid_dedupe:
-            valid_orig.update(dedupe_orig_indices[j])
-        sorted_indices = sorted(valid_orig)
-        out = [candidates[i] for i in sorted_indices]
-        output_n = len(out)
-        ratio = output_n / input_n if input_n else 0.0
-        _LOG.debug(
-            "exploration_scoper ok: scoper_skipped=false scoper_input_n=%s scoper_output_n=%s "
-            "scoper_selected_ratio=%.4f",
-            input_n,
-            output_n,
-            ratio,
-        )
-        if gen is not None:
-            try:
-                langfuse_generation_end_with_usage(
-                    gen,
-                    output={
-                        "input_count": input_n,
-                        "output_count": output_n,
-                        "response": (
-                            raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
-                            if isinstance(raw, str)
-                            else str(raw)[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
-                        ),
-                    },
-                )
-            except Exception:
-                pass
-        return out
+        return holder[0]
 
     def _aggregate_payload_by_file_path(
         self, candidates: list[ExplorationCandidate]

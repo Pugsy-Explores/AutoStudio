@@ -5,9 +5,7 @@ from typing import Any, Callable
 
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
-    langfuse_generation_end_with_usage,
-    langfuse_generation_input_with_prompt,
-    try_langfuse_generation,
+    exploration_llm_call,
 )
 from agent.prompt_system.registry import get_registry
 from agent_v2.schemas.exploration import FailureReason, QueryIntent
@@ -105,59 +103,56 @@ class QueryIntentParser:
             if user_prompt.strip()
             else system_prompt
         )
-        gen = try_langfuse_generation(
-            lf_intent_span,
-            lf_exploration_parent,
-            name="exploration.query_intent",
-            input=langfuse_generation_input_with_prompt(
-                prompt,
-                extra={
-                    "instruction_preview": instruction[:2000],
-                    "instruction_chars": len(instruction),
-                },
-            ),
-        )
-        try:
+
+        def _invoke() -> str:
             if self._llm_generate_messages is not None and user_prompt.strip():
-                raw = self._llm_generate_messages(
+                return self._llm_generate_messages(
                     [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ]
                 )
-            elif self._llm_generate_messages is not None:
-                raw = self._llm_generate_messages([{"role": "system", "content": system_prompt}])
-            else:
-                raw = self._llm_generate(prompt)
-            data = JSONExtractor.extract_final_json(raw)
-            data = _coerce_for_query_intent(data)
-            qi = QueryIntent.model_validate(data)
+            if self._llm_generate_messages is not None:
+                return self._llm_generate_messages([{"role": "system", "content": system_prompt}])
+            assert self._llm_generate is not None
+            return self._llm_generate(prompt)
+
+        parsed: list[QueryIntent] = []
+
+        def _parse_complete(raw: str) -> tuple[dict[str, Any], dict[str, Any]]:
+            try:
+                data = JSONExtractor.extract_final_json(raw)
+                data = _coerce_for_query_intent(data)
+                qi = QueryIntent.model_validate(data)
+            except Exception as exc:
+                raise Exception("Fatal error: Failed to parse intent JSON output.") from exc
             if previous_payload:
                 qi = self._remove_repeated_queries(qi, previous_payload)
-            if gen is not None:
-                try:
-                    langfuse_generation_end_with_usage(
-                        gen,
-                        output={
-                            "query_intent": qi.model_dump(),
-                            "raw_response_preview": (raw or "")[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS],
-                        },
-                        metadata={"stage": "query_intent", "ok": True},
-                    )
-                except Exception:
-                    pass
-            return qi
-        except Exception as exc:
-            if gen is not None:
-                try:
-                    langfuse_generation_end_with_usage(
-                        gen,
-                        output={"error": str(exc)[:2000]},
-                        metadata={"stage": "query_intent", "ok": False},
-                    )
-                except Exception:
-                    pass
-            raise Exception("Fatal error: Failed to parse intent JSON output.") from exc
+            parsed.append(qi)
+            return (
+                {
+                    "query_intent": qi.model_dump(),
+                    "raw_response_preview": (raw or "")[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS],
+                },
+                {"stage": "query_intent", "ok": True},
+            )
+
+        exploration_llm_call(
+            lf_intent_span,
+            lf_exploration_parent,
+            name="exploration.query_intent",
+            prompt=prompt,
+            prompt_registry_key=_EXPLORATION_QUERY_INTENT_KEY,
+            invoke=_invoke,
+            stage="query_intent",
+            model_name=self._model_name,
+            input_extra={
+                "instruction_preview": instruction[:2000],
+                "instruction_chars": len(instruction),
+            },
+            on_complete=_parse_complete,
+        )
+        return parsed[0]
 
     @staticmethod
     def _remove_repeated_queries(

@@ -7,10 +7,11 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from pathlib import Path
 
 from agent_v2.config import (
+    ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS,
     DISCOVERY_MERGE_TOP_K,
     DISCOVERY_REGEX_CAP,
     DISCOVERY_SYMBOL_CAP,
@@ -37,6 +38,7 @@ from agent_v2.config import (
     EXPLORATION_UTILITY_NO_IMPROVEMENT_STREAK,
     get_project_root,
 )
+from agent_v2.observability.langfuse_client import create_agent_trace, finalize_agent_trace
 from agent_v2.observability.langfuse_helpers import lf_span_end_output
 from agent_v2.exploration.candidate_selector import CandidateSelector
 from agent_v2.exploration.context_block_builder import ContextBlockBuilder
@@ -48,8 +50,12 @@ from agent_v2.exploration.inspector import Inspector
 from agent_v2.exploration.inspection_reader import InspectionReader
 from agent_v2.exploration.query_intent_parser import QueryIntentParser
 from agent_v2.exploration.slice_grouper import SliceGrouper
+from agent_v2.exploration.exploration_llm_synthesizer import apply_optional_llm_synthesis
+from agent_v2.exploration.exploration_result_adapter import ExplorationResultAdapter
+from agent_v2.exploration.exploration_working_memory import ExplorationWorkingMemory
 from agent_v2.exploration.understanding_analyzer import UnderstandingAnalyzer
 from agent_v2.schemas.execution import ExecutionResult
+from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.exploration import (
     ExplorationCandidate,
     ExplorationContent,
@@ -57,7 +63,6 @@ from agent_v2.schemas.exploration import (
     ExplorationItem,
     ExplorationItemMetadata,
     ExplorationRelevance,
-    ExplorationResult,
     ExplorationResultMetadata,
     ExplorationSource,
     ExplorationState,
@@ -307,6 +312,8 @@ class ExplorationEngineV2:
         context_block_builder: ContextBlockBuilder | None = None,
         decision_mapper: EngineDecisionMapper | None = None,
         slice_grouper: SliceGrouper | None = None,
+        result_synthesis_llm: Callable[[str], str] | None = None,
+        result_synthesis_model_name: str | None = None,
     ):
         self._dispatcher = dispatcher
         self._intent_parser = intent_parser
@@ -320,6 +327,10 @@ class ExplorationEngineV2:
         self._context_block_builder = context_block_builder or ContextBlockBuilder()
         self._decision_mapper = decision_mapper or EngineDecisionMapper()
         self._slice_grouper = slice_grouper or SliceGrouper()
+        self._result_synthesis_llm = result_synthesis_llm
+        self._result_synthesis_model_name = result_synthesis_model_name
+        self.last_working_memory: ExplorationWorkingMemory | None = None
+        self.last_final_exploration: FinalExplorationSchema | None = None
 
     def explore(
         self,
@@ -328,10 +339,18 @@ class ExplorationEngineV2:
         state: Any,
         obs: Any = None,
         langfuse_trace: Any = None,
-    ) -> ExplorationResult:
+    ) -> FinalExplorationSchema:
         lf = langfuse_trace
         if lf is None and obs is not None:
             lf = getattr(obs, "langfuse_trace", None)
+        fallback_lf: Any = None
+        if lf is None:
+            fallback_lf = create_agent_trace(
+                instruction=instruction[:8000],
+                mode="exploration",
+                name=f"exploration_fallback_{uuid.uuid4().hex[:12]}",
+            )
+            lf = fallback_lf
         exploration_outer: Any = None
         if lf is not None and hasattr(lf, "span"):
             try:
@@ -359,6 +378,10 @@ class ExplorationEngineV2:
             except Exception:
                 pass
             _lf_end(exploration_outer)
+            if fallback_lf is not None:
+                tid = getattr(fallback_lf, "trace_id", None)
+                plan_id = f"explore_{tid}" if tid else "explore_local"
+                finalize_agent_trace(fallback_lf, status="ok", plan_id=plan_id)
             if obs is not None:
                 obs.exploration_parent_span = None
                 obs.current_span = None
@@ -370,8 +393,13 @@ class ExplorationEngineV2:
         obs: Any,
         exploration_outer: Any,
         lf: Any,
-    ) -> ExplorationResult:
+    ) -> FinalExplorationSchema:
         ex_state = ExplorationState(instruction=instruction)
+        memory = ExplorationWorkingMemory(
+            max_evidence=EXPLORATION_MAX_ITEMS,
+            max_gaps=6,
+            max_relationships=48,
+        )
         evidence: list[tuple[str, dict, ExecutionResult]] = []
         termination_reason = "unknown"
         primary_symbol_body_seen = False  # SYSTEM ONLY: fact that we read the symbol body (bounded)
@@ -408,6 +436,7 @@ class ExplorationEngineV2:
             ex_state,
         )
         evidence.extend(discovery_records)
+        memory.ingest_discovery_candidates(candidates, limit=EXPLORATION_MAX_ITEMS)
         retry_attempts = 0
         top_score_initial = self._top_discovery_score(candidates)
         initial_failure_reason = self._classify_initial_failure_reason(intent, candidates, top_score_initial)
@@ -455,6 +484,7 @@ class ExplorationEngineV2:
             if improved:
                 intent = refined_intent
                 candidates = refined_candidates
+                memory.ingest_discovery_candidates(refined_candidates, limit=EXPLORATION_MAX_ITEMS)
             self._emit_query_retry_telemetry(
                 exploration_outer=exploration_outer,
                 original_queries=prev_queries,
@@ -633,6 +663,37 @@ class ExplorationEngineV2:
                         ex_state,
                         exploration_outer=exploration_outer,
                     )
+                    snippet_mem, read_src_mem = self._item_snippet_and_source(
+                        "inspection", inspect_result
+                    )
+                    inspect_summary = ""
+                    if inspect_result.output:
+                        inspect_summary = str(inspect_result.output.summary or "").strip()
+                    analyzer_summary = str(understanding.summary or "").strip()
+                    summary_text = analyzer_summary or inspect_summary or "Context analyzed."
+                    _conf = max(float(understanding.confidence), memory.min_confidence)
+                    memory.add_evidence(
+                        target.symbol,
+                        canon,
+                        (int(read_packet.line_start), int(read_packet.line_end)),
+                        summary_text,
+                        snippet=snippet_mem or None,
+                        read_source=read_src_mem,
+                        confidence=_conf,
+                        source="analyzer",
+                        tier=0,
+                        tool_name="read_snippet",
+                    )
+                    for gap in understanding.knowledge_gaps or []:
+                        gs = str(gap or "").strip()
+                        if not gs:
+                            continue
+                        memory.add_gap(
+                            self._classify_gap_category(gs),
+                            gs,
+                            confidence=_conf,
+                            source="analyzer",
+                        )
                     utility_stop, utility_reason = self._update_utility_and_should_stop(
                         understanding,
                         ex_state,
@@ -649,6 +710,24 @@ class ExplorationEngineV2:
                 if decision.wrong_target_scope == "file":
                     ex_state.excluded_paths.add(canon)
             else:
+                snippet_mem, read_src_mem = self._item_snippet_and_source(
+                    "inspection", inspect_result
+                )
+                inspect_summary = ""
+                if inspect_result.output:
+                    inspect_summary = str(inspect_result.output.summary or "").strip()
+                memory.add_evidence(
+                    target.symbol,
+                    canon,
+                    (int(read_packet.line_start), int(read_packet.line_end)),
+                    inspect_summary or "Inspection read; duplicate evidence key — analyzer skipped.",
+                    snippet=snippet_mem or None,
+                    read_source=read_src_mem,
+                    confidence=max(memory.min_confidence, 0.35),
+                    source="inspection",
+                    tier=0,
+                    tool_name="read_snippet",
+                )
                 stagnation_counter += 1
                 if stagnation_counter >= EXPLORATION_STAGNATION_STEPS:
                     termination_reason = "stalled"
@@ -716,6 +795,20 @@ class ExplorationEngineV2:
                     output=_expand_tool_langfuse_output(expanded, expand_result),
                 )
                 evidence.append(("expansion", {"symbol": target.symbol or ""}, expand_result))
+                ex_tool = getattr(getattr(expand_result, "metadata", None), "tool_name", None)
+                ex_summary = ""
+                if expand_result.output:
+                    ex_summary = str(expand_result.output.summary or "").strip()
+                memory.add_expansion_evidence_row(
+                    canon,
+                    target.symbol,
+                    ex_summary,
+                    success=bool(expand_result.success),
+                    tool_name=str(ex_tool or "graph_lookup"),
+                )
+                ex_data = expand_result.output.data if expand_result.output else {}
+                if isinstance(ex_data, dict):
+                    memory.add_relationships_from_expand(canon, target.symbol, ex_data)
                 if expanded:
                     ex_state.relationships_found = True
                     self._enqueue_targets(ex_state, expanded)
@@ -736,6 +829,7 @@ class ExplorationEngineV2:
                     ex_state,
                 )
                 evidence.extend(discovery_records)
+                memory.ingest_discovery_candidates(candidates, limit=EXPLORATION_MAX_ITEMS)
                 selection_none = self._enqueue_ranked(
                     instruction,
                     intent,
@@ -767,13 +861,15 @@ class ExplorationEngineV2:
         if termination_reason == "unknown":
             termination_reason = "max_steps" if ex_state.steps_taken >= EXPLORATION_MAX_STEPS else "stopped"
         self._last_termination_reason = termination_reason
-        return self._build_result(
+        self.last_working_memory = memory
+        return self._build_result_from_memory(
+            memory,
             instruction,
-            evidence,
             completion_status=completion_status,
             termination_reason=termination_reason,
             explored_files=len(ex_state.seen_files),
             explored_symbols=len(ex_state.seen_symbols),
+            exploration_outer=exploration_outer,
         )
 
     def _run_discovery_traced(
@@ -1587,75 +1683,39 @@ class ExplorationEngineV2:
         discovery = [e for e in evidence if e[0] == "discovery"]
         return inspection + expansion + discovery
 
-    def _build_result(
+    def _build_result_from_memory(
         self,
+        memory: ExplorationWorkingMemory,
         instruction: str,
-        evidence: list[tuple[str, dict, ExecutionResult]],
         *,
         completion_status: str,
         termination_reason: str,
         explored_files: int,
         explored_symbols: int,
-    ) -> ExplorationResult:
-        items: list[ExplorationItem] = []
-        ordered = self._prioritize_evidence_for_items(evidence)[:EXPLORATION_MAX_ITEMS]
-        for idx, (phase, payload, result) in enumerate(ordered, start=1):
-            ref = payload.get("path") or payload.get("query") or payload.get("symbol") or "unknown"
-            summary = (result.output.summary if result.output else "")[:600]
-            if not summary.strip():
-                summary = f"{phase} completed"
-            key_points = [summary]
-            score = 0.8 if result.success else 0.3
-            item_type = "file" if phase == "inspection" else "search"
-
-            snippet, read_source = self._item_snippet_and_source(phase, result)
-            items.append(
-                ExplorationItem(
-                    item_id=f"item_{idx}",
-                    type=item_type,
-                    source=ExplorationSource(ref=str(ref), location=None),
-                    content=ExplorationContent(summary=summary, key_points=key_points, entities=[str(ref)]),
-                    relevance=ExplorationRelevance(score=score, reason=f"{phase} {'ok' if result.success else 'failed'}"),
-                    metadata=ExplorationItemMetadata(
-                        timestamp=result.metadata.timestamp,
-                        tool_name=result.metadata.tool_name,
-                    ),
-                    snippet=snippet,
-                    read_source=read_source,
-                )
-            )
-
-        key_findings = [it.content.summary for it in items[:3]]
-        if items:
-            summary = ExplorationSummary(
-                overall=f"Exploration v2 gathered {len(items)} evidence items for instruction.",
-                key_findings=key_findings,
-                knowledge_gaps=["Potentially missing deeper call-chain context"],
-                knowledge_gaps_empty_reason=None,
-            )
-        else:
-            summary = ExplorationSummary(
-                overall="Exploration v2 did not gather evidence.",
-                key_findings=[],
-                knowledge_gaps=[],
-                knowledge_gaps_empty_reason="No candidates discovered from instruction intent.",
-            )
-
-        return ExplorationResult(
-            exploration_id=f"exp_{uuid.uuid4().hex[:8]}",
-            instruction=instruction,
-            items=items,
-            summary=summary,
-            metadata=ExplorationResultMetadata(
-                total_items=len(items),
-                created_at=datetime.now(timezone.utc).isoformat(),
-                completion_status=("complete" if completion_status == "complete" else "incomplete"),
-                termination_reason=termination_reason,
-                explored_files=explored_files,
-                explored_symbols=explored_symbols,
-                source_summary=self._source_summary_from_items(items),
-            ),
+        exploration_outer: Any = None,
+    ) -> FinalExplorationSchema:
+        """Planner contract via ExplorationResultAdapter (single mapping path)."""
+        final = ExplorationResultAdapter.build(
+            memory,
+            instruction,
+            completion_status=completion_status,
+            termination_reason=termination_reason,
+            explored_files=explored_files,
+            explored_symbols=explored_symbols,
+            max_items=EXPLORATION_MAX_ITEMS,
+            max_snippet_chars=self.MAX_SNIPPET_CHARS,
         )
+        if ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS and self._result_synthesis_llm is not None:
+            final = apply_optional_llm_synthesis(
+                final,
+                memory,
+                instruction,
+                self._result_synthesis_llm,
+                lf_exploration_parent=exploration_outer,
+                model_name=self._result_synthesis_model_name,
+            )
+        self.last_final_exploration = final
+        return final
 
     @staticmethod
     def _top_discovery_score(candidates: list[ExplorationCandidate]) -> float:
@@ -1762,15 +1822,6 @@ class ExplorationEngineV2:
         else:
             rs = None
         return raw[: self.MAX_SNIPPET_CHARS], rs
-
-    @staticmethod
-    def _source_summary_from_items(items: list[ExplorationItem]) -> dict[str, int]:
-        counts = {"symbol": 0, "line": 0, "head": 0}
-        for it in items:
-            rs = getattr(it, "read_source", None)
-            if rs in counts:
-                counts[rs] += 1
-        return counts
 
     def _build_context_blocks_for_analysis(
         self,

@@ -30,6 +30,10 @@ EXPLORATION_MAX_ITEMS: int = _int_env("AGENT_V2_EXPLORATION_MAX_ITEMS", 6)
 # Consecutive steps with no new evidence key (file, symbol, read_source) or duplicate-queue skips → stalled
 EXPLORATION_STAGNATION_STEPS: int = _int_env("AGENT_V2_EXPLORATION_STAGNATION_STEPS", 3)
 ENABLE_EXPLORATION_ENGINE_V2: bool = _int_env("AGENT_V2_ENABLE_EXPLORATION_ENGINE_V2", 1) == 1
+# Optional LLM synthesis for FinalExplorationSchema (key_insights / objective_coverage only; default off).
+ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS: bool = (
+    _int_env("AGENT_V2_ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS", 0) == 1
+)
 
 # Phase 12.6.F — exploration scoper (K = prompt budget only; selector applies final batch limit)
 EXPLORATION_SCOPER_K: int = _int_env("AGENT_V2_EXPLORATION_SCOPER_K", 20)

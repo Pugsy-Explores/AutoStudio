@@ -5,9 +5,7 @@ from typing import Any, Callable
 
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
-    langfuse_generation_end_with_usage,
-    langfuse_generation_input_with_prompt,
-    try_langfuse_generation,
+    exploration_llm_call,
 )
 from agent.prompt_system.registry import get_registry
 from agent_v2.schemas.exploration import ContextBlock, UnderstandingResult
@@ -60,45 +58,44 @@ class UnderstandingAnalyzer:
             if user_prompt.strip()
             else system_prompt
         )
-        gen = try_langfuse_generation(
-            lf_analyze_span,
-            lf_exploration_parent,
-            name="exploration.analyze",
-            input=langfuse_generation_input_with_prompt(
-                prompt,
-                extra={"file_path": file_path[:500]},
-            ),
-        )
-        try:
+
+        def _invoke() -> str:
             if self._llm_generate_messages is not None and user_prompt.strip():
-                raw = self._llm_generate_messages(
+                return self._llm_generate_messages(
                     [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ]
                 )
-            elif self._llm_generate_messages is not None:
-                raw = self._llm_generate_messages([{"role": "system", "content": system_prompt}])
-            else:
-                raw = self._llm_generate(prompt)
+            if self._llm_generate_messages is not None:
+                return self._llm_generate_messages([{"role": "system", "content": system_prompt}])
+            assert self._llm_generate is not None
+            return self._llm_generate(prompt)
+
+        parsed_out: list[UnderstandingResult] = []
+
+        def _complete(raw: str) -> tuple[dict[str, Any], dict[str, Any]]:
             parsed = JSONExtractor.extract_final_json(raw)
             out = self._coerce_understanding(parsed)
-            if gen is not None:
-                try:
-                    langfuse_generation_end_with_usage(
-                        gen,
-                        output={"response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]},
-                    )
-                except Exception:
-                    pass
-            return out
-        except Exception as e:
-            if gen is not None:
-                try:
-                    langfuse_generation_end_with_usage(gen, output={"error": str(e)[:2000]})
-                except Exception as e2:
-                    raise Exception(f"Fatal error: Failed to end langfuse generation: {e2}") from e2
-            raise
+            parsed_out.append(out)
+            return (
+                {"response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]},
+                {"stage": "analyze", "ok": True},
+            )
+
+        exploration_llm_call(
+            lf_analyze_span,
+            lf_exploration_parent,
+            name="exploration.analyze",
+            prompt=prompt,
+            prompt_registry_key=_EXPLORATION_ANALYZER_KEY,
+            invoke=_invoke,
+            stage="analyze",
+            model_name=self._model_name,
+            input_extra={"file_path": file_path[:500]},
+            on_complete=_complete,
+        )
+        return parsed_out[0]
 
     @staticmethod
     def _context_blocks_json(context_blocks: list[ContextBlock]) -> str:

@@ -6,9 +6,7 @@ from typing import Any, Callable
 from agent_v2.config import EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K, EXPLORATION_SELECTOR_TOP_K
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
-    langfuse_generation_end_with_usage,
-    langfuse_generation_input_with_prompt,
-    try_langfuse_generation,
+    exploration_llm_call,
 )
 from agent.prompt_system.registry import get_registry
 from agent_v2.schemas.exploration import ExplorationCandidate
@@ -80,18 +78,44 @@ class CandidateSelector:
             if user_prompt.strip()
             else system_prompt
         )
-        if self._llm_generate_messages_single is not None and user_prompt.strip():
-            raw = self._llm_generate_messages_single(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ]
+
+        def _invoke_single() -> str:
+            if self._llm_generate_messages_single is not None and user_prompt.strip():
+                return self._llm_generate_messages_single(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                )
+            if self._llm_generate_messages_single is not None:
+                return self._llm_generate_messages_single(
+                    [{"role": "system", "content": system_prompt}]
+                )
+            assert self._llm_generate_single is not None
+            return self._llm_generate_single(prompt)
+
+        holder: list[dict] = []
+
+        def _complete_single(raw: str) -> tuple[dict[str, Any], dict[str, Any]]:
+            choice = JSONExtractor.extract_final_json(raw)
+            holder.append(choice)
+            return (
+                {"response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]},
+                {"stage": "select", "ok": True, "select_mode": "single"},
             )
-        elif self._llm_generate_messages_single is not None:
-            raw = self._llm_generate_messages_single([{"role": "system", "content": system_prompt}])
-        else:
-            raw = self._llm_generate_single(prompt)
-        choice = JSONExtractor.extract_final_json(raw)
+
+        exploration_llm_call(
+            lf_exploration_parent,
+            name="exploration.select_single",
+            prompt=prompt,
+            prompt_registry_key=_EXPLORATION_SELECTOR_SINGLE_KEY,
+            invoke=_invoke_single,
+            stage="select",
+            model_name=self._model_name_single,
+            input_extra={"candidates_in": len(top), "select_mode": "single"},
+            on_complete=_complete_single,
+        )
+        choice = holder[0]
         selected = self._match(choice, top)
         if selected is None:
             raise ValueError("CandidateSelector.select could not match parsed JSON choice to candidates.")
@@ -152,40 +176,60 @@ class CandidateSelector:
             if user_prompt.strip()
             else system_prompt
         )
-        gen = try_langfuse_generation(
+
+        holder: dict[str, Any] = {}
+
+        def _invoke_batch() -> str:
+            if self._llm_generate_messages_batch is not None and user_prompt.strip():
+                return self._llm_generate_messages_batch(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                )
+            if self._llm_generate_messages_batch is not None:
+                return self._llm_generate_messages_batch(
+                    [{"role": "system", "content": system_prompt}]
+                )
+            assert self._llm_generate_batch is not None
+            return self._llm_generate_batch(prompt)
+
+        def _complete_batch(raw: str) -> tuple[dict[str, Any], dict[str, Any]]:
+            parsed = JSONExtractor.extract_final_json(raw)
+            holder["parsed"] = parsed
+            holder["raw"] = raw
+            if bool(parsed.get("no_relevant_candidate")):
+                return (
+                    {
+                        "no_relevant_candidate": True,
+                        "response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS],
+                    },
+                    {"stage": "select", "ok": True, "select_mode": "batch"},
+                )
+            return (
+                {"response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]},
+                {"stage": "select", "ok": True, "select_mode": "batch"},
+            )
+
+        exploration_llm_call(
             lf_select_span,
             lf_exploration_parent,
             name="exploration.select",
-            input=langfuse_generation_input_with_prompt(
-                prompt,
-                extra={"candidates_in": len(top), "limit": limit},
-            ),
+            prompt=prompt,
+            prompt_registry_key=_EXPLORATION_SELECTOR_BATCH_KEY,
+            invoke=_invoke_batch,
+            stage="select",
+            model_name=self._model_name_batch,
+            input_extra={
+                "candidates_in": len(top),
+                "limit": limit,
+                "select_mode": "batch",
+            },
+            on_complete=_complete_batch,
         )
-
-        if self._llm_generate_messages_batch is not None and user_prompt.strip():
-            raw = self._llm_generate_messages_batch(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ]
-            )
-        elif self._llm_generate_messages_batch is not None:
-            raw = self._llm_generate_messages_batch([{"role": "system", "content": system_prompt}])
-        else:
-            raw = self._llm_generate_batch(prompt)
-        parsed = JSONExtractor.extract_final_json(raw)
+        parsed = holder["parsed"]
+        raw = holder["raw"]
         if bool(parsed.get("no_relevant_candidate")):
-            if gen is not None:
-                try:
-                    langfuse_generation_end_with_usage(
-                        gen,
-                        output={
-                            "no_relevant_candidate": True,
-                            "response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS],
-                        },
-                    )
-                except Exception:
-                    pass
             return None
         selected_indices_raw = parsed.get("selected_indices")
         if isinstance(selected_indices_raw, list):
@@ -209,14 +253,6 @@ class CandidateSelector:
             raise ValueError(
                 "CandidateSelector.select_batch parsed JSON but found no matchable selections."
             )
-        if gen is not None:
-            try:
-                langfuse_generation_end_with_usage(
-                    gen,
-                    output={"response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]},
-                )
-            except Exception:
-                pass
         return ranked
 
     @staticmethod
