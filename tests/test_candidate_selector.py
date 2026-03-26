@@ -77,6 +77,77 @@ def test_select_batch_langfuse_generation_includes_prompt_in_input():
     assert inp["prompt_chars"] == len(inp["prompt"])
 
 
+def test_select_batch_empty_selected_indices_still_uses_selected_array():
+    """Models often emit selected_indices: [] alongside a valid `selected` list; [] must not block fallback."""
+    selector = CandidateSelector(
+        llm_generate=lambda _: (
+            '{"selected_indices":[],"selected":[{"file_path":"src/a.py","symbol":"A"}],'
+            '"no_relevant_candidate":false}'
+        )
+    )
+    ranked = selector.select_batch(
+        "rank candidates",
+        "no intent",
+        [_c("src/a.py", "A"), _c("src/b.py", "B")],
+        seen_files=set(),
+        limit=2,
+    )
+    assert ranked is not None
+    assert len(ranked) >= 1
+    assert ranked[0].file_path == "src/a.py"
+
+
+def test_select_batch_unmatchable_output_falls_back_to_discovery_order():
+    """When JSON parses but nothing matches candidates, use top-N discovery order (no hard fail)."""
+    selector = CandidateSelector(
+        llm_generate=lambda _: (
+            '{"selected_indices":[],"selected":[{"file_path":"/wrong/path.py","symbol":"X"}],'
+            '"no_relevant_candidate":false}'
+        )
+    )
+    cands = [_c("src/a.py", "A"), _c("src/b.py", "B")]
+    ranked = selector.select_batch(
+        "rank candidates",
+        "no intent",
+        cands,
+        seen_files=set(),
+        limit=2,
+    )
+    assert ranked is not None
+    assert [x.file_path for x in ranked] == ["src/a.py", "src/b.py"]
+
+
+def test_select_batch_multi_index_uses_zero_based_by_default():
+    """[2,3] means third and fourth candidates (0-based), not 1-based positions 1 and 2."""
+    selector = CandidateSelector(
+        llm_generate=lambda _: '{"selected_indices":[2,3],"no_relevant_candidate":false}'
+    )
+    ranked = selector.select_batch(
+        "rank candidates",
+        "no intent",
+        [_c("a.py"), _c("b.py"), _c("c.py"), _c("d.py"), _c("e.py")],
+        seen_files=set(),
+        limit=4,
+    )
+    assert ranked is not None
+    assert [x.file_path for x in ranked[:2]] == ["c.py", "d.py"]
+
+
+def test_select_batch_one_based_index_maps_to_first_candidate():
+    selector = CandidateSelector(
+        llm_generate=lambda _: '{"selected_indices":[1],"no_relevant_candidate":false}'
+    )
+    ranked = selector.select_batch(
+        "rank candidates",
+        "no intent",
+        [_c("src/a.py", "A"), _c("src/b.py", "B")],
+        seen_files=set(),
+        limit=2,
+    )
+    assert ranked is not None
+    assert ranked[0].file_path == "src/a.py"
+
+
 def test_select_batch_raises_when_llm_output_invalid_strict_mode():
     selector = CandidateSelector(llm_generate=lambda _: "not-json")
     with pytest.raises(ValueError, match="No valid JSON object found"):

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Callable
+
+_LOG = logging.getLogger(__name__)
 
 from agent_v2.config import EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K, EXPLORATION_SELECTOR_TOP_K
 from agent_v2.observability.langfuse_helpers import (
@@ -231,18 +234,36 @@ class CandidateSelector:
         raw = holder["raw"]
         if bool(parsed.get("no_relevant_candidate")):
             return None
+        selected_raw: list[Any] | None = None
         selected_indices_raw = parsed.get("selected_indices")
-        if isinstance(selected_indices_raw, list):
-            selected_raw = []
+        # Only treat as index-based selection when the model emitted at least one index.
+        # Empty list [] must NOT block the `selected` fallback (models often emit both keys).
+        if isinstance(selected_indices_raw, list) and len(selected_indices_raw) > 0:
+            parsed_idx: list[int] = []
             for idx in selected_indices_raw:
                 try:
-                    i = int(idx)
+                    parsed_idx.append(int(idx))
                 except (TypeError, ValueError):
                     continue
-                if 0 <= i < len(top):
-                    c = top[i]
-                    selected_raw.append({"file_path": c.file_path, "symbol": c.symbol})
-        else:
+
+            def _expand_indices(idxs: list[int], *, one_based: bool) -> list[dict[str, Any]]:
+                out: list[dict[str, Any]] = []
+                for raw in idxs:
+                    j = (raw - 1) if one_based and 1 <= raw <= len(top) else raw
+                    if 0 <= j < len(top):
+                        c = top[j]
+                        out.append({"file_path": c.file_path, "symbol": c.symbol})
+                return out
+
+            # A lone "1" is almost always "first candidate" in human 1-based lists, not index 1 (second).
+            if len(parsed_idx) == 1 and parsed_idx[0] == 1:
+                selected_raw = _expand_indices(parsed_idx, one_based=True)
+            else:
+                selected_raw = _expand_indices(parsed_idx, one_based=False)
+                ranked_try = self._match_many(selected_raw, top, limit=limit)
+                if not ranked_try and parsed_idx and 0 not in parsed_idx:
+                    selected_raw = _expand_indices(parsed_idx, one_based=True)
+        if selected_raw is None:
             selected_raw = parsed.get("selected")
         if not isinstance(selected_raw, list):
             raise ValueError(
@@ -250,9 +271,14 @@ class CandidateSelector:
             )
         ranked = self._match_many(selected_raw, top, limit=limit)
         if not ranked:
-            raise ValueError(
-                "CandidateSelector.select_batch parsed JSON but found no matchable selections."
+            _LOG.warning(
+                "exploration.select_batch: no matchable selections from model "
+                "(indices=%r selected=%r); using top-%s candidates in discovery order",
+                selected_indices_raw,
+                selected_raw[:3] if isinstance(selected_raw, list) else selected_raw,
+                limit,
             )
+            return top[: min(limit, len(top))]
         return ranked
 
     @staticmethod
