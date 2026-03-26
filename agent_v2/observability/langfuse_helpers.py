@@ -9,7 +9,8 @@ Use :func:`langfuse_generation_input_with_prompt` for every LLM generation so La
 """
 from __future__ import annotations
 
-from typing import Any
+from contextvars import ContextVar
+from typing import Any, Callable
 
 # Max prompt characters stored on Langfuse generation ``input`` (matches ``planner_v2``).
 LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS = 12000
@@ -143,3 +144,140 @@ def lf_span_end_output(span: Any, *, output: dict[str, Any] | None = None) -> No
             span.end()
         except Exception:
             pass
+
+
+# --- Exploration: single traced LLM entry (LANGFUSE_EXPLORATION_TRACING_PLAN) ---
+
+# Canonical ``stage`` values for Langfuse generation ``input`` (filtering / dashboards).
+EXPLORATION_LLM_STAGE_VALUES = frozenset(
+    {"query_intent", "select", "scope", "analyze", "synthesis"}
+)
+
+_exploration_llm_invoke_count: ContextVar[int] = ContextVar(
+    "exploration_llm_invoke_count", default=0
+)
+_exploration_llm_generation_ended_count: ContextVar[int] = ContextVar(
+    "exploration_llm_generation_ended_count", default=0
+)
+
+
+def reset_exploration_llm_counters() -> None:
+    """Test / harness: zero counters for the **current** logical context.
+
+    Values live in :class:`contextvars.ContextVar` (not module globals): each asyncio
+    Task and each thread sees its own counter, so parallel or nested exploration runs
+    do not share counts.
+    """
+    _exploration_llm_invoke_count.set(0)
+    _exploration_llm_generation_ended_count.set(0)
+
+
+def get_exploration_llm_counters() -> tuple[int, int]:
+    """Returns (invoke_count, langfuse_generation_end_count) for the current context."""
+    return _exploration_llm_invoke_count.get(), _exploration_llm_generation_ended_count.get()
+
+
+def _bump_exploration_llm_invoke() -> None:
+    _exploration_llm_invoke_count.set(_exploration_llm_invoke_count.get() + 1)
+
+
+def _bump_exploration_llm_generation_ended() -> None:
+    _exploration_llm_generation_ended_count.set(
+        _exploration_llm_generation_ended_count.get() + 1
+    )
+
+
+def exploration_llm_call(
+    *parents: Any,
+    name: str,
+    prompt: str,
+    prompt_registry_key: str,
+    invoke: Callable[[], str],
+    stage: str,
+    model_name: str | None = None,
+    input_extra: dict[str, Any] | None = None,
+    on_complete: Callable[[str], tuple[dict[str, Any], dict[str, Any]]] | None = None,
+    failure_output_extra: dict[str, Any] | None = None,
+) -> str:
+    """
+    Single entry for exploration LLM calls: Langfuse generation + invoke + end with usage.
+
+    ``prompt_registry_key`` is mandatory on every generation (merged into ``input`` extra).
+    ``stage`` must be one of :data:`EXPLORATION_LLM_STAGE_VALUES` (stored on generation input).
+    ``model_name`` is always stored on generation input (defaults to ``unknown_model``).
+    ``on_complete`` runs after a successful ``invoke()``; it must return
+    ``(output_dict, metadata_dict)`` for ``langfuse_generation_end_with_usage``.
+    If ``on_complete`` raises, the generation is ended with an error output.
+    ``failure_output_extra`` is merged into error outputs (e.g. ``synthesis_success: false``).
+    """
+    key = (prompt_registry_key or "").strip()
+    if not key:
+        raise ValueError("prompt_registry_key is mandatory for exploration_llm_call")
+    st = (stage or "").strip()
+    if st not in EXPLORATION_LLM_STAGE_VALUES:
+        raise ValueError(
+            f"stage must be one of {sorted(EXPLORATION_LLM_STAGE_VALUES)}, got {stage!r}"
+        )
+    mn = (model_name or "").strip() or "unknown_model"
+    merge_extra: dict[str, Any] = {"prompt_registry_key": key}
+    if input_extra:
+        merge_extra.update(input_extra)
+    merge_extra["stage"] = st
+    merge_extra["model_name"] = mn
+    gen = try_langfuse_generation(
+        *parents,
+        name=name,
+        input=langfuse_generation_input_with_prompt(prompt, extra=merge_extra),
+    )
+    _bump_exploration_llm_invoke()
+
+    def _err_out(exc: Exception) -> dict[str, Any]:
+        o: dict[str, Any] = {"error": str(exc)[:2000]}
+        if failure_output_extra:
+            o.update(failure_output_extra)
+        return o
+
+    try:
+        raw = invoke()
+    except Exception as e:
+        if gen is not None:
+            try:
+                langfuse_generation_end_with_usage(
+                    gen,
+                    output=_err_out(e),
+                    metadata={"ok": False, "stage": st},
+                )
+            except Exception:
+                pass
+            else:
+                _bump_exploration_llm_generation_ended()
+        raise
+    try:
+        if on_complete is not None:
+            out, meta = on_complete(raw)
+        else:
+            out = {"response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]}
+            meta = {}
+    except Exception as e:
+        if gen is not None:
+            try:
+                langfuse_generation_end_with_usage(
+                    gen,
+                    output=_err_out(e),
+                    metadata={"ok": False, "stage": st},
+                )
+            except Exception:
+                pass
+            else:
+                _bump_exploration_llm_generation_ended()
+        raise
+    if gen is not None:
+        meta_out = dict(meta)
+        meta_out.setdefault("stage", st)
+        try:
+            langfuse_generation_end_with_usage(gen, output=out, metadata=meta_out)
+        except Exception:
+            pass
+        else:
+            _bump_exploration_llm_generation_ended()
+    return raw
