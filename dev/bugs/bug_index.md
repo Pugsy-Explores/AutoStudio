@@ -15,3 +15,5 @@
 | LIVE-TEST-003 | Context size exceeded in Phase 10 integration | runtime | high | in_progress |
 | BUG-009 | Exploration inspection performed full-file reads instead of bounded read-time snippets | TBD | medium | backlog |
 | BUG-010 | exploration selector loop amplification and missing null termination | TBD | medium | backlog |
+| BUG-011 | Exploration stalls on duplicate targets; plan mode gates on incomplete exploration | execution | high | resolved |
+| BUG-012 | Exploration query intent parser lacked failure-aware retry refinement | TBD | medium | backlog |

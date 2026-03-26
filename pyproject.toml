@@ -52,4 +52,5 @@ norecursedirs = [
     "*.egg",
     "tests/agent_eval/fixtures",
     "tests/evals/fixtures",
+    "artifacts",
 ]
