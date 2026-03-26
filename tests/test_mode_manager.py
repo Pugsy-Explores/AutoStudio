@@ -62,13 +62,14 @@ def _make_mocks_for_pipeline():
     mock_planner.plan.return_value = mock_doc
 
     mock_exp = MagicMock()
-    mock_exp.summary.overall = "explore summary"
+    mock_exp.exploration_summary = SimpleNamespace(overall="explore summary")
     mock_exp.model_dump.return_value = {"exploration_id": "e1"}
     mock_er = MagicMock()
     mock_er.run.return_value = mock_exp
 
     mock_pe = MagicMock()
     mock_pe.run.side_effect = _fake_plan_executor_return
+    mock_pe.run_one_step.side_effect = _fake_plan_executor_return
     mock_loop = MagicMock()
     return mock_er, mock_planner, mock_pe, mock_doc, mock_loop
 
@@ -87,8 +88,10 @@ class TestModeManager(unittest.TestCase):
         call_kw = mock_planner.plan.call_args.kwargs
         self.assertEqual(call_kw.get("exploration"), mock_er.run.return_value)
         self.assertFalse(call_kw.get("deep"))
-        mock_pe.run.assert_called_once()
-        pe_call = mock_pe.run.call_args
+        self.assertTrue(call_kw.get("require_controller_json"))
+        mock_pe.run_one_step.assert_called_once()
+        mock_pe.run.assert_not_called()
+        pe_call = mock_pe.run_one_step.call_args
         self.assertIs(pe_call.args[0], mock_doc)
         self.assertIs(pe_call.args[1], state)
         self.assertIn("trace_emitter", pe_call.kwargs)
@@ -188,8 +191,10 @@ class TestModeManager(unittest.TestCase):
         mock_planner.plan.assert_called_once()
         call_kw = mock_planner.plan.call_args.kwargs
         self.assertEqual(call_kw.get("exploration"), mock_er.run.return_value)
-        mock_pe.run.assert_called_once()
-        pe_call = mock_pe.run.call_args
+        self.assertTrue(call_kw.get("require_controller_json"))
+        mock_pe.run_one_step.assert_called_once()
+        mock_pe.run.assert_not_called()
+        pe_call = mock_pe.run_one_step.call_args
         self.assertIs(pe_call.args[0], mock_doc)
         self.assertIs(pe_call.args[1], state)
         self.assertIn("trace_emitter", pe_call.kwargs)
@@ -212,7 +217,7 @@ class TestModeManager(unittest.TestCase):
     def test_planner_is_gated_when_exploration_incomplete(self):
         mock_er, mock_planner, mock_pe, _, mock_loop = _make_mocks_for_pipeline()
         mock_exp = MagicMock()
-        mock_exp.summary.overall = "incomplete exploration"
+        mock_exp.exploration_summary = SimpleNamespace(overall="incomplete exploration")
         mock_exp.model_dump.return_value = {"exploration_id": "e_incomplete"}
         mock_exp.metadata = SimpleNamespace(
             completion_status="incomplete",
@@ -227,6 +232,7 @@ class TestModeManager(unittest.TestCase):
         self.assertIn("gated", str(ctx.exception).lower())
         mock_planner.plan.assert_not_called()
         mock_pe.run.assert_not_called()
+        mock_pe.run_one_step.assert_not_called()
 
 
 if __name__ == "__main__":

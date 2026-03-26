@@ -219,6 +219,22 @@ class TestPlanExecutor(unittest.TestCase):
         self.assertEqual(plan.steps[0].failure.failure_type, ErrorType.unknown)
         self.assertEqual(state.metadata.get("last_error"), "unknown")
 
+    def test_run_one_step_executes_one_tool_step_then_progress(self):
+        mock_dispatch = MagicMock()
+        mock_dispatch.execute.return_value = _ok_result("s1", "found")
+        arg_gen = MagicMock()
+        arg_gen.generate.return_value = {"query": "AgentLoop"}
+
+        ex = PlanExecutor(mock_dispatch, arg_gen)
+        state = AgentState(instruction="find loop")
+        plan = _minimal_plan()
+        _attach_plan(state, plan)
+        out = ex.run_one_step(plan, state)
+        self.assertEqual(out["status"], "progress")
+        mock_dispatch.execute.assert_called_once()
+        self.assertEqual(plan.steps[0].execution.status, "completed")
+        self.assertEqual(plan.steps[1].execution.status, "pending")
+
 
 if __name__ == "__main__":
     unittest.main()

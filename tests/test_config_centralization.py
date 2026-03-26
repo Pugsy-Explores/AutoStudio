@@ -7,6 +7,7 @@ from agent_v2.config import (
     AgentV2Config,
     ExplorationConfig,
     PlannerConfig,
+    PlannerLoopConfig,
     PytestConfig,
     get_config,
     validate_config,
@@ -28,6 +29,11 @@ def test_validate_config_rejects_write_actions_in_read_only_policy():
         planner=PlannerConfig(allowed_actions_read_only=frozenset({"search", "edit"})),
         exploration=ExplorationConfig(max_steps=5, allow_partial_for_plan_mode=False),
         pytest=PytestConfig(ignore_dirs=("artifacts",)),
+        planner_loop=PlannerLoopConfig(
+            controller_loop_enabled=False,
+            max_sub_explorations_per_task=2,
+            max_planner_controller_calls=16,
+        ),
     )
     try:
         validate_config(bad_cfg)
@@ -39,6 +45,7 @@ def test_validate_config_rejects_write_actions_in_read_only_policy():
 def test_default_config_parity_read_only_policy():
     cfg = get_config()
     assert cfg.planner.allowed_actions_read_only == frozenset({"search", "open_file", "finish"})
+    assert cfg.planner_loop.controller_loop_enabled is True
 
 
 def test_plan_mode_allows_partial_exploration_when_config_enabled():
@@ -50,6 +57,7 @@ def test_plan_mode_allows_partial_exploration_when_config_enabled():
             allow_partial_for_plan_mode=True,
         ),
         pytest=original_cfg.pytest,
+        planner_loop=original_cfg.planner_loop,
     )
     try:
         mock_planner = MagicMock()

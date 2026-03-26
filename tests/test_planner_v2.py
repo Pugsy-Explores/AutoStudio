@@ -72,6 +72,16 @@ def _valid_plan_json() -> str:
     return json.dumps(payload)
 
 
+def _valid_plan_json_with_controller() -> str:
+    payload = json.loads(_valid_plan_json())
+    payload["controller"] = {
+        "action": "continue",
+        "next_step_instruction": "Execute the next pending step",
+        "exploration_query": "",
+    }
+    return json.dumps(payload)
+
+
 class TestPlannerActionTypeCoercion(unittest.TestCase):
     """
     Lock the temporary _coerce_step_action_and_type() behavior in planner_v2.py.
@@ -117,10 +127,13 @@ class TestPlannerV2(unittest.TestCase):
         self.assertIn("EXPLORATION SUMMARY:", calls[0])
         self.assertIn("EXPLORATION SOURCES:", calls[0])
         self.assertIn("EXPLORATION ITEMS:", calls[0])
+        self.assertIn("RELATIONSHIP EDGES", calls[0])
+        self.assertIn("EXPLORATION SIGNALS", calls[0])
 
     def test_plan_from_replan_context(self):
         def gen(prompt: str) -> str:
             self.assertIn("FAILURE:", prompt)
+            self.assertNotIn("CONTROLLER (required top-level", prompt)
             return _valid_plan_json()
 
         planner = PlannerV2(generate_fn=gen, policy=ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2))
@@ -135,6 +148,28 @@ class TestPlannerV2(unittest.TestCase):
         )
         doc = planner.plan("Fix thing", ctx, deep=False)
         self.assertEqual(doc.steps[-1].action, "finish")
+        self.assertIsNone(doc.controller)
+
+    def test_replan_require_controller_json_parses_controller(self):
+        def gen(prompt: str) -> str:
+            self.assertIn("FAILURE:", prompt)
+            self.assertIn("CONTROLLER (required top-level", prompt)
+            self.assertIn("completion_criteria, controller", prompt)
+            return _valid_plan_json_with_controller()
+
+        planner = PlannerV2(generate_fn=gen, policy=ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2))
+        ctx = ReplanContext(
+            failure_context=ReplanFailureContext(
+                step_id="s1",
+                error=ReplanFailureError(type="not_found", message="missing"),
+                attempts=2,
+                last_output_summary="not found",
+            ),
+            completed_steps=[],
+        )
+        doc = planner.plan("Fix thing", ctx, deep=False, require_controller_json=True)
+        self.assertIsNotNone(doc.controller)
+        self.assertEqual(doc.controller.action, "continue")
 
     def test_invalid_json_raises(self):
         def gen(_: str) -> str:
