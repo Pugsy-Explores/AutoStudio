@@ -6,10 +6,10 @@ Validates:
   - Only read-only actions are dispatched (search, open_file, shell)
   - Forbidden actions (edit, run_tests, write, patch) are silently skipped
   - Max steps is enforced (≤ MAX_STEPS = 5)
-  - Returns a valid ExplorationResult with schema-conforming fields
-  - ExplorationResult.summary is populated (summary present)
+  - Returns a valid FinalExplorationSchema with schema-conforming fields
+  - exploration_summary is populated (summary present)
   - Isolated state: main state not mutated
-  - Empty exploration (no steps) still returns a valid ExplorationResult
+  - Empty exploration (no steps) still returns a valid FinalExplorationSchema
 """
 
 import pytest
@@ -24,9 +24,40 @@ from agent_v2.runtime.exploration_runner import (
     _extract_key_points,
 )
 from agent_v2.schemas.execution import ErrorType, ExecutionResult
-from agent_v2.schemas.exploration import ExplorationResult
+from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.tool import ToolError, ToolResult
 from agent_v2.runtime.tool_mapper import map_tool_result_to_execution_result
+
+
+def _llm_stub_v2_branch(prompt: str, *, intent_empty: bool) -> str:
+    """Branch fake LLM text for V2 unit tests. Markers match rendered prompts (placeholders are substituted)."""
+    p = prompt or ""
+    # Batch selector: default v1 uses Limit line; models/qwen2.5-coder-7b omits it (different copy).
+    if (
+        "Limit (maximum selected items):" in p
+        or "Select the most relevant candidates for deep inspection" in p
+    ):
+        return '{"selected_indices": [0]}'
+    if "Candidates (indexed):" in p:
+        return '{"selected_indices": [0]}'
+    if "You are selecting the most relevant code location" in p:
+        return '{"file_path":"agent_v2/runtime/mode_manager.py","symbol":"ModeManager"}'
+    if "Classify the snippet based on whether it directly contributes" in p:
+        return (
+            '{"status":"partial","needs":["definition"],'
+            '"reason":"stub","next_action":"expand"}'
+        )
+    if intent_empty:
+        return '{"symbols":[],"keywords":[],"intents":["locate_logic"]}'
+    return '{"symbols":["ModeManager"],"keywords":["mode"],"intents":["find_definition"]}'
+
+
+def _llm_stub_v2_engine(prompt: str) -> str:
+    return _llm_stub_v2_branch(prompt, intent_empty=False)
+
+
+def _llm_stub_v2_empty_discovery(prompt: str) -> str:
+    return _llm_stub_v2_branch(prompt, intent_empty=True)
 
 
 # ---------------------------------------------------------------------------
@@ -133,23 +164,23 @@ class _MockDispatcher:
 # ---------------------------------------------------------------------------
 
 def test_exploration_returns_exploration_result():
-    """✅ ExplorationRunner exists and returns ExplorationResult."""
+    """✅ ExplorationRunner exists and returns FinalExplorationSchema."""
     gen = _MockActionGenerator([None])  # immediate stop
     disp = _MockDispatcher([])
     runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Find AgentLoop")
-    assert isinstance(result, ExplorationResult)
+    assert isinstance(result, FinalExplorationSchema)
 
 
 def test_exploration_summary_always_present():
-    """✅ summary present on ExplorationResult (even with no items)."""
+    """✅ exploration_summary present (even with no evidence rows)."""
     gen = _MockActionGenerator([None])
     disp = _MockDispatcher([])
     runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Find AgentLoop")
-    assert result.summary.overall
-    assert isinstance(result.summary.key_findings, list)
-    assert isinstance(result.summary.knowledge_gaps, list)
+    assert result.exploration_summary.overall
+    assert isinstance(result.exploration_summary.key_findings, list)
+    assert isinstance(result.exploration_summary.knowledge_gaps, list)
 
 
 def test_exploration_steps_within_max():
@@ -163,7 +194,7 @@ def test_exploration_steps_within_max():
     runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Find AgentLoop")
 
-    assert len(result.items) <= MAX_STEPS
+    assert len(result.evidence) <= MAX_STEPS
     assert len(disp.dispatched) <= MAX_STEPS
 
 
@@ -187,7 +218,7 @@ def test_exploration_forbidden_actions_never_dispatched():
     assert len(disp.dispatched) == 1
     dispatched_step, _ = disp.dispatched[0]
     assert dispatched_step["action"] == "search"
-    assert len(result.items) == 1
+    assert len(result.evidence) == 1
 
 
 def test_exploration_allowed_actions_only_in_result():
@@ -208,8 +239,8 @@ def test_exploration_allowed_actions_only_in_result():
     runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Explore codebase")
 
-    assert len(result.items) == 3
-    item_types = {item.type for item in result.items}
+    assert len(result.evidence) == 3
+    item_types = {item.type for item in result.evidence}
     assert item_types.issubset({"search", "file", "command", "other"})
 
 
@@ -227,22 +258,22 @@ def test_exploration_finish_step_stops_loop():
     runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Task")
 
-    assert len(result.items) == 1  # only first search dispatched
+    assert len(result.evidence) == 1  # only first search dispatched
 
 
 def test_exploration_empty_when_no_steps():
-    """✅ Empty exploration returns valid ExplorationResult with correct knowledge_gaps_empty_reason."""
+    """✅ Empty exploration returns valid FinalExplorationSchema with correct knowledge_gaps_empty_reason."""
     gen = _MockActionGenerator([None])  # immediate stop
     disp = _MockDispatcher([])
     runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Unknown task")
 
-    assert isinstance(result, ExplorationResult)
-    assert result.items == []
+    assert isinstance(result, FinalExplorationSchema)
+    assert result.evidence == []
     assert result.metadata.total_items == 0
     # Empty items → knowledge_gaps must be [] + knowledge_gaps_empty_reason must be set
-    assert result.summary.knowledge_gaps == []
-    assert result.summary.knowledge_gaps_empty_reason  # non-empty string
+    assert result.exploration_summary.knowledge_gaps == []
+    assert result.exploration_summary.knowledge_gaps_empty_reason  # non-empty string
 
 
 def test_exploration_non_empty_has_knowledge_gaps():
@@ -257,9 +288,9 @@ def test_exploration_non_empty_has_knowledge_gaps():
     runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Explain AgentLoop")
 
-    assert len(result.items) == 1
-    assert result.summary.knowledge_gaps  # non-empty list
-    assert result.summary.knowledge_gaps_empty_reason is None  # must be None when gaps non-empty
+    assert len(result.evidence) == 1
+    assert result.exploration_summary.knowledge_gaps  # non-empty list
+    assert result.exploration_summary.knowledge_gaps_empty_reason is None  # must be None when gaps non-empty
 
 
 def test_exploration_state_isolation():
@@ -297,7 +328,7 @@ def test_exploration_state_isolation():
 
 def test_exploration_result_schema_valid():
     """
-    ✅ ExplorationResult is fully Pydantic-valid and JSON-serializable.
+    ✅ FinalExplorationSchema is fully Pydantic-valid and JSON-serializable.
     """
     steps = [
         {"action": "search", "query": "AgentLoop", "_react_args": {"query": "AgentLoop"}},
@@ -319,9 +350,9 @@ def test_exploration_result_schema_valid():
     assert json.loads(json_str)  # valid JSON
     assert dumped["exploration_id"].startswith("exp_")
     assert dumped["instruction"] == "Find AgentLoop"
-    assert len(dumped["items"]) == 2
+    assert len(dumped["evidence"]) == 2
 
-    for item in dumped["items"]:
+    for item in dumped["evidence"]:
         assert item["item_id"]
         assert item["type"] in ("file", "search", "command", "other")
         assert item["source"]["ref"]
@@ -332,7 +363,7 @@ def test_exploration_result_schema_valid():
 
 
 def test_exploration_item_count_matches_metadata():
-    """metadata.total_items MUST match len(items)."""
+    """metadata.total_items MUST match len(evidence)."""
     steps = [
         {"action": "search", "query": "x", "_react_args": {"query": "x"}},
         {"action": "open_file", "path": "y.py", "_react_args": {"path": "y.py"}},
@@ -347,7 +378,7 @@ def test_exploration_item_count_matches_metadata():
     runner = ExplorationRunner(action_generator=gen, dispatcher=disp, enable_v2=False)
     result = runner.run("Test")
 
-    assert result.metadata.total_items == len(result.items)
+    assert result.metadata.total_items == len(result.evidence)
 
 
 def test_exploration_instruction_passed_to_action_generator():
@@ -461,15 +492,15 @@ def test_exploration_v2_path_returns_bounded_schema4_items():
     runner = ExplorationRunner(
         action_generator=_MockActionGenerator([]),
         dispatcher=_V2Dispatcher(),
-        llm_generate_fn=lambda _: '{"symbols":["ModeManager"],"keywords":["mode"],"intents":["find_definition"]}',
+        llm_generate_fn=_llm_stub_v2_engine,
         enable_v2=True,
     )
     result = runner.run("Find ModeManager definition")
-    assert isinstance(result, ExplorationResult)
-    assert len(result.items) <= 6
-    assert result.metadata.total_items == len(result.items)
+    assert isinstance(result, FinalExplorationSchema)
+    assert len(result.evidence) <= 6
+    assert result.metadata.total_items == len(result.evidence)
     # Phase 12.6.E: bounded snippet + deterministic read_source tagging
-    inspected = [it for it in result.items if it.metadata.tool_name == "read_snippet"]
+    inspected = [it for it in result.evidence if it.metadata.tool_name == "read_snippet"]
     assert inspected, "Expected at least one inspection item from read_snippet"
     for it in inspected:
         assert it.read_source in ("symbol", "line", "head")
@@ -525,7 +556,7 @@ def test_exploration_v2_inspection_uses_bounded_read_tool():
     runner = ExplorationRunner(
         action_generator=_MockActionGenerator([]),
         dispatcher=_V2Dispatcher(),
-        llm_generate_fn=lambda _: '{"symbols":["ModeManager"],"keywords":["mode"],"intents":["find_definition"]}',
+        llm_generate_fn=_llm_stub_v2_engine,
         enable_v2=True,
     )
     runner.run("Find ModeManager definition")
@@ -543,13 +574,13 @@ def test_exploration_v2_empty_discovery_sets_empty_reason():
     runner = ExplorationRunner(
         action_generator=_MockActionGenerator([]),
         dispatcher=_EmptyDispatcher(),
-        llm_generate_fn=lambda _: '{"symbols":[],"keywords":[],"intents":["locate_logic"]}',
+        llm_generate_fn=_llm_stub_v2_empty_discovery,
         enable_v2=True,
     )
     result = runner.run("Unknown symbol")
-    assert result.items == []
-    assert result.summary.knowledge_gaps == []
-    assert result.summary.knowledge_gaps_empty_reason
+    assert result.evidence == []
+    assert result.exploration_summary.knowledge_gaps == []
+    assert result.exploration_summary.knowledge_gaps_empty_reason
 
 
 def test_exploration_engine_prioritizes_inspection_evidence_in_items():

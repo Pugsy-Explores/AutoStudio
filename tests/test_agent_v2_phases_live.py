@@ -24,7 +24,7 @@ Each class is marked with a 15-minute timeout when pytest-timeout is installed.
 Phase map:
   1 — Pydantic schemas: round-trip JSON / invariants
   2 — Dispatcher: ToolResult → ExecutionResult (live: real SEARCH dispatch)
-  3 — ExplorationRunner: bounded read-only loop + ExplorationResult
+  3 — ExplorationRunner: bounded read-only loop + FinalExplorationSchema
   12.5 / 12.6.D — ExplorationEngineV2: staged loop + Schema 4 (live: real LLM + search + read_snippet for inspection)
   4 — PlannerV2 + PlanValidator → PlanDocument
   5 — plan_execute: exploration → plan → PlanExecutor (LLM arg gen + tools)
@@ -44,11 +44,8 @@ from typing import Any
 import pytest
 
 from agent_v2.schemas.execution import ExecutionResult
-from agent_v2.schemas.exploration import (
-    ExplorationResult,
-    ExplorationResultMetadata,
-    ExplorationSummary,
-)
+from agent_v2.schemas.exploration import ExplorationResultMetadata, ExplorationSummary
+from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.plan import PlanDocument, PlanMetadata, PlanRisk, PlanSource, PlanStep
 from agent_v2.schemas.trace import Trace
 
@@ -104,16 +101,17 @@ def _coerce_trace(obj: Any) -> Trace:
     return obj if isinstance(obj, Trace) else Trace.model_validate(obj)
 
 
-def _assert_exploration_result_schema4(exp: ExplorationResult) -> None:
-    """Schema 4 invariants used by planner input (items cap, gaps vs empty_reason, relevance)."""
-    assert len(exp.items) <= 6
-    assert exp.metadata.total_items == len(exp.items)
-    if exp.summary.knowledge_gaps:
-        assert exp.summary.knowledge_gaps_empty_reason is None
+def _assert_exploration_result_schema4(exp: FinalExplorationSchema) -> None:
+    """Schema 4 invariants used by planner input (evidence cap, gaps vs empty_reason, relevance)."""
+    assert len(exp.evidence) <= 6
+    assert exp.metadata.total_items == len(exp.evidence)
+    es = exp.exploration_summary
+    if es.knowledge_gaps:
+        assert es.knowledge_gaps_empty_reason is None
     else:
-        assert exp.summary.knowledge_gaps_empty_reason
-        assert str(exp.summary.knowledge_gaps_empty_reason).strip()
-    for it in exp.items:
+        assert es.knowledge_gaps_empty_reason
+        assert str(es.knowledge_gaps_empty_reason).strip()
+    for it in exp.evidence:
         assert it.source.ref.strip()
         assert it.content.summary.strip()
         assert 0.0 <= it.relevance.score <= 1.0
@@ -223,13 +221,13 @@ class TestPhase3ExplorationLive:
 
         rt = create_runtime()
         exp = rt.explore("Find where PlanExecutor is defined in agent_v2")
-        assert isinstance(exp, ExplorationResult)
+        assert isinstance(exp, FinalExplorationSchema)
         assert exp.exploration_id
-        assert exp.metadata.total_items == len(exp.items)
-        assert len(exp.items) <= 6
-        assert exp.summary.overall
+        assert exp.metadata.total_items == len(exp.evidence)
+        assert len(exp.evidence) <= 6
+        assert exp.exploration_summary.overall
         # Read-only: no edit/run_tests in exploration item tool names
-        for it in exp.items:
+        for it in exp.evidence:
             assert it.metadata.tool_name in ("search", "open_file", "read_snippet", "shell", "other"), it.metadata.tool_name
 
 
@@ -252,11 +250,11 @@ class TestPhase125ExplorationEngineV2Live:
         exp = rt.explore(
             "Find where ExplorationRunner or ModeManager is defined under agent_v2; use repo search context."
         )
-        assert isinstance(exp, ExplorationResult)
+        assert isinstance(exp, FinalExplorationSchema)
         assert exp.exploration_id.startswith("exp_")
         assert exp.instruction
         _assert_exploration_result_schema4(exp)
-        for it in exp.items:
+        for it in exp.evidence:
             assert it.metadata.tool_name in ("search", "open_file", "read_snippet", "shell", "other"), it.metadata.tool_name
 
     def test_exploration_legacy_live_when_v2_flag_off(self, require_live, project_root, monkeypatch):
@@ -267,13 +265,14 @@ class TestPhase125ExplorationEngineV2Live:
 
         rt = create_runtime()
         exp = rt.explore("Find PlanExecutor class in agent_v2")
-        assert isinstance(exp, ExplorationResult)
-        assert len(exp.items) <= 6
-        assert exp.metadata.total_items == len(exp.items)
-        if exp.summary.knowledge_gaps:
-            assert exp.summary.knowledge_gaps_empty_reason is None
+        assert isinstance(exp, FinalExplorationSchema)
+        assert len(exp.evidence) <= 6
+        assert exp.metadata.total_items == len(exp.evidence)
+        es = exp.exploration_summary
+        if es.knowledge_gaps:
+            assert es.knowledge_gaps_empty_reason is None
         else:
-            assert exp.summary.knowledge_gaps_empty_reason
+            assert es.knowledge_gaps_empty_reason
 
 
 @pytest.mark.timeout(900)

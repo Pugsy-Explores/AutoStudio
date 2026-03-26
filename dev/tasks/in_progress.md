@@ -2,6 +2,7 @@
 
 <!-- Currently active tasks -->
 
+- **Exploration working memory (Schema 4 single source of truth)** — Done: `ExplorationWorkingMemory` + `_build_result_from_memory` in `exploration_engine_v2.py`; plan: [Docs/architecture_freeze/EXPLORATION_WORKING_MEMORY_DESIGN.md](../Docs/architecture_freeze/EXPLORATION_WORKING_MEMORY_DESIGN.md)
 - **Retrieval daemon in agent loop (auto-start)** — Use unified retrieval daemon (embedding + reranker) in main agent loop; if not running, start it. Plan: [dev/roadmap/retrieval_daemon_auto_start_plan.md](../roadmap/retrieval_daemon_auto_start_plan.md)
 - Phase 10 — Repository-Scale Intelligence (repo_intelligence layer, repository_tasks.json, run_repository_eval.py)
 - Phase 10.5 — Graph-Guided Localization (localization layer, dependency_traversal, execution_path_analyzer, symbol_ranker, localization_engine; dev/roadmap/phase_10-5_graph_traversal.md)

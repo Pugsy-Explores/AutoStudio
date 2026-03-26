@@ -35,7 +35,6 @@ from agent_v2.schemas.plan import (
 )
 from agent_v2.schemas.execution import ExecutionResult, ExecutionOutput, ExecutionMetadata
 from agent_v2.schemas.exploration import (
-    ExplorationResult,
     ExplorationSummary,
     ExplorationItem,
     ExplorationResultMetadata,
@@ -44,6 +43,7 @@ from agent_v2.schemas.exploration import (
     ExplorationRelevance,
     ExplorationItemMetadata,
 )
+from agent_v2.schemas.final_exploration import ExplorationAdapterTrace, FinalExplorationSchema
 
 
 def _make_plan_document(plan_id: str, steps: list[PlanStep]) -> PlanDocument:
@@ -60,13 +60,15 @@ def _make_plan_document(plan_id: str, steps: list[PlanStep]) -> PlanDocument:
     )
 
 
-def _make_exploration_result() -> ExplorationResult:
-    """Helper to construct a minimal valid ExplorationResult for tests."""
-    return ExplorationResult(
+def _make_exploration_result() -> FinalExplorationSchema:
+    """Helper to construct a minimal valid FinalExplorationSchema for tests."""
+    return FinalExplorationSchema(
         exploration_id="exp_test_123",
         instruction="test",
-        items=[],
-        summary=ExplorationSummary(
+        status="complete",
+        evidence=[],
+        relationships=[],
+        exploration_summary=ExplorationSummary(
             overall="test summary",
             key_findings=["finding1"],
             knowledge_gaps=[],
@@ -76,16 +78,20 @@ def _make_exploration_result() -> ExplorationResult:
             total_items=0,
             created_at="2026-01-01T00:00:00Z",
         ),
+        confidence="high",
+        trace=ExplorationAdapterTrace(llm_used=False, synthesis_success=False),
     )
 
 
-def _make_exploration_result_complete() -> ExplorationResult:
+def _make_exploration_result_complete() -> FinalExplorationSchema:
     """Minimal exploration result that passes mode_manager completion gate."""
-    return ExplorationResult(
+    return FinalExplorationSchema(
         exploration_id="exp_test_123",
         instruction="test task",
-        items=[],
-        summary=ExplorationSummary(
+        status="complete",
+        evidence=[],
+        relationships=[],
+        exploration_summary=ExplorationSummary(
             overall="test summary",
             key_findings=["finding1"],
             knowledge_gaps=[],
@@ -96,6 +102,8 @@ def _make_exploration_result_complete() -> ExplorationResult:
             created_at="2026-01-01T00:00:00Z",
             completion_status="complete",
         ),
+        confidence="high",
+        trace=ExplorationAdapterTrace(llm_used=False, synthesis_success=False),
     )
 
 

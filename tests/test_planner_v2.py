@@ -4,11 +4,8 @@ import json
 import unittest
 
 from agent_v2.planner.planner_v2 import PlannerV2, _coerce_step_action_and_type
-from agent_v2.schemas.exploration import (
-    ExplorationResult,
-    ExplorationResultMetadata,
-    ExplorationSummary,
-)
+from agent_v2.schemas.exploration import ExplorationResultMetadata, ExplorationSummary
+from agent_v2.schemas.final_exploration import ExplorationAdapterTrace, FinalExplorationSchema
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.replan import (
     ReplanContext,
@@ -18,18 +15,22 @@ from agent_v2.schemas.replan import (
 from agent_v2.validation.plan_validator import PlanValidationError, PlanValidator
 
 
-def _minimal_exploration(instruction: str = "Explain AgentLoop") -> ExplorationResult:
-    return ExplorationResult(
+def _minimal_exploration(instruction: str = "Explain AgentLoop") -> FinalExplorationSchema:
+    return FinalExplorationSchema(
         exploration_id="exp_test",
         instruction=instruction,
-        items=[],
-        summary=ExplorationSummary(
+        status="complete",
+        evidence=[],
+        relationships=[],
+        exploration_summary=ExplorationSummary(
             overall="Exploration found agent loop in agent_v2/runtime.",
             key_findings=["AgentLoop coordinates dispatcher and action generator."],
             knowledge_gaps=[],
             knowledge_gaps_empty_reason="No gaps for this smoke test.",
         ),
         metadata=ExplorationResultMetadata(total_items=0, created_at="2026-01-01T00:00:00Z"),
+        confidence="high",
+        trace=ExplorationAdapterTrace(llm_used=False, synthesis_success=False),
     )
 
 

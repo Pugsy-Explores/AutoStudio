@@ -25,7 +25,7 @@ from agent.tools.react_tools import register_all_tools
 register_all_tools()
 
 from agent.tools import filesystem_adapter
-from agent_v2.schemas.exploration import ExplorationResult
+from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.runtime.dispatcher import Dispatcher
 
 
@@ -119,7 +119,7 @@ def _make_runner_with_capture(monkeypatch, project_root: Path):
 def _assert_phase_126_gaps_fixed(
     captured: list[str],
     full_read_paths: list[str],
-    exploration: ExplorationResult,
+    exploration: FinalExplorationSchema,
 ) -> None:
     """Phase 12.6.D merged RCA: unified bounded read; no full-file open_file in exploration."""
     assert "open_file" not in captured, (
@@ -134,9 +134,9 @@ def _assert_phase_126_gaps_fixed(
         "filesystem_adapter.read_file (full read) must not run during bounded exploration. "
         f"Got: {full_read_paths}"
     )
-    assert isinstance(exploration, ExplorationResult)
-    assert exploration.metadata.total_items == len(exploration.items)
-    tool_names = {it.metadata.tool_name for it in exploration.items}
+    assert isinstance(exploration, FinalExplorationSchema)
+    assert exploration.metadata.total_items == len(exploration.evidence)
+    tool_names = {it.metadata.tool_name for it in exploration.evidence}
     assert "read_snippet" in tool_names, f"Expected read_snippet in item tool names, got {tool_names}"
     assert "open_file" not in tool_names, f"open_file must not appear in exploration items, got {tool_names}"
 
