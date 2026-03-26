@@ -1,1 +1,0 @@
-task_id=sq_hard_2hop_arch success=True validation_passed=True failure_bucket=None

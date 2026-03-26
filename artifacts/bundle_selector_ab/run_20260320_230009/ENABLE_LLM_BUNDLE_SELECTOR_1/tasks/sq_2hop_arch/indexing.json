@@ -1,7 +1,0 @@
-{
-  "ok": true,
-  "symbol_count": 10,
-  "index_sqlite": "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_230009/ENABLE_LLM_BUNDLE_SELECTOR_1/workspaces/sq_2hop_arch/.symbol_graph/index.sqlite",
-  "symbol_graph_dir": "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_230009/ENABLE_LLM_BUNDLE_SELECTOR_1/workspaces/sq_2hop_arch/.symbol_graph",
-  "symbols_json": "/Users/shang/my_work/AutoStudio/artifacts/bundle_selector_ab/run_20260320_230009/ENABLE_LLM_BUNDLE_SELECTOR_1/workspaces/sq_2hop_arch/.symbol_graph/symbols.json"
-}

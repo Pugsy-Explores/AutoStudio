@@ -1,1 +1,0 @@
-.symbol_graph/embeddings/chroma.sqlite3

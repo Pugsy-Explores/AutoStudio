@@ -1,1 +1,0 @@
-task_id=sq_config_settings success=True validation_passed=True failure_bucket=None

@@ -57,5 +57,13 @@ models/
 artifacts/agent_eval/
 artifacts/agent_eval_runs/
 
+# Local A/B runs, scratch eval workspaces, and debug trees (large; regenerate locally)
+artifacts/bundle_selector_ab/
+artifacts/kind_expansion_ab/
+artifacts/_*/
+artifacts/debug_recursion_ws/
+artifacts/debug_recursion_ws2/
+artifacts/replanner_debug/
+
 # Temporary test and audit reports
 tmp/

@@ -1,7 +1,0 @@
-{
-  "ok": true,
-  "symbol_count": 10,
-  "index_sqlite": "/Users/shang/my_work/AutoStudio/artifacts/kind_expansion_ab/run_20260320_221421/ENABLE_KIND_AWARE_EXPANSION_0/workspaces/sq_2hop_arch/.symbol_graph/index.sqlite",
-  "symbol_graph_dir": "/Users/shang/my_work/AutoStudio/artifacts/kind_expansion_ab/run_20260320_221421/ENABLE_KIND_AWARE_EXPANSION_0/workspaces/sq_2hop_arch/.symbol_graph",
-  "symbols_json": "/Users/shang/my_work/AutoStudio/artifacts/kind_expansion_ab/run_20260320_221421/ENABLE_KIND_AWARE_EXPANSION_0/workspaces/sq_2hop_arch/.symbol_graph/symbols.json"
-}

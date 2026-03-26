@@ -1,9 +1,0 @@
-[
-  {
-    "command": "python3 -m pytest tests/test_smoke.py -q",
-    "original_command": "python3 -m pytest tests/test_smoke.py -q",
-    "exit_code": 0,
-    "stdout": ".                                                                        [100%]\n1 passed in 0.03s\n",
-    "stderr": ""
-  }
-]
