@@ -18,6 +18,7 @@ from agent_v2.schemas.execution import ErrorType
 from agent_v2.schemas.plan import (
     PlanDocument,
     PlanMetadata,
+    PlannerControllerOutput,
     PlanRisk,
     PlanSource,
     PlanStep,
@@ -25,6 +26,7 @@ from agent_v2.schemas.plan import (
     PlanStepFailure,
     PlanStepLastResult,
 )
+from agent_v2.schemas.plan_state import PlanState
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.replan import PlannerInput, ReplanContext
 from agent_v2.schemas.final_exploration import FinalExplorationSchema
@@ -37,6 +39,15 @@ from agent_v2.observability.langfuse_helpers import (
 from agent_v2.validation.plan_validator import PlanValidationError, PlanValidator
 
 DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
+
+# Shared prompt fragment when require_controller_json=True (exploration + replan).
+_CONTROLLER_JSON_PROMPT_BLOCK = """
+CONTROLLER (required top-level JSON key \"controller\"):
+- \"action\": one of \"continue\" | \"replan\" | \"explore\" (only \"explore\" requests sub-exploration).
+- \"next_step_instruction\": short string; may be empty if the plan steps are already clear.
+- \"exploration_query\": MUST be non-empty if and only if action is \"explore\".
+
+"""
 
 # ---------------------------------------------------------------------------
 # CRITICAL — TECH DEBT (remove or narrow when replanner module exists)
@@ -174,6 +185,38 @@ def _trim_plan_steps_preserving_finish(steps_raw: list[Any], max_steps: int) -> 
     return list(head) + [terminal]
 
 
+_MAX_RELATIONSHIP_EDGES = 24
+
+
+def _format_relationships_block(exploration: FinalExplorationSchema) -> str:
+    edges = exploration.relationships or []
+    if not edges:
+        return "(none)"
+    lines: list[str] = []
+    for e in edges[:_MAX_RELATIONSHIP_EDGES]:
+        lines.append(
+            f"- {e.from_key} --[{e.type}]--> {e.to_key} (conf={e.confidence:.2f}, src={e.source})"
+        )
+    if len(edges) > _MAX_RELATIONSHIP_EDGES:
+        lines.append(f"... ({len(edges) - _MAX_RELATIONSHIP_EDGES} more edges omitted)")
+    return "\n".join(lines)
+
+
+def _format_plan_state_block(plan_state: PlanState) -> str:
+    done = "\n".join(f"- {c.step_id}: {c.summary[:500]}" for c in plan_state.completed_steps) or "(none)"
+    cur = plan_state.current_step_id or "(unknown)"
+    idx = plan_state.current_step_index
+    idx_s = str(idx) if idx is not None else "?"
+    last = (plan_state.last_result_summary or "").strip() or "(none)"
+    return f"""COMPLETED STEPS (summaries):
+{done}
+
+CURRENT STEP: {cur} (index {idx_s})
+LAST RESULT SUMMARY:
+{last}
+"""
+
+
 class PlannerV2:
     """
     Production planner: exploration- or replan-grounded structured plan only.
@@ -199,6 +242,9 @@ class PlannerV2:
         deep: bool = False,
         langfuse_trace: Any = None,
         obs: Any = None,
+        *,
+        plan_state: PlanState | None = None,
+        require_controller_json: bool = False,
     ) -> PlanDocument:
         # LIVE-TEST-002: Infer task mode from instruction
         task_mode = self._infer_task_mode(instruction)
@@ -209,7 +255,14 @@ class PlannerV2:
         elif langfuse_trace is not None:
             lf = langfuse_trace
 
-        prompt = self._build_prompt(instruction, planner_input, deep, task_mode=task_mode)
+        prompt = self._build_prompt(
+            instruction,
+            planner_input,
+            deep,
+            task_mode=task_mode,
+            plan_state=plan_state,
+            require_controller_json=require_controller_json,
+        )
         gen_name = "planner_replan" if isinstance(planner_input, ReplanContext) else "planner"
         planning_span: Any = None
         if lf is not None and hasattr(lf, "span"):
@@ -235,12 +288,16 @@ class PlannerV2:
                     planning_span.end()
                 except Exception:
                     pass
-        plan = self._build_plan(raw, instruction)
+        plan = self._build_plan(
+            raw,
+            instruction,
+            require_controller_json=require_controller_json,
+        )
         if not isinstance(plan, PlanDocument):
             raise TypeError(
                 f"Planner internal error: expected PlanDocument, got {type(plan).__name__}"
             )
-        
+
         PlanValidator.validate_plan(plan, policy=self._policy, task_mode=task_mode)
         return plan
 
@@ -250,11 +307,28 @@ class PlannerV2:
         planner_input: PlannerInput,
         deep: bool,
         task_mode: Optional[str] = None,
+        *,
+        plan_state: PlanState | None = None,
+        require_controller_json: bool = False,
     ) -> str:
         if isinstance(planner_input, ReplanContext):
-            return self._build_replan_prompt(instruction, planner_input, deep, task_mode=task_mode)
+            return self._build_replan_prompt(
+                instruction,
+                planner_input,
+                deep,
+                task_mode=task_mode,
+                plan_state=plan_state,
+                require_controller_json=require_controller_json,
+            )
         if isinstance(planner_input, FinalExplorationSchema):
-            return self._build_exploration_prompt(instruction, planner_input, deep, task_mode=task_mode)
+            return self._build_exploration_prompt(
+                instruction,
+                planner_input,
+                deep,
+                task_mode=task_mode,
+                plan_state=plan_state,
+                require_controller_json=require_controller_json,
+            )
         raise TypeError(f"Unsupported planner_input type: {type(planner_input)!r}")
 
     def _infer_task_mode(self, instruction: str) -> Optional[str]:
@@ -294,6 +368,9 @@ class PlannerV2:
         exploration: FinalExplorationSchema,
         deep: bool,
         task_mode: Optional[str] = None,
+        *,
+        plan_state: PlanState | None = None,
+        require_controller_json: bool = False,
     ) -> str:
         es = exploration.exploration_summary
         key_findings = "\n".join(f"- {k}" for k in es.key_findings) or "(none)"
@@ -309,6 +386,18 @@ class PlannerV2:
             ss_head = int(source_summary.get("head", 0) or 0)
         else:
             ss_symbol = ss_line = ss_head = 0
+
+        completion_status = getattr(md, "completion_status", None) if md is not None else None
+        term_reason = getattr(md, "termination_reason", None) if md is not None else None
+        conf_band = exploration.confidence
+        rel_block = _format_relationships_block(exploration)
+        plan_progress = ""
+        if plan_state is not None:
+            plan_progress = "\nPLAN PROGRESS (read-only snapshot):\n" + _format_plan_state_block(
+                plan_state
+            )
+
+        controller_block = _CONTROLLER_JSON_PROMPT_BLOCK if require_controller_json else ""
 
         item_lines: list[str] = []
         for item in exploration.evidence:
@@ -341,6 +430,15 @@ class PlannerV2:
                 "Only allowed actions: search, open_file, finish\n"
             )
 
+        meta_sig = f"""EXPLORATION SIGNALS (use for ordering and risk):
+- exploration_status (top-level): {exploration.status}
+- metadata.completion_status: {completion_status or "(unknown)"}
+- metadata.termination_reason: {term_reason or "(unknown)"}
+- confidence (band): {conf_band}
+
+RELATIONSHIP EDGES (dependency hints; use for ordering and open_file order):
+{rel_block}
+{plan_progress}{controller_block}"""
         return f"""You are a senior software engineer planning a solution.
 
 TASK:
@@ -349,6 +447,7 @@ TASK:
 EXPLORATION SUMMARY:
 {exploration.exploration_summary.overall}
 
+{meta_sig}
 EXPLORATION SOURCES:
 - symbol reads: {ss_symbol}
 - line reads: {ss_line}
@@ -373,7 +472,7 @@ REQUIREMENTS:
 3. Each entry in "steps" MUST have:
    - step_id (string)
    - type (one of: explore, analyze, modify, validate, finish)
-   - goal (string)
+   - goal (string) — one concrete tool-executable unit; avoid vague goals like "understand the module" without a named tool action
    - action (one of: {allowed_actions})
    - dependencies (array of step_id strings; use [] if none)
    - inputs (object, may be {{}})
@@ -389,12 +488,17 @@ REQUIREMENTS:
    - Use EXPLORATION ITEMS (snippets + read_source) as primary grounding, not just the exploration summary.
    - When referencing code, use the exact file paths shown in EXPLORATION ITEMS / SOURCES.
    - Prefer plan steps that open/read the specific files/symbols implied by snippets.
+   - Use RELATIONSHIP EDGES to order dependencies (callers/callees) when relevant.
+   - When confidence is low or metadata indicates incomplete runs, prefer conservative steps (search/open_file) before edits.
 8. Tool-argument requirements (critical correctness):
    - If action == "open_file": inputs MUST include a non-empty "path" that exactly matches a file path from SOURCES/EXPLORATION ITEMS.
    - If action == "search": inputs MUST include a non-empty "query".
    - Never emit placeholder targets like "alternative_sources" or "community_discussions" as if they were files.
 9. "sources" array: objects with type (file|search|other), ref, summary — align with exploration when possible.
 10. "completion_criteria": non-empty array of strings.
+11. Atomic steps: each step must map to a single dispatchable tool action (search/ open_file/edit/…/finish); never a free-form research phase without a tool.
+
+{"12. You MUST include a top-level \"controller\" object exactly as specified in CONTROLLER above." if require_controller_json else ""}
 
 Return a single JSON object only.
 """
@@ -405,6 +509,9 @@ Return a single JSON object only.
         ctx: ReplanContext,
         deep: bool,
         task_mode: Optional[str] = None,
+        *,
+        plan_state: PlanState | None = None,
+        require_controller_json: bool = False,
     ) -> str:
         fc = ctx.failure_context
         completed = "\n".join(f"- {c.step_id}: {c.summary}" for c in ctx.completed_steps) or "(none)"
@@ -421,6 +528,20 @@ Key findings:
 Knowledge gaps:
 {kg}
 """
+        trig = getattr(ctx, "trigger", "failure") or "failure"
+        trigger_note = ""
+        if trig == "insufficiency":
+            trigger_note = (
+                "\nTRIGGER: insufficiency — evidence or exploration output is insufficient for the "
+                "next decision (not necessarily a tool crash). Revise strategy; preserve completed "
+                "work; do not rewrite completed step definitions.\n"
+            )
+        plan_progress = ""
+        if plan_state is not None:
+            plan_progress = "\nPLAN PROGRESS (read-only snapshot):\n" + _format_plan_state_block(
+                plan_state
+            )
+
         deep_extra = ""
         if deep:
             deep_extra = (
@@ -439,6 +560,19 @@ Knowledge gaps:
                 "Only allowed actions: search, open_file, finish\n"
             )
 
+        controller_block = _CONTROLLER_JSON_PROMPT_BLOCK if require_controller_json else ""
+        top_keys = (
+            "steps, understanding, sources, risks, completion_criteria, controller"
+            if require_controller_json
+            else "steps, understanding, sources, risks, completion_criteria"
+        )
+        ctrl_requirement = ""
+        if require_controller_json:
+            ctrl_requirement = (
+                "\n7. You MUST include a top-level \"controller\" object exactly as specified "
+                "in CONTROLLER above."
+            )
+
         return f"""You are a senior software engineer revising a plan after execution failure.
 
 ORIGINAL TASK:
@@ -450,19 +584,22 @@ FAILURE:
 - message: {fc.error.message}
 - attempts: {fc.attempts}
 - last_output_summary: {fc.last_output_summary}
+- replan_trigger: {trig}
+{trigger_note}
 
 COMPLETED STEPS:
 {completed}
 {explore_block}
+{plan_progress}{controller_block}
 {deep_extra}{task_mode_constraint}
 REQUIREMENTS:
 
-1. Output STRICT JSON only with keys: steps, understanding, sources, risks, completion_criteria.
+1. Output STRICT JSON only with keys: {top_keys}.
 2. Follow the same step schema as initial planning (type, action, goal, step_id, dependencies, inputs, outputs).
 3. At most 8 steps; final step MUST be type=finish, action=finish.
 4. Allowed actions: {allowed_actions}
 5. At least one risk with risk, impact, mitigation.
-6. Address the failure and remaining work; do not repeat failed assumptions.
+6. Address the failure and remaining work; do not repeat failed assumptions.{ctrl_requirement}
 
 Return a single JSON object only.
 """
@@ -524,9 +661,41 @@ Return a single JSON object only.
                     )
         raise PlanValidationError(f"Planner LLM output was not valid JSON: {last_err}") from last_err
 
-    def _build_plan(self, raw: dict[str, Any], instruction: str) -> PlanDocument:
+    @staticmethod
+    def _validate_controller_pairing(controller: PlannerControllerOutput) -> None:
+        q = (controller.exploration_query or "").strip()
+        if controller.action == "explore":
+            if not q:
+                raise PlanValidationError(
+                    "controller.action is 'explore' but exploration_query is empty"
+                )
+        elif q:
+            raise PlanValidationError(
+                "controller.exploration_query must be empty unless action is 'explore'"
+            )
+
+    def _build_plan(
+        self,
+        raw: dict[str, Any],
+        instruction: str,
+        *,
+        require_controller_json: bool = False,
+    ) -> PlanDocument:
         created = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         plan_id = f"plan_{uuid.uuid4().hex[:12]}"
+
+        ctrl_out: Optional[PlannerControllerOutput] = None
+        cr = raw.get("controller")
+        if isinstance(cr, dict):
+            try:
+                ctrl_out = PlannerControllerOutput.model_validate(cr)
+            except ValidationError as e:
+                raise PlanValidationError(f"Invalid controller object: {e}") from e
+        elif require_controller_json:
+            raise PlanValidationError('Missing required top-level "controller" object')
+        if ctrl_out is not None:
+            self._validate_controller_pairing(ctrl_out)
+
         steps_raw = raw.get("steps") or []
         if not isinstance(steps_raw, list):
             steps_raw = []
@@ -647,6 +816,7 @@ Return a single JSON object only.
             risks=risks,
             completion_criteria=completion,
             metadata=metadata,
+            controller=ctrl_out,
         )
 
     def _normalize_sources(self, raw: Any) -> list[PlanSource]:
