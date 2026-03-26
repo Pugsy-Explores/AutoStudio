@@ -22,7 +22,7 @@ from agent_v2.observability.langfuse_helpers import (
 )
 from agent_v2.planner.planner_v2 import PlannerV2
 from agent_v2.runtime.plan_argument_generator import PlanArgumentGenerator
-from agent_v2.schemas.exploration import ExplorationResult
+from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.replan import PlannerInput
 
@@ -68,12 +68,14 @@ class V2PlannerAdapter:
         instruction: str,
         deep: bool = False,
         exploration_runner=None,
-        exploration: ExplorationResult | None = None,
+        exploration: FinalExplorationSchema | None = None,
         planner_input: PlannerInput | None = None,
         langfuse_trace: Any = None,
         obs: Any = None,
         **kwargs,
     ):
+        plan_state = kwargs.get("plan_state")
+        require_controller_json = bool(kwargs.get("require_controller_json", False))
         if planner_input is not None:
             return self._inner.plan(
                 instruction,
@@ -81,6 +83,8 @@ class V2PlannerAdapter:
                 deep=deep,
                 langfuse_trace=langfuse_trace,
                 obs=obs,
+                plan_state=plan_state,
+                require_controller_json=require_controller_json,
             )
         if exploration is not None:
             ex = exploration
@@ -92,7 +96,13 @@ class V2PlannerAdapter:
                 "or planner_input (e.g. ReplanContext)."
             )
         return self._inner.plan(
-            instruction, ex, deep=deep, langfuse_trace=langfuse_trace, obs=obs
+            instruction,
+            ex,
+            deep=deep,
+            langfuse_trace=langfuse_trace,
+            obs=obs,
+            plan_state=plan_state,
+            require_controller_json=require_controller_json,
         )
 
 
