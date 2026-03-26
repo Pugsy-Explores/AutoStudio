@@ -80,6 +80,7 @@ class AgentRuntime:
         replanner=None,
         execution_policy: ExecutionPolicy | None = None,
         exploration_llm_fn=None,
+        model_name: str | None = None,
     ):
         dispatcher = Dispatcher(execute_fn=dispatch_fn)
         self.dispatcher = dispatcher
@@ -109,6 +110,7 @@ class AgentRuntime:
             action_generator=action_generator,
             dispatcher=dispatcher,
             llm_generate_fn=exploration_llm_fn,
+            model_name=model_name,
         )
 
         self.mode_manager = ModeManager(

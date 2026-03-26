@@ -1,23 +1,50 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Callable
 
+from agent_v2.config import EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K, EXPLORATION_SELECTOR_TOP_K
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
     langfuse_generation_end_with_usage,
     langfuse_generation_input_with_prompt,
     try_langfuse_generation,
 )
+from agent.prompt_system.registry import get_registry
 from agent_v2.schemas.exploration import ExplorationCandidate
+from agent_v2.utils.json_extractor import JSONExtractor
+
+_EXPLORATION_SELECTOR_SINGLE_KEY = "exploration.selector.single"
+_EXPLORATION_SELECTOR_BATCH_KEY = "exploration.selector.batch"
 
 
 class CandidateSelector:
     """Select exploration candidates in a single ranking pass."""
 
-    def __init__(self, llm_generate: Callable[[str], str] | None = None):
+    def __init__(
+        self,
+        llm_generate: Callable[[str], str] | None = None,
+        llm_generate_messages: Callable[[list[dict[str, str]]], str] | None = None,
+        *,
+        model_name: str | None = None,
+        llm_generate_single: Callable[[str], str] | None = None,
+        llm_generate_batch: Callable[[str], str] | None = None,
+        llm_generate_messages_single: Callable[[list[dict[str, str]]], str] | None = None,
+        llm_generate_messages_batch: Callable[[list[dict[str, str]]], str] | None = None,
+        model_name_single: str | None = None,
+        model_name_batch: str | None = None,
+    ):
         self._llm_generate = llm_generate
+        self._llm_generate_messages = llm_generate_messages
+        self._model_name = model_name
+        # Backward-compatible defaults: if stage-specific callables are not passed,
+        # reuse legacy shared llm/model wiring.
+        self._llm_generate_single = llm_generate_single or llm_generate
+        self._llm_generate_batch = llm_generate_batch or llm_generate
+        self._llm_generate_messages_single = llm_generate_messages_single or llm_generate_messages
+        self._llm_generate_messages_batch = llm_generate_messages_batch or llm_generate_messages
+        self._model_name_single = model_name_single if model_name_single is not None else model_name
+        self._model_name_batch = model_name_batch if model_name_batch is not None else model_name
 
     def select(
         self,
@@ -27,56 +54,10 @@ class CandidateSelector:
     ) -> ExplorationCandidate | None:
         if not candidates:
             return None
-        top = candidates[:10]
+        top = candidates[:EXPLORATION_SELECTOR_TOP_K]
 
-        if self._llm_generate is not None:
-            try:
-                payload = [
-                    {
-                        "file_path": c.file_path,
-                        "symbol": c.symbol,
-                        "source": c.source,
-                    }
-                    for c in top
-                ]
-                prompt = (
-                    "You are selecting the most relevant code location.\n"
-                    "Return STRICT JSON only: {\"file_path\":\"...\",\"symbol\":\"...\"}.\n"
-                    "Prefer implementation files over tests and already explored files.\n\n"
-                    f"Instruction:\n{instruction}\n\nCandidates:\n{json.dumps(payload)}"
-                )
-                raw = self._llm_generate(prompt)
-                choice = self._parse_json_object(raw)
-                selected = self._match(choice, top)
-                if selected is not None:
-                    return selected
-            except Exception:
-                pass
-
-        unvisited = [c for c in top if c.file_path not in seen_files]
-        pool = unvisited if unvisited else top
-        pool = sorted(pool, key=self._heuristic_score, reverse=True)
-        return pool[0] if pool else None
-
-    def select_batch(
-        self,
-        instruction: str,
-        candidates: list[ExplorationCandidate],
-        seen_files: set[str],
-        *,
-        limit: int,
-        lf_select_span: Any = None,
-        lf_exploration_parent: Any = None,
-    ) -> list[ExplorationCandidate] | None:
-        if not candidates or limit <= 0:
-            return []
-        top = candidates[:10]
-        unvisited_top = [c for c in top if c.file_path not in seen_files]
-        fallback_pool = unvisited_top if unvisited_top else top
-        fallback_ranked = sorted(fallback_pool, key=self._heuristic_score, reverse=True)[:limit]
-
-        if self._llm_generate is None:
-            return fallback_ranked
+        if self._llm_generate_single is None and self._llm_generate_messages_single is None:
+            raise ValueError("CandidateSelector.select requires single LLM callable in strict mode.")
 
         payload = [
             {
@@ -86,18 +67,90 @@ class CandidateSelector:
             }
             for c in top
         ]
+        system_prompt, user_prompt = get_registry().render_prompt_parts(
+            _EXPLORATION_SELECTOR_SINGLE_KEY,
+            model_name=self._model_name_single,
+            variables={
+                "instruction": instruction,
+                "candidates_json": json.dumps(payload),
+            },
+        )
         prompt = (
-            "You are ranking code locations for exploration.\n"
-            "Return STRICT JSON only in one of these shapes:\n"
-            '1) {"selected":[{"file_path":"...","symbol":"..."}, ...]}\n'
-            '2) {"selected":[],"no_relevant_candidate":true}\n'
-            "Rules:\n"
-            "- Rank best-first.\n"
-            "- Prefer implementation files over tests and already explored files.\n"
-            "- If no candidates are relevant, set no_relevant_candidate=true.\n\n"
-            f"Instruction:\n{instruction}\n\n"
-            f"Limit: {limit}\n\n"
-            f"Candidates:\n{json.dumps(payload)}"
+            f"[SYSTEM]\n{system_prompt}\n\n---\n\n[USER]\n{user_prompt}".strip()
+            if user_prompt.strip()
+            else system_prompt
+        )
+        if self._llm_generate_messages_single is not None and user_prompt.strip():
+            raw = self._llm_generate_messages_single(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+        elif self._llm_generate_messages_single is not None:
+            raw = self._llm_generate_messages_single([{"role": "system", "content": system_prompt}])
+        else:
+            raw = self._llm_generate_single(prompt)
+        choice = JSONExtractor.extract_final_json(raw)
+        selected = self._match(choice, top)
+        if selected is None:
+            raise ValueError("CandidateSelector.select could not match parsed JSON choice to candidates.")
+        return selected
+
+    def select_batch(
+        self,
+        instruction: str,
+        intent: str,
+        candidates: list[ExplorationCandidate],
+        seen_files: set[str],
+        *,
+        limit: int,
+        explored_location_keys: set[tuple[str, str]] | None = None,
+        lf_select_span: Any = None,
+        lf_exploration_parent: Any = None,
+    ) -> list[ExplorationCandidate] | None:
+        if not candidates or limit <= 0:
+            return []
+        top = candidates[:EXPLORATION_SELECTOR_TOP_K]
+        if self._llm_generate_batch is None and self._llm_generate_messages_batch is None:
+            raise ValueError("CandidateSelector.select_batch requires batch LLM callable in strict mode.")
+
+        payload = [
+            {
+                "file_path": c.file_path,
+                "symbol": c.symbol,
+                "source": c.source,
+            }
+            for c in top
+        ]
+        explored_block = ""
+        if explored_location_keys:
+            rows = [
+                {"file_path": fp, "symbol": sym or ""}
+                for fp, sym in sorted(explored_location_keys, key=lambda t: (t[0], t[1]))[
+                    :EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K
+                ]
+            ]
+            explored_block = (
+                "\nLocations already inspected in this run (choose different file/symbol pairs "
+                "unless no alternative exists):\n"
+                f"{json.dumps(rows, ensure_ascii=False)}\n"
+            )
+        system_prompt, user_prompt = get_registry().render_prompt_parts(
+            _EXPLORATION_SELECTOR_BATCH_KEY,
+            model_name=self._model_name_batch,
+            variables={
+                "instruction": instruction,
+                "intent": intent or "no intent",
+                "explored_block": explored_block,
+                "candidates_json": json.dumps(payload, ensure_ascii=False),
+                "limit": limit,
+            },
+        )
+        prompt = (
+            f"[SYSTEM]\n{system_prompt}\n\n---\n\n[USER]\n{user_prompt}".strip()
+            if user_prompt.strip()
+            else system_prompt
         )
         gen = try_langfuse_generation(
             lf_select_span,
@@ -109,57 +162,62 @@ class CandidateSelector:
             ),
         )
 
-        try:
-            raw = self._llm_generate(prompt)
-            parsed = self._parse_json_object(raw)
-            if bool(parsed.get("no_relevant_candidate")):
-                if gen is not None:
-                    try:
-                        langfuse_generation_end_with_usage(
-                            gen,
-                            output={
-                                "no_relevant_candidate": True,
-                                "response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS],
-                            },
-                        )
-                    except Exception:
-                        pass
-                return None
-            selected_raw = parsed.get("selected")
-            if isinstance(selected_raw, list):
-                ranked = self._match_many(selected_raw, top, limit=limit)
-                if ranked:
-                    if gen is not None:
-                        try:
-                            langfuse_generation_end_with_usage(
-                                gen,
-                                output={
-                                    "response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]
-                                },
-                            )
-                        except Exception:
-                            pass
-                    return ranked
-        except Exception:
+        if self._llm_generate_messages_batch is not None and user_prompt.strip():
+            raw = self._llm_generate_messages_batch(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+        elif self._llm_generate_messages_batch is not None:
+            raw = self._llm_generate_messages_batch([{"role": "system", "content": system_prompt}])
+        else:
+            raw = self._llm_generate_batch(prompt)
+        parsed = JSONExtractor.extract_final_json(raw)
+        if bool(parsed.get("no_relevant_candidate")):
             if gen is not None:
                 try:
-                    langfuse_generation_end_with_usage(gen, output={"error": "select_batch_failed"})
+                    langfuse_generation_end_with_usage(
+                        gen,
+                        output={
+                            "no_relevant_candidate": True,
+                            "response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS],
+                        },
+                    )
                 except Exception:
                     pass
-            pass
-
+            return None
+        selected_indices_raw = parsed.get("selected_indices")
+        if isinstance(selected_indices_raw, list):
+            selected_raw = []
+            for idx in selected_indices_raw:
+                try:
+                    i = int(idx)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= i < len(top):
+                    c = top[i]
+                    selected_raw.append({"file_path": c.file_path, "symbol": c.symbol})
+        else:
+            selected_raw = parsed.get("selected")
+        if not isinstance(selected_raw, list):
+            raise ValueError(
+                "CandidateSelector.select_batch expected `selected_indices` or `selected` list in parsed JSON."
+            )
+        ranked = self._match_many(selected_raw, top, limit=limit)
+        if not ranked:
+            raise ValueError(
+                "CandidateSelector.select_batch parsed JSON but found no matchable selections."
+            )
         if gen is not None:
             try:
-                langfuse_generation_end_with_usage(gen, output={"fallback": True})
+                langfuse_generation_end_with_usage(
+                    gen,
+                    output={"response": raw[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS]},
+                )
             except Exception:
                 pass
-        return fallback_ranked
-
-    @staticmethod
-    def _heuristic_score(candidate: ExplorationCandidate) -> tuple[int, int]:
-        file_score = 0 if "/test" in candidate.file_path or "test_" in candidate.file_path else 1
-        symbol_score = 1 if candidate.symbol else 0
-        return (file_score, symbol_score)
+        return ranked
 
     @staticmethod
     def _match(choice: dict, candidates: list[ExplorationCandidate]) -> ExplorationCandidate | None:
@@ -198,14 +256,3 @@ class CandidateSelector:
                 break
         return picked
 
-    @staticmethod
-    def _parse_json_object(text: str) -> dict:
-        stripped = (text or "").strip()
-        if "```" in stripped:
-            match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
-            if match:
-                stripped = match.group(1).strip()
-        data = json.loads(stripped)
-        if not isinstance(data, dict):
-            raise ValueError("Candidate selector expected JSON object")
-        return data

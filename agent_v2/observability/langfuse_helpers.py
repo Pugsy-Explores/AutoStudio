@@ -122,3 +122,24 @@ def try_langfuse_generation(
         except Exception:
             continue
     return None
+
+
+def lf_span_end_output(span: Any, *, output: dict[str, Any] | None = None) -> None:
+    """
+    End a Langfuse observation span with optional structured ``output``.
+
+    Use for **tool** spans (search, expand, etc.) so traces show inputs/outputs like generations.
+    Falls back to ``span.end()`` without output if the SDK rejects ``output=``.
+    """
+    if span is None:
+        return
+    try:
+        if output is not None:
+            span.end(output=output)
+        else:
+            span.end()
+    except Exception:
+        try:
+            span.end()
+        except Exception:
+            pass

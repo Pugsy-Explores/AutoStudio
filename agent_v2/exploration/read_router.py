@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent_v2.config import (
+    EXPLORATION_READ_HEAD_MAX_LINES,
+    EXPLORATION_READ_MAX_CHARS,
+    EXPLORATION_READ_SYMBOL_PADDING_LINES,
+    EXPLORATION_READ_WINDOW,
+)
 from agent_v2.primitives import get_editor
 
 
@@ -17,7 +23,7 @@ class ReadRequest:
     path: str
     symbol: str | None = None
     line: int | None = None
-    window: int = 80
+    window: int = EXPLORATION_READ_WINDOW
 
 
 def read(request: ReadRequest, *, state) -> dict:
@@ -41,14 +47,14 @@ def read(request: ReadRequest, *, state) -> dict:
 
     symbol = (request.symbol or "").strip() or None
     line = int(request.line) if request.line is not None else None
-    window = int(request.window or 80)
+    window = int(request.window or EXPLORATION_READ_WINDOW)
 
     if symbol:
         py = editor.read_python_symbol_body(
             resolved,
             symbol=symbol,
-            padding_lines=5,
-            max_chars=12000,
+            padding_lines=EXPLORATION_READ_SYMBOL_PADDING_LINES,
+            max_chars=EXPLORATION_READ_MAX_CHARS,
         )
         if py is not None:
             content, start_line, end_line = py
@@ -66,7 +72,7 @@ def read(request: ReadRequest, *, state) -> dict:
             resolved,
             center_line=line,
             window=window,
-            max_chars=12000,
+            max_chars=EXPLORATION_READ_MAX_CHARS,
         )
         return {
             "file_path": resolved,
@@ -76,7 +82,11 @@ def read(request: ReadRequest, *, state) -> dict:
             "mode": "line_window",
         }
 
-    content = editor.read_head(resolved, max_lines=200, max_chars=12000)
+    content = editor.read_head(
+        resolved,
+        max_lines=EXPLORATION_READ_HEAD_MAX_LINES,
+        max_chars=EXPLORATION_READ_MAX_CHARS,
+    )
     return {
         "file_path": resolved,
         "start_line": 1,

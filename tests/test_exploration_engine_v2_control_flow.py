@@ -1,3 +1,5 @@
+import logging
+import os
 from types import SimpleNamespace
 
 from agent_v2.exploration.exploration_engine_v2 import ExplorationEngineV2
@@ -24,13 +26,13 @@ def _ok(tool_name: str, data: dict | None = None, summary: str = "ok") -> Execut
     return result.model_copy(update={"output": result.output.model_copy(update={"summary": summary})})
 
 
-def test_no_relevant_candidate_terminates_without_inspection():
+def test_no_relevant_candidate_terminates_without_inspection(caplog):
     class _Parser:
-        def parse(self, instruction: str) -> QueryIntent:
+        def parse(self, instruction: str, **kwargs) -> QueryIntent:
             return QueryIntent(symbols=["X"], keywords=["X"], intents=["debug"])
 
     class _Selector:
-        def select_batch(self, instruction, candidates, seen_files, *, limit):
+        def select_batch(self, instruction, intent, candidates, seen_files, *, limit, **kwargs):
             return None
 
     class _Reader:
@@ -53,6 +55,9 @@ def test_no_relevant_candidate_terminates_without_inspection():
                 summary="found",
             )
 
+        def search_batch(self, queries, state, *, mode, step_id_prefix, max_workers=4):
+            return [self.execute({"query": q}, state) for q in queries]
+
     engine = ExplorationEngineV2(
         dispatcher=_Dispatcher(),
         intent_parser=_Parser(),
@@ -61,7 +66,9 @@ def test_no_relevant_candidate_terminates_without_inspection():
         analyzer=_Analyzer(),
         graph_expander=_Graph(),
     )
-    result = engine.explore("find X", state=SimpleNamespace(context={}))
+    with caplog.at_level(logging.INFO, logger="agent_v2.exploration.exploration_engine_v2"):
+        result = engine.explore("find X", state=SimpleNamespace(context={}))
+    assert any("exploration.discovery" in r.message for r in caplog.records), caplog.text
     assert result.metadata.termination_reason == "no_relevant_candidate"
     assert result.metadata.completion_status == "incomplete"
 
@@ -98,11 +105,11 @@ def test_enqueue_ranked_skips_scoper_when_capped_len_at_or_below_skip_below(monk
     )
 
     class _Scoper:
-        def scope(self, instruction, candidates):
+        def scope(self, instruction, candidates, **kwargs):
             raise AssertionError("scoper should not run when len(capped) <= skip_below")
 
     class _Sel:
-        def select_batch(self, instruction, candidates, seen_files, *, limit):
+        def select_batch(self, instruction, intent, candidates, seen_files, *, limit, **kwargs):
             return candidates[:1]
 
     engine = ExplorationEngineV2(
@@ -118,7 +125,13 @@ def test_enqueue_ranked_skips_scoper_when_capped_len_at_or_below_skip_below(monk
     cands = [
         ExplorationCandidate(file_path=f"{i}.py", symbol="s", source="grep") for i in range(4)
     ]
-    engine._enqueue_ranked("instr", cands, ex_state, limit=5)
+    engine._enqueue_ranked(
+        "instr",
+        QueryIntent(symbols=[], keywords=[], intents=["debug"]),
+        cands,
+        ex_state,
+        limit=5,
+    )
 
 
 def test_enqueue_ranked_calls_scoper_when_capped_len_above_skip_below(monkeypatch):
@@ -131,12 +144,12 @@ def test_enqueue_ranked_calls_scoper_when_capped_len_above_skip_below(monkeypatc
         def __init__(self):
             self.calls = 0
 
-        def scope(self, instruction, candidates):
+        def scope(self, instruction, candidates, **kwargs):
             self.calls += 1
             return candidates[:2]
 
     class _Sel:
-        def select_batch(self, instruction, candidates, seen_files, *, limit):
+        def select_batch(self, instruction, intent, candidates, seen_files, *, limit, **kwargs):
             return candidates
 
     scoper = _Scoper()
@@ -153,5 +166,74 @@ def test_enqueue_ranked_calls_scoper_when_capped_len_above_skip_below(monkeypatc
     cands = [
         ExplorationCandidate(file_path=f"{i}.py", symbol="s", source="grep") for i in range(6)
     ]
-    engine._enqueue_ranked("instr", cands, ex_state, limit=5)
+    engine._enqueue_ranked(
+        "instr",
+        QueryIntent(symbols=[], keywords=[], intents=["debug"]),
+        cands,
+        ex_state,
+        limit=5,
+    )
     assert scoper.calls == 1
+
+
+def test_enqueue_ranked_skips_all_when_already_explored(monkeypatch):
+    monkeypatch.setattr(
+        "agent_v2.exploration.exploration_engine_v2.EXPLORATION_SCOPER_SKIP_BELOW",
+        5,
+    )
+
+    class _Scoper:
+        def scope(self, instruction, candidates, **kwargs):
+            raise AssertionError("scoper must not run when all candidates are explored")
+
+    class _Sel:
+        def select_batch(self, instruction, intent, candidates, seen_files, *, limit, **kwargs):
+            raise AssertionError("selector must not run when queue is empty")
+
+    engine = ExplorationEngineV2(
+        dispatcher=object(),
+        intent_parser=object(),
+        selector=_Sel(),
+        inspection_reader=object(),
+        analyzer=object(),
+        graph_expander=object(),
+        scoper=_Scoper(),
+    )
+    ex_state = ExplorationState(instruction="x")
+    base_root = os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    canon = ExplorationEngineV2._canonical_path("0.py", base_root=base_root)
+    ex_state.explored_location_keys.add((canon, "s"))
+    cands = [
+        ExplorationCandidate(file_path="0.py", symbol="s", source="grep"),
+    ]
+    out = engine._enqueue_ranked(
+        "instr",
+        QueryIntent(symbols=[], keywords=[], intents=["debug"]),
+        cands,
+        ex_state,
+        limit=5,
+    )
+    assert out is True
+
+
+def test_enqueue_targets_skips_already_explored_expansion_path():
+    """Expansion and discovery both use _may_enqueue; explored keys must not re-enter queue."""
+    engine = ExplorationEngineV2(
+        dispatcher=object(),
+        intent_parser=object(),
+        selector=object(),
+        inspection_reader=object(),
+        analyzer=object(),
+        graph_expander=object(),
+    )
+    ex_state = ExplorationState(instruction="x")
+    base_root = os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    canon = ExplorationEngineV2._canonical_path("dup.py", base_root=base_root)
+    ex_state.explored_location_keys.add((canon, "sym"))
+    engine._enqueue_targets(
+        ex_state,
+        [
+            ExplorationTarget(file_path=canon, symbol="sym", source="expansion"),
+        ],
+    )
+    assert ex_state.pending_targets == []

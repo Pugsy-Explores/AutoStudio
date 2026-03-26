@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any, Callable
 
 from agent_v2.observability.langfuse_helpers import (
@@ -25,9 +24,13 @@ from agent_v2.observability.langfuse_helpers import (
     langfuse_generation_input_with_prompt,
     try_langfuse_generation,
 )
+from agent.prompt_system.registry import get_registry
 from agent_v2.schemas.exploration import ExplorationCandidate
+from agent_v2.utils.json_extractor import JSONExtractor
 
 _LOG = logging.getLogger(__name__)
+
+_EXPLORATION_SCOPER_KEY = "exploration.scoper"
 
 
 class ExplorationScoper:
@@ -38,9 +41,11 @@ class ExplorationScoper:
         llm_generate: Callable[[str], str] | None = None,
         *,
         max_snippet_chars: int = 600,
+        model_name: str | None = None,
     ):
         self._llm_generate = llm_generate
         self._max_snippet_chars = max_snippet_chars
+        self._model_name = model_name
 
     def scope(
         self,
@@ -51,7 +56,7 @@ class ExplorationScoper:
         lf_exploration_parent: Any = None,
     ) -> list[ExplorationCandidate]:
         """
-        Return a subset of candidates by stable index order, or pass-through on failure/empty selection.
+        Return a subset of candidates by stable index order.
 
         Caller must not invoke when len(candidates)==0. Skip-when-trivial is handled by the engine.
 
@@ -63,12 +68,7 @@ class ExplorationScoper:
             return []
 
         if self._llm_generate is None:
-            _LOG.debug(
-                "exploration_scoper pass_through: no_llm scoper_input_n=%s scoper_output_n=%s",
-                input_n,
-                input_n,
-            )
-            return list(candidates)
+            raise ValueError("ExplorationScoper requires llm_generate in strict mode.")
 
         payload, dedupe_orig_indices = self._aggregate_payload_by_file_path(candidates)
         dedupe_n = len(payload)
@@ -84,38 +84,12 @@ class ExplorationScoper:
             ),
         )
 
-        try:
-            raw = self._llm_generate(prompt)
-            parsed = _parse_json_object(raw)
-        except Exception:
-            _LOG.debug(
-                "exploration_scoper pass_through: parse_error scoper_input_n=%s scoper_output_n=%s",
-                input_n,
-                input_n,
-                exc_info=True,
-            )
-            if gen is not None:
-                try:
-                    langfuse_generation_end_with_usage(gen, output={"error": "parse_failed"})
-                except Exception:
-                    pass
-            return list(candidates)
+        raw = self._llm_generate(prompt)
+        parsed = JSONExtractor.extract_final_json(raw)
 
         selected_raw = parsed.get("selected_indices")
         if not isinstance(selected_raw, list):
-            _LOG.debug(
-                "exploration_scoper pass_through: invalid_shape scoper_input_n=%s scoper_output_n=%s",
-                input_n,
-                input_n,
-            )
-            if gen is not None:
-                try:
-                    langfuse_generation_end_with_usage(
-                        gen, output={"error": "invalid_shape", "input_count": input_n}
-                    )
-                except Exception:
-                    pass
-            return list(candidates)
+            raise ValueError("ExplorationScoper expected `selected_indices` list in parsed JSON.")
 
         valid_dedupe: set[int] = set()
         for x in selected_raw:
@@ -125,19 +99,7 @@ class ExplorationScoper:
                 valid_dedupe.add(int(x))
 
         if not valid_dedupe:
-            _LOG.debug(
-                "exploration_scoper pass_through: empty_selection scoper_input_n=%s scoper_output_n=%s",
-                input_n,
-                input_n,
-            )
-            if gen is not None:
-                try:
-                    langfuse_generation_end_with_usage(
-                        gen, output={"error": "empty_selection", "input_count": input_n}
-                    )
-                except Exception:
-                    pass
-            return list(candidates)
+            raise ValueError("ExplorationScoper selected no valid indices in strict mode.")
 
         valid_orig: set[int] = set()
         for j in valid_dedupe:
@@ -217,45 +179,7 @@ class ExplorationScoper:
             )
         return payload, dedupe_orig_indices
 
-    @staticmethod
-    def _build_prompt(instruction: str, payload: list[dict]) -> str:
+    def _build_prompt(self, instruction: str, payload: list[dict]) -> str:
         candidates_json = json.dumps(payload, ensure_ascii=False)
-        return (
-            "You are selecting which code locations are worth exploring for a task.\n\n"
-            "You are given:\n"
-            "- an instruction\n"
-            "- a list of candidates from a repository (one entry per **unique file path**)\n"
-            "- each entry may aggregate multiple discovery hits on the same file "
-            "(snippets, sources, symbols as parallel lists)\n\n"
-            "Your job:\n"
-            "Return a subset of candidate **indices** that are likely relevant to solving the instruction.\n\n"
-            "Guidelines:\n"
-            "- Prefer implementation logic over tests, mocks, or configs\n"
-            "- Prefer files that appear to contain core logic related to the task\n"
-            "- Ignore clearly unrelated files\n"
-            "- Keep the selection focused (do not select everything unless necessary)\n"
-            "- Selecting all candidates is usually a mistake unless all are clearly relevant\n"
-            "- Do NOT rank or order — only select indices\n\n"
-            "IMPORTANT:\n"
-            "- Indices refer to the numbered list below (0 .. N-1 for N unique file paths)\n"
-            "- Do not invent new files or indices\n"
-            "- If none are relevant, return an empty list\n\n"
-            "---\n\n"
-            f"Instruction:\n{instruction}\n\n"
-            f"Candidates:\n{candidates_json}\n\n"
-            "---\n\n"
-            "Return JSON ONLY in this format:\n\n"
-            '{\n  "selected_indices": [ ... ]\n}\n'
-        )
-
-
-def _parse_json_object(text: str) -> dict:
-    stripped = (text or "").strip()
-    if "```" in stripped:
-        match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
-        if match:
-            stripped = match.group(1).strip()
-    data = json.loads(stripped)
-    if not isinstance(data, dict):
-        raise ValueError("exploration_scoper expected JSON object")
-    return data
+        tmpl = get_registry().get_instructions(_EXPLORATION_SCOPER_KEY, model_name=self._model_name)
+        return tmpl.format(instruction=instruction, candidates_json=candidates_json) + "\n"

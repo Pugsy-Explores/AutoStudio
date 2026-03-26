@@ -9,24 +9,18 @@ for the Langfuse handle (never ``trace`` alone).
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Any, Optional
 
-# ---------------------------------------------------------------------------
-# Load repo .env before reading LANGFUSE_* (keys are not in the shell by default)
-# ---------------------------------------------------------------------------
-def _load_dotenv_if_present() -> None:
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    # agent_v2/observability/langfuse_client.py -> repo root is parents[2]
-    root = Path(__file__).resolve().parents[2]
-    load_dotenv(root / ".env")
+from config.observability_config import (
+    get_langfuse_host,
+    get_langfuse_keys,
+    get_langfuse_root_name_env,
+    get_pytest_nodeid_env,
+    has_langfuse_keys,
+    load_repo_dotenv_if_present,
+)
 
-
-_load_dotenv_if_present()
+load_repo_dotenv_if_present()
 
 # ---------------------------------------------------------------------------
 # Optional Langfuse SDK
@@ -46,21 +40,11 @@ _CLIENT: Any = None
 
 
 def _langfuse_host() -> str:
-    """
-    Langfuse Python SDK uses `host` (LANGFUSE_HOST).
-    Many deployments set LANGFUSE_BASE_URL in .env — support both.
-    """
-    h = (os.environ.get("LANGFUSE_HOST") or "").strip()
-    if h:
-        return h.rstrip("/")
-    base = (os.environ.get("LANGFUSE_BASE_URL") or "").strip()
-    if base:
-        return base.rstrip("/")
-    return "https://cloud.langfuse.com"
+    return get_langfuse_host()
 
 
 def _has_langfuse_keys() -> bool:
-    return bool(os.getenv("LANGFUSE_PUBLIC_KEY")) and bool(os.getenv("LANGFUSE_SECRET_KEY"))
+    return has_langfuse_keys()
 
 
 def _get_client() -> Any:
@@ -69,9 +53,12 @@ def _get_client() -> Any:
         return _CLIENT
     if Langfuse is None or not _has_langfuse_keys():
         return None
+    public_key, secret_key = get_langfuse_keys()
+    if not public_key or not secret_key:
+        return None
     _CLIENT = Langfuse(
-        public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
-        secret_key=os.environ["LANGFUSE_SECRET_KEY"],
+        public_key=public_key,
+        secret_key=secret_key,
         host=_langfuse_host(),
     )
     return _CLIENT
@@ -237,9 +224,9 @@ def _resolve_root_trace_metadata(explicit_name: Optional[str]) -> tuple[str, dic
     extra: dict[str, Any] = {}
     if explicit_name is not None and str(explicit_name).strip():
         return _sanitize_langfuse_root_name(str(explicit_name)), extra
-    env_nodeid = os.environ.get("AGENT_V2_LANGFUSE_ROOT_NAME", "").strip()
+    env_nodeid = get_langfuse_root_name_env()
     if env_nodeid:
-        raw_nid = os.environ.get("AGENT_V2_PYTEST_NODEID", "").strip()
+        raw_nid = get_pytest_nodeid_env()
         if raw_nid:
             extra["pytest_nodeid"] = raw_nid[:500]
         extra["langfuse_test_label"] = env_nodeid[:500]

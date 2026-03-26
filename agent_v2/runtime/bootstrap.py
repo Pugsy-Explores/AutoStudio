@@ -13,7 +13,7 @@ from agent.execution.react_schema import validate_action
 from agent.execution.step_dispatcher import _dispatch_react
 from agent.models.model_client import call_reasoning_model
 from agent.prompt_system.registry import get_registry
-from agent_v2.config import get_execution_policy
+from agent_v2.config import get_config, get_execution_policy, validate_config
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
     langfuse_generation_end_with_usage,
@@ -47,6 +47,7 @@ _REACT_TO_STEP = {
 
 
 _DEFAULT_V2_POLICY = get_execution_policy()
+validate_config(get_config())
 
 
 def _planner_v2_generate(prompt: str) -> str:
@@ -346,9 +347,8 @@ def create_runtime():
         plan_argument_generator=arg_gen,
         replanner=replanner,
         execution_policy=_DEFAULT_V2_POLICY,
-        exploration_llm_fn=lambda prompt: call_reasoning_model(
-            prompt, task_name="EXPLORATION_V2"
-        ),
+        exploration_llm_fn=None,
+        model_name=None,
     )
 
 
@@ -366,7 +366,6 @@ def create_exploration_runner(dispatch_fn=None) -> ExplorationRunner:
     return ExplorationRunner(
         action_generator=action_gen,
         dispatcher=dispatcher,
-        llm_generate_fn=lambda prompt: call_reasoning_model(
-            prompt, task_name="EXPLORATION_V2"
-        ),
+        llm_generate_fn=None,
+        model_name=None,
     )

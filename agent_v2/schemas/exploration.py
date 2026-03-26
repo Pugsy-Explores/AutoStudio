@@ -11,6 +11,17 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
+FailureReason = Literal[
+    "no_results",
+    "low_relevance",
+    "too_broad",
+    "too_narrow",
+    "wrong_abstraction",
+    "ambiguous_intent",
+    "missing_symbol_signal",
+]
+
+
 class ExplorationSource(BaseModel):
     ref: str
     location: Optional[str] = None
@@ -102,7 +113,64 @@ class ExplorationResult(BaseModel):
 class QueryIntent(BaseModel):
     symbols: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
+    # Optional regex-style patterns (same SEARCH tool path as text; labeled grep in discovery mapping)
+    regex_patterns: list[str] = Field(default_factory=list)
     intents: list[str] = Field(default_factory=list)
+
+
+class ReadPacket(BaseModel):
+    file_path: str
+    symbol: Optional[str] = None
+    read_source: Optional[Literal["symbol", "line", "head"]] = None
+    content: str = ""
+    line_start: int = 1
+    line_end: int = 1
+    char_count: int = 0
+    line_count: int = 0
+    call_chain_id: Optional[str] = None
+
+
+class LineRangeSignal(BaseModel):
+    start: int = Field(ge=1)
+    end: int = Field(ge=1)
+    reason: str
+
+    @model_validator(mode="after")
+    def validate_order(self) -> "LineRangeSignal":
+        if self.end < self.start:
+            raise ValueError("line range end must be >= start")
+        return self
+
+
+class InspectionSignals(BaseModel):
+    line_ranges: list[LineRangeSignal] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
+    relationships: list[str] = Field(default_factory=list)
+
+
+class ContextBlock(BaseModel):
+    file_path: str
+    start: int = Field(ge=1)
+    end: int = Field(ge=1)
+    content: str = ""
+    origin_reason: str = ""
+    symbol: Optional[str] = None
+    relationship_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_order(self) -> "ContextBlock":
+        if self.end < self.start:
+            raise ValueError("context block end must be >= start")
+        return self
+
+
+class UnderstandingResult(BaseModel):
+    relevance: Literal["high", "medium", "low"] = "medium"
+    confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+    sufficient: bool = False
+    evidence_sufficiency: Literal["insufficient", "partial", "sufficient"] = "partial"
+    knowledge_gaps: list[str] = Field(default_factory=list)
+    summary: str = ""
 
 
 class ExplorationCandidate(BaseModel):
@@ -119,6 +187,8 @@ class ExplorationDecision(BaseModel):
     ] = Field(default_factory=list)
     reason: str
     next_action: Optional[Literal["expand", "refine", "stop"]] = None
+    # When status is wrong_target: optional explicit scope — only "file" adds to excluded_paths (analyzer JSON).
+    wrong_target_scope: Optional[Literal["file"]] = None
 
 
 class ExplorationTarget(BaseModel):
@@ -139,6 +209,10 @@ class ExplorationState(BaseModel):
     pending_targets: list[ExplorationTarget] = Field(default_factory=list)
     current_target: Optional[ExplorationTarget] = None
     seen_files: set[str] = Field(default_factory=set)
+    # (canonical_path, symbol) already inspected — used to filter re-discovery / refine queues
+    explored_location_keys: set[tuple[str, str]] = Field(default_factory=set)
+    # Canonical paths excluded from discovery/enqueue when analyzer sets wrong_target_scope=file
+    excluded_paths: set[str] = Field(default_factory=set)
     seen_symbols: set[str] = Field(default_factory=set)
     expanded_symbols: set[str] = Field(default_factory=set)
     findings: list[dict] = Field(default_factory=list)

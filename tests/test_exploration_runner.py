@@ -56,6 +56,30 @@ def _make_execution_result(
     return result
 
 
+def _mock_dispatcher_search_batch(
+    execute,
+    queries,
+    state,
+    *,
+    mode: str,
+    step_id_prefix: str,
+    max_workers: int = 4,
+):
+    """Same SEARCH step shape as ``Dispatcher.search_batch`` for test doubles."""
+    out: list[ExecutionResult] = []
+    for i, q in enumerate(queries):
+        step = {
+            "id": f"{step_id_prefix}_{i}",
+            "action": "SEARCH",
+            "_react_action_raw": "search",
+            "_react_args": {"query": q},
+            "query": q,
+            "description": q,
+        }
+        out.append(execute(step, state))
+    return out
+
+
 class _MockActionGenerator:
     """Controllable action generator for testing."""
 
@@ -97,6 +121,11 @@ class _MockDispatcher:
         result = self._results[self._idx]
         self._idx += 1
         return result
+
+    def search_batch(self, queries, state, *, mode, step_id_prefix, max_workers=4):
+        return _mock_dispatcher_search_batch(
+            self.execute, queries, state, mode=mode, step_id_prefix=step_id_prefix, max_workers=max_workers
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +453,11 @@ def test_exploration_v2_path_returns_bounded_schema4_items():
                 )
             return _make_execution_result("search", data={}, summary="No-op")
 
+        def search_batch(self, queries, state, *, mode, step_id_prefix, max_workers=4):
+            return _mock_dispatcher_search_batch(
+                self.execute, queries, state, mode=mode, step_id_prefix=step_id_prefix, max_workers=max_workers
+            )
+
     runner = ExplorationRunner(
         action_generator=_MockActionGenerator([]),
         dispatcher=_V2Dispatcher(),
@@ -482,6 +516,11 @@ def test_exploration_v2_inspection_uses_bounded_read_tool():
                     summary="Bounded read",
                 )
             return _make_execution_result("search", data={"results": []}, summary="No-op")
+
+        def search_batch(self, queries, state, *, mode, step_id_prefix, max_workers=4):
+            return _mock_dispatcher_search_batch(
+                self.execute, queries, state, mode=mode, step_id_prefix=step_id_prefix, max_workers=max_workers
+            )
 
     runner = ExplorationRunner(
         action_generator=_MockActionGenerator([]),

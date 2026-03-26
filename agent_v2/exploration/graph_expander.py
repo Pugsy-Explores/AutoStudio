@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from agent_v2.config import EXPLORATION_EXPAND_MAX_DEPTH, EXPLORATION_EXPAND_MAX_NODES
 from agent_v2.schemas.execution import ExecutionMetadata, ExecutionOutput
 from agent_v2.schemas.execution import ExecutionResult
 from agent_v2.schemas.exploration import ExplorationTarget
@@ -25,8 +26,8 @@ class GraphExpander:
         file_path: str,
         state: Any,
         *,
-        max_nodes: int = 10,
-        max_depth: int = 1,
+        max_nodes: int = EXPLORATION_EXPAND_MAX_NODES,
+        max_depth: int = EXPLORATION_EXPAND_MAX_DEPTH,
     ) -> tuple[list[ExplorationTarget], ExecutionResult]:
         if not symbol.strip():
             return [], self._make_result("empty symbol", {}, success=False)

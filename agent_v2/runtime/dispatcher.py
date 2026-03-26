@@ -11,7 +11,10 @@ Legacy bridge path (until all tool handlers return the schema ToolResult nativel
   → map_tool_result_to_execution_result(tool_result, step_id) → ExecutionResult
 """
 # DO NOT import from agent.* here
+import copy
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, cast
 
 # agent_v2.primitives is NOT imported at module level — doing so creates a circular import
 # through agent.tools.filesystem_adapter → agent → agent.execution.step_dispatcher → agent_v2.primitives.
@@ -130,6 +133,51 @@ class Dispatcher:
                 tool_name,
             )
         return result
+
+    def search_batch(
+        self,
+        queries: list[str],
+        state: Any,
+        *,
+        mode: str,
+        step_id_prefix: str,
+        max_workers: int = 4,
+    ) -> list[ExecutionResult]:
+        """
+        Run multiple SEARCH steps in parallel, one per query.
+
+        Each execution uses a shallow-copied state with deep-copied context to avoid
+        cross-thread races on nested context dicts.
+        Returns ExecutionResult list in the same order as ``queries``.
+        """
+        if not queries:
+            return []
+
+        n = len(queries)
+        out: list[ExecutionResult | None] = [None] * n
+
+        def _run_index(i: int, q: str) -> tuple[int, ExecutionResult]:
+            step = {
+                "id": f"{step_id_prefix}_{i}",
+                "action": "SEARCH",
+                "_react_action_raw": "search",
+                "_react_args": {"query": q},
+                "query": q,
+                "description": q,
+            }
+            task_state = copy.copy(state)
+            base_ctx = getattr(state, "context", None)
+            task_state.context = copy.deepcopy(base_ctx) if isinstance(base_ctx, dict) else {}
+            return (i, self.execute(step, task_state))
+
+        workers = min(max_workers, max(1, n))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_run_index, i, queries[i]) for i in range(n)]
+            for fut in as_completed(futures):
+                i, res = fut.result()
+                out[i] = res
+
+        return cast(list[ExecutionResult], out)
 
     @staticmethod
     def _execute_step(step, state):

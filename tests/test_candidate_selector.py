@@ -1,5 +1,7 @@
 from typing import Any
 
+import pytest
+
 from agent_v2.exploration.candidate_selector import CandidateSelector
 from agent_v2.schemas.exploration import ExplorationCandidate
 
@@ -16,6 +18,7 @@ def test_select_batch_returns_ranked_matches_from_llm():
     )
     ranked = selector.select_batch(
         "rank candidates",
+        "no intent",
         [_c("src/a.py", "A"), _c("src/b.py", "B"), _c("src/c.py", "C")],
         seen_files=set(),
         limit=2,
@@ -30,6 +33,7 @@ def test_select_batch_supports_no_relevant_candidate_signal():
     )
     ranked = selector.select_batch(
         "rank candidates",
+        "no intent",
         [_c("src/a.py", "A"), _c("src/b.py", "B")],
         seen_files=set(),
         limit=2,
@@ -58,6 +62,7 @@ def test_select_batch_langfuse_generation_includes_prompt_in_input():
     )
     selector.select_batch(
         "unique select instruction",
+        "no intent",
         [_c("src/a.py", "A"), _c("src/b.py", "B"), _c("src/c.py", "C")],
         seen_files=set(),
         limit=2,
@@ -72,13 +77,13 @@ def test_select_batch_langfuse_generation_includes_prompt_in_input():
     assert inp["prompt_chars"] == len(inp["prompt"])
 
 
-def test_select_batch_falls_back_when_llm_output_invalid():
+def test_select_batch_raises_when_llm_output_invalid_strict_mode():
     selector = CandidateSelector(llm_generate=lambda _: "not-json")
-    ranked = selector.select_batch(
-        "rank candidates",
-        [_c("src/a.py", "A"), _c("src/b.py", "B")],
-        seen_files=set(),
-        limit=1,
-    )
-    assert ranked is not None
-    assert len(ranked) == 1
+    with pytest.raises(ValueError, match="No valid JSON object found"):
+        selector.select_batch(
+            "rank candidates",
+            "no intent",
+            [_c("src/a.py", "A"), _c("src/b.py", "B")],
+            seen_files=set(),
+            limit=1,
+        )

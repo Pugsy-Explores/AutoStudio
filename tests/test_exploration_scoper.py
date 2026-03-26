@@ -1,5 +1,7 @@
 from typing import Any
 
+import pytest
+
 from agent_v2.exploration.exploration_scoper import ExplorationScoper
 from agent_v2.schemas.exploration import ExplorationCandidate
 
@@ -23,18 +25,18 @@ def test_scope_calls_llm_even_for_small_list():
     assert calls == [1]
 
 
-def test_scope_pass_through_invalid_json():
+def test_scope_raises_on_invalid_json_strict_mode():
     scoper = ExplorationScoper(llm_generate=lambda _: "not json")
     cands = [_c(f"{i}.py") for i in range(6)]
-    out = scoper.scope("instr", cands)
-    assert out == cands
+    with pytest.raises(ValueError, match="No valid JSON object found"):
+        scoper.scope("instr", cands)
 
 
-def test_scope_pass_through_empty_selection():
+def test_scope_raises_on_empty_selection_strict_mode():
     scoper = ExplorationScoper(llm_generate=lambda _: '{"selected_indices": []}')
     cands = [_c(f"{i}.py") for i in range(6)]
-    out = scoper.scope("instr", cands)
-    assert out == cands
+    with pytest.raises(ValueError, match="selected no valid indices"):
+        scoper.scope("instr", cands)
 
 
 def test_scope_dedupe_same_file_path_expands_to_all_original_candidates():
@@ -74,11 +76,11 @@ def test_scope_returns_all_indices_when_model_selects_all():
     assert len(out) == 15
 
 
-def test_scope_no_llm_pass_through():
+def test_scope_no_llm_raises_strict_mode():
     scoper = ExplorationScoper(llm_generate=None)
     cands = [_c(f"{i}.py") for i in range(6)]
-    out = scoper.scope("instr", cands)
-    assert out == cands
+    with pytest.raises(ValueError, match="requires llm_generate in strict mode"):
+        scoper.scope("instr", cands)
 
 
 def test_scope_langfuse_generation_includes_prompt_in_langfuse_input():

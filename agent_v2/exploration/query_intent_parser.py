@@ -1,81 +1,178 @@
 from __future__ import annotations
 
 import json
-import re
-from typing import Callable
+from typing import Any, Callable
 
-from agent_v2.schemas.exploration import QueryIntent
+from agent_v2.observability.langfuse_helpers import (
+    LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
+    langfuse_generation_end_with_usage,
+    langfuse_generation_input_with_prompt,
+    try_langfuse_generation,
+)
+from agent.prompt_system.registry import get_registry
+from agent_v2.schemas.exploration import FailureReason, QueryIntent
+from agent_v2.utils.json_extractor import JSONExtractor
+
+_EXPLORATION_QUERY_INTENT_KEY = "exploration.query_intent_parser"
+
+
+def _coerce_for_query_intent(data: dict) -> dict:
+    """
+    Map common LLM key aliases onto QueryIntent field names before validation.
+
+    Prompt may emit symbol_queries / text_queries / intent; schema expects
+    symbols / keywords / intents.
+    """
+    out = dict(data)
+    if not (out.get("symbols") or []):
+        sq = out.pop("symbol_queries", None)
+        if isinstance(sq, list):
+            out["symbols"] = [str(x).strip() for x in sq if str(x).strip()]
+    if not (out.get("keywords") or []):
+        tq = out.pop("text_queries", None)
+        if isinstance(tq, list):
+            out["keywords"] = [str(x).strip() for x in tq if str(x).strip()]
+    if not (out.get("intents") or []):
+        one = out.pop("intent", None)
+        if isinstance(one, str) and one.strip():
+            out["intents"] = [one.strip()]
+    # Drop alias keys if still present so model_validate does not see unknowns
+    out.pop("symbol_queries", None)
+    out.pop("text_queries", None)
+    out.pop("intent", None)
+    rp = out.get("regex_patterns")
+    if rp is not None and not isinstance(rp, list):
+        out["regex_patterns"] = []
+    return out
 
 
 class QueryIntentParser:
     """Parse instruction into a minimal QueryIntent."""
 
-    def __init__(self, llm_generate: Callable[[str], str] | None = None):
+    def __init__(
+        self,
+        llm_generate: Callable[[str], str] | None = None,
+        llm_generate_messages: Callable[[list[dict[str, str]]], str] | None = None,
+        *,
+        model_name: str | None = None,
+    ):
         self._llm_generate = llm_generate
+        self._llm_generate_messages = llm_generate_messages
+        self._model_name = model_name
 
-    def parse(self, instruction: str) -> QueryIntent:
-        if self._llm_generate is None:
-            return self._heuristic_parse(instruction)
+    def parse(
+        self,
+        instruction: str,
+        *,
+        previous_queries: QueryIntent | dict[str, Any] | None = None,
+        failure_reason: FailureReason | str | None = None,
+        lf_exploration_parent: Any = None,
+        lf_intent_span: Any = None,
+    ) -> QueryIntent:
+        """
+        Parse instruction into ``QueryIntent``.
 
+        When Langfuse is available, pass ``lf_intent_span`` (preferred) and/or
+        ``lf_exploration_parent`` so the LLM call is recorded as generation
+        ``exploration.query_intent`` with full prompt input and structured output.
+        """
+        if self._llm_generate is None and self._llm_generate_messages is None:
+            raise ValueError("QueryIntentParser requires llm_generate/llm_generate_messages in strict mode.")
+
+        previous_payload: dict[str, Any] | None = None
+        if previous_queries is not None:
+            if isinstance(previous_queries, QueryIntent):
+                previous_payload = previous_queries.model_dump()
+            elif isinstance(previous_queries, dict):
+                previous_payload = dict(previous_queries)
+        previous_json = (
+            json.dumps(previous_payload, ensure_ascii=False, sort_keys=True)
+            if previous_payload
+            else "no queries"
+        )
+        fr = (str(failure_reason).strip() if failure_reason else "no failure")
+        system_prompt, user_prompt = get_registry().render_prompt_parts(
+            _EXPLORATION_QUERY_INTENT_KEY,
+            model_name=self._model_name,
+            variables={
+                "instruction": instruction,
+                "previous_queries": previous_json,
+                "failure_reason": fr,
+            },
+        )
         prompt = (
-            "You are extracting search intent from a coding task.\n"
-            "Return STRICT JSON only with keys symbols, keywords, intents.\n"
-            "Allowed intents: find_definition, find_usage, debug, understand_flow, locate_logic.\n"
-            "Do not include extra keys.\n\n"
-            f"Instruction:\n{instruction}"
+            f"[SYSTEM]\n{system_prompt}\n\n---\n\n[USER]\n{user_prompt}".strip()
+            if user_prompt.strip()
+            else system_prompt
+        )
+        gen = try_langfuse_generation(
+            lf_intent_span,
+            lf_exploration_parent,
+            name="exploration.query_intent",
+            input=langfuse_generation_input_with_prompt(
+                prompt,
+                extra={
+                    "instruction_preview": instruction[:2000],
+                    "instruction_chars": len(instruction),
+                },
+            ),
         )
         try:
-            raw = self._llm_generate(prompt)
-            data = self._parse_json_object(raw)
-            return QueryIntent.model_validate(data)
-        except Exception:
-            return self._heuristic_parse(instruction)
-
-    def _heuristic_parse(self, instruction: str) -> QueryIntent:
-        symbol_candidates = re.findall(r"\b[A-Z][A-Za-z0-9_]{2,}\b", instruction)
-        symbols = list(dict.fromkeys(symbol_candidates[:5]))
-
-        keyword_candidates = re.findall(r"\b[a-z][a-z0-9_]{2,}\b", instruction.lower())
-        stop = {
-            "the",
-            "and",
-            "for",
-            "with",
-            "where",
-            "what",
-            "when",
-            "into",
-            "from",
-            "this",
-            "that",
-            "find",
-            "show",
-        }
-        keywords = [k for k in keyword_candidates if k not in stop][:8]
-
-        intents: list[str] = []
-        lowered = instruction.lower()
-        if "where" in lowered or "definition" in lowered:
-            intents.append("find_definition")
-        if "usage" in lowered or "used" in lowered:
-            intents.append("find_usage")
-        if "debug" in lowered or "error" in lowered or "fail" in lowered:
-            intents.append("debug")
-        if "flow" in lowered or "how" in lowered:
-            intents.append("understand_flow")
-        if not intents:
-            intents.append("locate_logic")
-
-        return QueryIntent(symbols=symbols, keywords=keywords, intents=intents)
+            if self._llm_generate_messages is not None and user_prompt.strip():
+                raw = self._llm_generate_messages(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                )
+            elif self._llm_generate_messages is not None:
+                raw = self._llm_generate_messages([{"role": "system", "content": system_prompt}])
+            else:
+                raw = self._llm_generate(prompt)
+            data = JSONExtractor.extract_final_json(raw)
+            data = _coerce_for_query_intent(data)
+            qi = QueryIntent.model_validate(data)
+            if previous_payload:
+                qi = self._remove_repeated_queries(qi, previous_payload)
+            if gen is not None:
+                try:
+                    langfuse_generation_end_with_usage(
+                        gen,
+                        output={
+                            "query_intent": qi.model_dump(),
+                            "raw_response_preview": (raw or "")[:LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS],
+                        },
+                        metadata={"stage": "query_intent", "ok": True},
+                    )
+                except Exception:
+                    pass
+            return qi
+        except Exception as exc:
+            if gen is not None:
+                try:
+                    langfuse_generation_end_with_usage(
+                        gen,
+                        output={"error": str(exc)[:2000]},
+                        metadata={"stage": "query_intent", "ok": False},
+                    )
+                except Exception:
+                    pass
+            raise Exception("Fatal error: Failed to parse intent JSON output.") from exc
 
     @staticmethod
-    def _parse_json_object(text: str) -> dict:
-        stripped = (text or "").strip()
-        if "```" in stripped:
-            match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
-            if match:
-                stripped = match.group(1).strip()
-        data = json.loads(stripped)
-        if not isinstance(data, dict):
-            raise ValueError("Intent parser expected a JSON object")
-        return data
+    def _remove_repeated_queries(
+        parsed: QueryIntent, previous_payload: dict[str, Any]
+    ) -> QueryIntent:
+        prev = _coerce_for_query_intent(previous_payload or {})
+        seen_symbols = {str(x).strip() for x in (prev.get("symbols") or []) if str(x).strip()}
+        seen_keywords = {str(x).strip() for x in (prev.get("keywords") or []) if str(x).strip()}
+        seen_regex = {str(x).strip() for x in (prev.get("regex_patterns") or []) if str(x).strip()}
+        seen_intents = {str(x).strip() for x in (prev.get("intents") or []) if str(x).strip()}
+        return QueryIntent(
+            symbols=[x for x in parsed.symbols if x.strip() and x.strip() not in seen_symbols],
+            keywords=[x for x in parsed.keywords if x.strip() and x.strip() not in seen_keywords],
+            regex_patterns=[
+                x for x in parsed.regex_patterns if x.strip() and x.strip() not in seen_regex
+            ],
+            intents=[x for x in parsed.intents if x.strip() and x.strip() not in seen_intents],
+        )

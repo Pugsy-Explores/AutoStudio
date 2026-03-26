@@ -16,17 +16,31 @@ Hard constraints (non-negotiable):
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from agent_v2.schemas.execution import ExecutionResult
-from agent_v2.config import ENABLE_EXPLORATION_ENGINE_V2, EXPLORATION_STEPS
+from agent_v2.config import (
+    ENABLE_EXPLORATION_ENGINE_V2,
+    ENABLE_EXPLORATION_SCOPER,
+    EXPLORATION_STEPS,
+    get_project_root,
+)
+from agent.models.model_client import call_reasoning_model, call_reasoning_model_messages
+from agent.models.model_config import get_model_for_task, get_prompt_model_name_for_task
 from agent_v2.exploration.candidate_selector import CandidateSelector
 from agent_v2.exploration.exploration_engine_v2 import ExplorationEngineV2
 from agent_v2.exploration.exploration_scoper import ExplorationScoper
+from agent_v2.exploration.exploration_task_names import (
+    EXPLORATION_TASK_ANALYZER,
+    EXPLORATION_TASK_QUERY_INTENT,
+    EXPLORATION_TASK_SCOPER,
+    EXPLORATION_TASK_SELECTOR_BATCH,
+    EXPLORATION_TASK_SELECTOR_SINGLE,
+    EXPLORATION_TASK_V2,
+)
 from agent_v2.exploration.graph_expander import GraphExpander
 from agent_v2.exploration.inspection_reader import InspectionReader
 from agent_v2.exploration.query_intent_parser import QueryIntentParser
@@ -47,7 +61,7 @@ from agent_v2.schemas.exploration import (
 # ---------------------------------------------------------------------------
 
 ALLOWED_ACTIONS: frozenset[str] = frozenset({"search", "open_file", "shell"})
-FORBIDDEN_ACTIONS: frozenset[str] = frozenset({"edit", "run_tests", "write", "patch"})
+FORBIDDEN_ACTIONS: frozenset[str] = frozenset({"edit", "write", "patch", "run_tests"})
 
 _LOG = logging.getLogger(__name__)
 
@@ -117,42 +131,93 @@ class ExplorationRunner:
         *,
         llm_generate_fn=None,
         enable_v2: bool | None = None,
+        model_name: str | None = None,
     ):
         """
         Args:
             action_generator: must expose
                 next_action_exploration(instruction: str, items: list) -> dict | None
             dispatcher: Phase-2 Dispatcher whose execute(step, state) -> ExecutionResult
+            llm_generate_fn: Optional override (e.g. tests). If None, uses ``call_reasoning_model``
+                per exploration stage task (``EXPLORATION_QUERY_INTENT``, ``EXPLORATION_SCOPER``, …)
+                so ``task_models`` / ``task_params`` in models_config apply per call.
+            model_name: When ``llm_generate_fn`` is set, used as registry ``model_name`` for all
+                exploration prompts; if None, uses display-name model routing for
+                ``EXPLORATION_V2``. When ``llm_generate_fn`` is None, each stage uses
+                display-name routing derived from its task model mapping.
         """
         self.action_generator = action_generator
         self.dispatcher = dispatcher
         if enable_v2 is None:
-            # Read env at wiring time (tests may toggle in-process).
-            self._enable_v2 = os.getenv("AGENT_V2_ENABLE_EXPLORATION_ENGINE_V2", "1").strip() in (
-                "1",
-                "true",
-                "yes",
-            )
+            self._enable_v2 = ENABLE_EXPLORATION_ENGINE_V2
         else:
             self._enable_v2 = enable_v2
-        # Default on (same convention as AGENT_V2_ENABLE_EXPLORATION_ENGINE_V2); disable with =0
-        _enable_scoper = os.getenv("AGENT_V2_ENABLE_EXPLORATION_SCOPER", "1").strip() in (
-            "1",
-            "true",
-            "yes",
-        )
+        # Per-stage task_name → task_models + task_params; model_name for prompt YAML overrides.
+        # If llm_generate_fn is injected (tests), use one LLM and optional model_name for all prompts.
+        if llm_generate_fn is not None:
+            _mn = (
+                model_name
+                if model_name is not None
+                else get_prompt_model_name_for_task(EXPLORATION_TASK_V2)
+            )
+            _llm_q = _llm_s = _llm_sel_single = _llm_sel_batch = _llm_a = llm_generate_fn
+            _llm_qm = _llm_sel_single_m = _llm_sel_batch_m = _llm_a_m = None
+            _mn_q = _mn_s = _mn_sel_single = _mn_sel_batch = _mn_a = _mn
+        else:
+            _llm_q = lambda p: call_reasoning_model(p, task_name=EXPLORATION_TASK_QUERY_INTENT)
+            _llm_qm = lambda m: call_reasoning_model_messages(
+                m, task_name=EXPLORATION_TASK_QUERY_INTENT
+            )
+            _llm_s = lambda p: call_reasoning_model(p, task_name=EXPLORATION_TASK_SCOPER)
+            _llm_sel_single = lambda p: call_reasoning_model(
+                p, task_name=EXPLORATION_TASK_SELECTOR_SINGLE
+            )
+            _llm_sel_single_m = lambda m: call_reasoning_model_messages(
+                m, task_name=EXPLORATION_TASK_SELECTOR_SINGLE
+            )
+            _llm_sel_batch = lambda p: call_reasoning_model(
+                p, task_name=EXPLORATION_TASK_SELECTOR_BATCH
+            )
+            _llm_sel_batch_m = lambda m: call_reasoning_model_messages(
+                m, task_name=EXPLORATION_TASK_SELECTOR_BATCH
+            )
+            _llm_a = lambda p: call_reasoning_model(p, task_name=EXPLORATION_TASK_ANALYZER)
+            _llm_a_m = lambda m: call_reasoning_model_messages(
+                m, task_name=EXPLORATION_TASK_ANALYZER
+            )
+            _mn_q = get_prompt_model_name_for_task(EXPLORATION_TASK_QUERY_INTENT)
+            _mn_s = get_prompt_model_name_for_task(EXPLORATION_TASK_SCOPER)
+            _mn_sel_single = get_prompt_model_name_for_task(EXPLORATION_TASK_SELECTOR_SINGLE)
+            _mn_sel_batch = get_prompt_model_name_for_task(EXPLORATION_TASK_SELECTOR_BATCH)
+            _mn_a = get_prompt_model_name_for_task(EXPLORATION_TASK_ANALYZER)
         scoper_v2 = None
-        if _enable_scoper:
+        if ENABLE_EXPLORATION_SCOPER:
             scoper_v2 = ExplorationScoper(
-                llm_generate=llm_generate_fn,
+                llm_generate=_llm_s,
                 max_snippet_chars=ExplorationEngineV2.MAX_SNIPPET_CHARS,
+                model_name=_mn_s,
             )
         self._engine_v2 = ExplorationEngineV2(
             dispatcher=dispatcher,
-            intent_parser=QueryIntentParser(llm_generate=llm_generate_fn),
-            selector=CandidateSelector(llm_generate=llm_generate_fn),
+            intent_parser=QueryIntentParser(
+                llm_generate=_llm_q,
+                llm_generate_messages=_llm_qm,
+                model_name=_mn_q,
+            ),
+            selector=CandidateSelector(
+                llm_generate_single=_llm_sel_single,
+                llm_generate_batch=_llm_sel_batch,
+                llm_generate_messages_single=_llm_sel_single_m,
+                llm_generate_messages_batch=_llm_sel_batch_m,
+                model_name_single=_mn_sel_single,
+                model_name_batch=_mn_sel_batch,
+            ),
             inspection_reader=InspectionReader(dispatcher=dispatcher),
-            analyzer=UnderstandingAnalyzer(llm_generate=llm_generate_fn),
+            analyzer=UnderstandingAnalyzer(
+                llm_generate=_llm_a,
+                llm_generate_messages=_llm_a_m,
+                model_name=_mn_a,
+            ),
             graph_expander=GraphExpander(dispatcher=dispatcher),
             scoper=scoper_v2,
         )
@@ -183,7 +248,7 @@ class ExplorationRunner:
         state = _ExplorationState(instruction=instruction)
         state.context.setdefault(
             "project_root",
-            os.environ.get("SERENA_PROJECT_DIR") or os.getcwd(),
+            get_project_root(),
         )
         lf = None
         if obs is not None and getattr(obs, "langfuse_trace", None) is not None:

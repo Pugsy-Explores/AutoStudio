@@ -8,16 +8,13 @@ from __future__ import annotations
 from typing import Optional
 
 from agent_v2.config import MAX_PLAN_STEPS as DEFAULT_MAX_PLAN_STEPS
+from agent_v2.config import get_config
 from agent_v2.schemas.plan import PlanDocument, PlanStep
 from agent_v2.schemas.policies import ExecutionPolicy
 
-ALLOWED_ACTIONS = frozenset({"search", "open_file", "edit", "run_tests", "shell", "finish"})
+ALLOWED_ACTIONS = frozenset({"search", "open_file", "edit", "shell", "finish"})
 ALLOWED_TYPES = frozenset({"explore", "analyze", "modify", "validate", "finish"})
 REQUIRED_INTENT_TYPES = frozenset({"modify", "analyze", "finish"})
-READ_ONLY_ACTIONS = frozenset({"search", "open_file", "finish"})
-WRITE_ACTIONS = frozenset({"edit", "run_tests", "shell"})
-
-
 class PlanValidationError(ValueError):
     """Raised when a PlanDocument violates SCHEMAS.md / policy rules."""
 
@@ -113,10 +110,11 @@ class PlanValidator:
             raise PlanValidationError(f"Invalid type {step.type!r} for step {step.step_id}")
         
         # LIVE-TEST-002: Enforce read-only mode constraints
-        if task_mode == "read_only" and step.action in WRITE_ACTIONS:
+        read_only_actions = get_config().planner.allowed_actions_read_only
+        if task_mode == "read_only" and step.action not in read_only_actions:
             raise PlanValidationError(
                 f"Step {step.step_id} uses write action {step.action!r} "
-                f"but task_mode is 'read_only'. Only {READ_ONLY_ACTIONS} are allowed."
+                f"but task_mode is 'read_only'. Only {read_only_actions} are allowed."
             )
         
         for dep in step.dependencies:

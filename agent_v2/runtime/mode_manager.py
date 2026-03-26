@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_v2.config import get_config
 from agent_v2.schemas.plan import PlanDocument
 from agent_v2.runtime.trace_context import clear_active_trace_emitter, set_active_trace_emitter
 from agent_v2.runtime.trace_emitter import TraceEmitter
@@ -69,6 +70,15 @@ def _exploration_is_complete(exploration: Any) -> bool:
     status = str(completion_status).lower()
     if status not in {"complete", "incomplete"}:
         return True
+    if status == "incomplete":
+        reason = _exploration_termination_reason(exploration)
+        cfg = get_config()
+        if cfg.exploration.allow_partial_for_plan_mode and reason in {
+            "max_steps",
+            "pending_exhausted",
+            "stalled",
+        }:
+            return True
     return status == "complete"
 
 
