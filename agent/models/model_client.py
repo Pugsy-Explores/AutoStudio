@@ -18,6 +18,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -251,6 +252,7 @@ _TIMEOUT = MODEL_REQUEST_TIMEOUT
 
 _MAX_PRETTY_LINES = 40
 _PRETTY_WIDTH = 72
+_MAX_CONTEXT_CHARS = 400
 
 
 def _dump_replanner_prompt_files(system_prompt: str | None, user_prompt: str) -> None:
@@ -274,20 +276,132 @@ def _dump_replanner_prompt_files(system_prompt: str | None, user_prompt: str) ->
     logger.info("[DEBUG] replanner prompts written to %s and %s", last_path, ts_path)
 
 
-def _pretty_print_request(messages: list[dict]) -> None:
-    """Pretty-print model request (messages) for workflow visibility."""
+def _truncate_for_log(text: str, max_chars: int = _MAX_CONTEXT_CHARS) -> str:
+    clean = " ".join((text or "").split())
+    if len(clean) <= max_chars:
+        return clean
+    return clean[:max_chars] + "..."
+
+
+def _extract_section_value(text: str, section_name: str) -> str:
+    lines = (text or "").splitlines()
+    for i, line in enumerate(lines):
+        normalized = line.strip().lower()
+        if normalized.startswith(section_name.lower() + ":"):
+            tail = line.split(":", 1)[1].strip()
+            if tail:
+                return _truncate_for_log(tail)
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            out: list[str] = []
+            while j < len(lines):
+                cur = lines[j].strip()
+                if not cur:
+                    break
+                if cur.endswith(":") and len(cur) < 60:
+                    break
+                out.append(cur)
+                j += 1
+            return _truncate_for_log(" ".join(out))
+    return ""
+
+
+def _extract_json_objects(text: str) -> list[dict[str, Any]]:
+    objs: list[dict[str, Any]] = []
+    if not text:
+        return objs
+    for m in re.finditer(r"\{[\s\S]*?\}", text):
+        frag = m.group(0)
+        try:
+            parsed = json.loads(frag)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            objs.append(parsed)
+    return objs
+
+
+def _extract_prompt_context(messages: list[dict]) -> dict[str, str]:
+    user_content = "\n\n".join(
+        str(m.get("content") or "")
+        for m in (messages or [])
+        if str(m.get("role") or "").lower() == "user"
+    )
+    system_content = "\n\n".join(
+        str(m.get("content") or "")
+        for m in (messages or [])
+        if str(m.get("role") or "").lower() == "system"
+    )
+    src = user_content or system_content or ""
+    context: dict[str, str] = {}
+    instruction = _extract_section_value(src, "Instruction") or _extract_section_value(system_content, "Instruction")
+    if instruction:
+        context["instruction"] = instruction
+    expected = _extract_section_value(src, "Expected Behavior") or _extract_section_value(system_content, "Expected Behavior")
+    if expected:
+        context["expected_behavior"] = expected
+    trace = _extract_section_value(src, "Trace") or _extract_section_value(system_content, "Trace")
+    if trace:
+        context["trace"] = trace
+    previous = _extract_section_value(src, "Previous queries (optional)") or _extract_section_value(
+        system_content, "Previous queries (optional)"
+    )
+    if previous:
+        context["previous_queries"] = previous
+    failure = _extract_section_value(src, "Failure reason (optional)") or _extract_section_value(
+        system_content, "Failure reason (optional)"
+    )
+    if failure:
+        context["failure_reason"] = failure
+
+    # Parse embedded JSON payloads (common in exploration/scoper/selector prompts).
+    for blob in _extract_json_objects(src) + _extract_json_objects(system_content):
+        for key in (
+            "instruction",
+            "expected_behavior",
+            "context_feedback",
+            "previous_queries",
+            "failure_reason",
+            "step_summaries",
+            "final_outcome",
+            "candidates",
+            "selected_indices",
+            "selected",
+            "query_intent",
+        ):
+            if key in blob and key not in context:
+                try:
+                    context[key] = _truncate_for_log(json.dumps(blob[key], ensure_ascii=False))
+                except Exception:
+                    context[key] = _truncate_for_log(str(blob[key]))
+        if "candidates" in blob:
+            try:
+                context.setdefault("candidates_count", str(len(blob["candidates"])))
+            except Exception:
+                pass
+
+    # Fallback when prompt template has no section markers.
+    if not context:
+        first_non_empty = next((ln.strip() for ln in (user_content or system_content).splitlines() if ln.strip()), "")
+        if first_non_empty:
+            context["context"] = _truncate_for_log(first_non_empty)
+    return context
+
+
+def _pretty_print_request(task_name: str | None, context_fields: dict[str, str], *, model_key: str | None = None) -> None:
+    """Print sanitized, centralized LLM request log (no raw prompt)."""
     print("    [workflow] model request:")
     print("    " + "─" * _PRETTY_WIDTH)
-    for m in messages:
-        role = (m.get("role") or "user").upper()
-        content = (m.get("content") or "").strip()
-        lines = content.splitlines()
-        if len(lines) > _MAX_PRETTY_LINES:
-            lines = lines[:_MAX_PRETTY_LINES] + [f"... ({len(lines) - _MAX_PRETTY_LINES} more lines)"]
-        print(f"    [{role}]")
-        for line in lines:
-            print("    " + line)
-        print("    " + "·" * min(_PRETTY_WIDTH, 40))
+    print(f"    step: {task_name or 'unknown'}")
+    if model_key:
+        print(f"    model_key: {model_key}")
+    if context_fields:
+        for k, v in context_fields.items():
+            if v:
+                print(f"    {k}: {v}")
+    else:
+        print("    context: (none)")
     print("    " + "─" * _PRETTY_WIDTH)
 
 
@@ -457,6 +571,9 @@ def _normalize_messages_for_backend(messages: list[dict]) -> list[dict]:
 def _call_chat(
     endpoint: str,
     messages: list[dict],
+    *,
+    task_name: str | None = None,
+    model_key: str | None = None,
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     request_timeout: Optional[int] = None,
@@ -481,15 +598,17 @@ def _call_chat(
         payload["frequency_penalty"] = frequency_penalty
     if presence_penalty is not None:
         payload["presence_penalty"] = presence_penalty
+    context_fields = _extract_prompt_context(messages)
     logger.info(
-        "model call: endpoint=%s max_tokens=%s temperature=%s timeout=%s messages=%s",
+        "model call: endpoint=%s task=%s model_key=%s max_tokens=%s temperature=%s timeout=%s",
         endpoint,
+        task_name,
+        model_key,
         max_tokens,
         payload["temperature"],
         timeout,
-        messages,
     )
-    _pretty_print_request(messages)
+    _pretty_print_request(task_name, context_fields, model_key=model_key)
 
     def _do_call() -> str:
         _set_last_chat_usage(None)
@@ -721,6 +840,8 @@ def call_small_model(
         response = _call_chat(
             endpoint,
             _normalize_messages_for_backend(messages),
+            task_name=task_name,
+            model_key=model_key,
             max_tokens=limit,
             temperature=temperature,
             request_timeout=params.get("request_timeout_seconds"),
@@ -826,6 +947,8 @@ def call_reasoning_model(
         response = _call_chat(
             endpoint,
             _normalize_messages_for_backend(messages),
+            task_name=task_name,
+            model_key=model_key,
             max_tokens=limit,
             temperature=temperature,
             request_timeout=params.get("request_timeout_seconds"),
@@ -911,6 +1034,8 @@ def call_reasoning_model_messages(
         response = _call_chat(
             endpoint,
             backend_messages,
+            task_name=task_name,
+            model_key=model_key,
             max_tokens=limit,
             temperature=temperature,
             request_timeout=params.get("request_timeout_seconds"),
