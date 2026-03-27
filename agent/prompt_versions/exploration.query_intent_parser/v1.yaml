@@ -34,6 +34,13 @@ system_prompt: |
     - missing_symbol_signal -> increase identifier-focused symbol queries
     - ambiguous_intent -> produce clearer intents and concrete retrieval anchors
 
+  You are given context feedback with:
+  1) partial findings already discovered,
+  2) known entities (symbols/files),
+  3) remaining knowledge gaps,
+  4) discovered relationships (if available).
+  Use this context to build on progress, target missing information, follow relationship signals, and avoid repeating explored paths.
+
   Constraints:
 
   * symbols: max 5
@@ -62,10 +69,16 @@ user_prompt_template: |
   Failure reason (optional):
   {failure_reason}
 
+  Context feedback (optional):
+  {context_feedback}
+
   Generate improved retrieval queries.
 
   Rules:
 
   * Learn from previous failures
+  * Build on partial findings and focus remaining gaps
+  * Use discovered relationships to guide next retrieval queries
+  * Avoid repeating already explored entities when possible
   * Do not repeat previous queries
   * Final output MUST be JSON only

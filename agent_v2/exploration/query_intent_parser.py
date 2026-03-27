@@ -64,6 +64,7 @@ class QueryIntentParser:
         *,
         previous_queries: QueryIntent | dict[str, Any] | None = None,
         failure_reason: FailureReason | str | None = None,
+        context_feedback: dict[str, Any] | None = None,
         lf_exploration_parent: Any = None,
         lf_intent_span: Any = None,
     ) -> QueryIntent:
@@ -89,6 +90,34 @@ class QueryIntentParser:
             else "no queries"
         )
         fr = (str(failure_reason).strip() if failure_reason else "no failure")
+        context_feedback_json = (
+            json.dumps(context_feedback, ensure_ascii=False, sort_keys=True)
+            if context_feedback
+            else "none"
+        )
+        partial_findings_count = 0
+        known_symbols_count = 0
+        known_files_count = 0
+        knowledge_gaps_count = 0
+        relationships_count = 0
+        if isinstance(context_feedback, dict):
+            pf = context_feedback.get("partial_findings")
+            if isinstance(pf, list):
+                partial_findings_count = len(pf)
+            ke = context_feedback.get("known_entities")
+            if isinstance(ke, dict):
+                ks = ke.get("symbols")
+                if isinstance(ks, list):
+                    known_symbols_count = len(ks)
+                kf = ke.get("files")
+                if isinstance(kf, list):
+                    known_files_count = len(kf)
+            kg = context_feedback.get("knowledge_gaps")
+            if isinstance(kg, list):
+                knowledge_gaps_count = len(kg)
+            rel = context_feedback.get("relationships")
+            if isinstance(rel, list):
+                relationships_count = len(rel)
         system_prompt, user_prompt = get_registry().render_prompt_parts(
             _EXPLORATION_QUERY_INTENT_KEY,
             model_name=self._model_name,
@@ -96,6 +125,7 @@ class QueryIntentParser:
                 "instruction": instruction,
                 "previous_queries": previous_json,
                 "failure_reason": fr,
+                "context_feedback": context_feedback_json,
             },
         )
         prompt = (
@@ -149,6 +179,13 @@ class QueryIntentParser:
             input_extra={
                 "instruction_preview": instruction[:2000],
                 "instruction_chars": len(instruction),
+                "context_feedback_present": bool(context_feedback),
+                "partial_findings_count": partial_findings_count,
+                "known_symbols_count": known_symbols_count,
+                "known_files_count": known_files_count,
+                "knowledge_gaps_count": knowledge_gaps_count,
+                "relationships_count": relationships_count,
+                "context_feedback_preview": context_feedback_json[:2000],
             },
             on_complete=_parse_complete,
         )

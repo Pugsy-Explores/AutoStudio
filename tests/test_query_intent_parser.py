@@ -89,17 +89,80 @@ def test_parse_supports_message_callable():
     assert qi.keywords == ["y"]
 
 
+def test_parse_includes_context_feedback_in_prompt_and_input_extra(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_exploration_llm_call(
+        lf_intent_span,
+        lf_exploration_parent,
+        *,
+        name,
+        prompt,
+        prompt_registry_key,
+        invoke,
+        stage,
+        model_name,
+        input_extra,
+        on_complete,
+    ):
+        captured["prompt"] = prompt
+        captured["input_extra"] = input_extra
+        raw = invoke()
+        on_complete(raw)
+
+    monkeypatch.setattr(query_intent_parser_mod, "exploration_llm_call", fake_exploration_llm_call)
+
+    def llm(_prompt: str) -> str:
+        return '{"symbols":["X"],"keywords":["y"],"intents":["debug"]}'
+
+    p = QueryIntentParser(llm_generate=llm)
+    p.parse(
+        "find X",
+        context_feedback={
+            "partial_findings": [{"summary": "found handler"}],
+            "known_entities": {"symbols": ["PlanExecutor"], "files": ["agent_v2/runtime/plan_executor.py"]},
+            "knowledge_gaps": [{"description": "missing caller chain"}],
+            "relationships": [{"from": "a", "to": "b", "type": "callers"}],
+        },
+    )
+    prompt = str(captured["prompt"])
+    input_extra = captured["input_extra"]
+    assert "Context feedback (optional):" in prompt
+    assert "missing caller chain" in prompt
+    assert input_extra["context_feedback_present"] is True
+    assert input_extra["partial_findings_count"] == 1
+    assert input_extra["known_symbols_count"] == 1
+    assert input_extra["known_files_count"] == 1
+    assert input_extra["knowledge_gaps_count"] == 1
+    assert input_extra["relationships_count"] == 1
+
+
 def test_parse_langfuse_generation_receives_structured_output(monkeypatch):
     """When a Langfuse-compatible parent is provided, generation ends with query_intent output."""
-    gen = MagicMock()
+    called: dict[str, object] = {}
 
-    def fake_try_langfuse(*parents, name, input):
-        assert name == "exploration.query_intent"
-        assert "prompt" in input
-        assert input.get("instruction_chars") == len("short instruction")
-        return gen if parents[0] is not None else None
+    def fake_exploration_llm_call(
+        lf_intent_span,
+        lf_exploration_parent,
+        *,
+        name,
+        prompt,
+        prompt_registry_key,
+        invoke,
+        stage,
+        model_name,
+        input_extra,
+        on_complete,
+    ):
+        called["name"] = name
+        called["prompt"] = prompt
+        called["input_extra"] = input_extra
+        raw = invoke()
+        output, metadata = on_complete(raw)
+        called["output"] = output
+        called["metadata"] = metadata
 
-    monkeypatch.setattr(query_intent_parser_mod, "try_langfuse_generation", fake_try_langfuse)
+    monkeypatch.setattr(query_intent_parser_mod, "exploration_llm_call", fake_exploration_llm_call)
 
     def llm(_prompt: str) -> str:
         return '{"symbols":["Sym"],"keywords":["kw"],"intents":["locate"]}'
@@ -107,8 +170,8 @@ def test_parse_langfuse_generation_receives_structured_output(monkeypatch):
     p = QueryIntentParser(llm_generate=llm)
     fake_span = object()
     p.parse("short instruction", lf_intent_span=fake_span, lf_exploration_parent=None)
-    gen.end.assert_called_once()
-    call_kw = gen.end.call_args.kwargs
-    assert "output" in call_kw
-    assert call_kw["output"]["query_intent"]["symbols"] == ["Sym"]
-    assert call_kw["metadata"]["ok"] is True
+    assert called["name"] == "exploration.query_intent"
+    assert "prompt" in called
+    assert called["input_extra"]["instruction_chars"] == len("short instruction")
+    assert called["output"]["query_intent"]["symbols"] == ["Sym"]
+    assert called["metadata"]["ok"] is True
