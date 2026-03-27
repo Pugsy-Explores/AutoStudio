@@ -406,6 +406,8 @@ class ExplorationEngineV2:
         # System-level evidence delta: (canonical_path, symbol, read_source) — no scoring, identity only
         evidence_keys_seen: set[tuple[str, str, str]] = set()
         stagnation_counter = 0
+        relaxed_pass_used = False
+        refine_intent_history: list[tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = []
 
         intent_span: Any = None
         if exploration_outer is not None and hasattr(exploration_outer, "span"):
@@ -439,8 +441,10 @@ class ExplorationEngineV2:
         memory.ingest_discovery_candidates(candidates, limit=EXPLORATION_MAX_ITEMS)
         retry_attempts = 0
         top_score_initial = self._top_discovery_score(candidates)
-        initial_failure_reason = self._classify_initial_failure_reason(intent, candidates, top_score_initial)
-        if initial_failure_reason and retry_attempts < EXPLORATION_MAX_QUERY_RETRIES:
+        initial_refinement_reason = self._classify_initial_refinement_reason(
+            intent, candidates, top_score_initial
+        )
+        if initial_refinement_reason and retry_attempts < EXPLORATION_MAX_QUERY_RETRIES:
             retry_attempts += 1
             prev_queries = intent
             refined_intent_span: Any = None
@@ -449,17 +453,59 @@ class ExplorationEngineV2:
                     refined_intent_span = exploration_outer.span(
                         "exploration.query_intent.retry",
                         input={
-                            "failure_reason": initial_failure_reason,
+                            # Backward-compatible field + clearer semantic alias.
+                            "failure_reason": initial_refinement_reason,
+                            "refinement_reason": initial_refinement_reason,
                             "retry_attempt": retry_attempts,
                         },
                     )
                 except Exception:
                     refined_intent_span = None
             try:
+                memory_summary = memory.get_summary()
+                memory_evidence = memory_summary.get("evidence") or []
+                memory_symbols = sorted(
+                    {
+                        str(row.get("symbol") or "").strip()
+                        for row in memory_evidence
+                        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+                    }
+                )
+                memory_files = sorted(
+                    {
+                        str(row.get("file") or "").strip()
+                        for row in memory_evidence
+                        if isinstance(row, dict) and str(row.get("file") or "").strip()
+                    }
+                )
+                context_feedback = {
+                    "partial_findings": memory_evidence,
+                    "known_entities": {
+                        "symbols": sorted(
+                            set(memory_symbols)
+                            | {s for s in ex_state.seen_symbols if str(s).strip()}
+                        ),
+                        "files": sorted(
+                            set(memory_files)
+                            | {f for f in ex_state.seen_files if str(f).strip()}
+                        ),
+                    },
+                    "knowledge_gaps": memory_summary.get("gaps") or [],
+                    "relationships": memory_summary.get("relationships") or [],
+                }
+                self._log_exploration_context_feedback_trace(
+                    "initial_query_retry",
+                    context_feedback=context_feedback,
+                    ex_state=ex_state,
+                    failure_reason=str(initial_refinement_reason),
+                    extra={"retry_attempt": retry_attempts},
+                    exploration_outer=exploration_outer,
+                )
                 refined_intent = self._intent_parser.parse(
                     instruction,
                     previous_queries=prev_queries,
-                    failure_reason=initial_failure_reason,
+                    failure_reason=initial_refinement_reason,
+                    context_feedback=context_feedback,
                     lf_exploration_parent=exploration_outer,
                     lf_intent_span=refined_intent_span,
                 )
@@ -489,7 +535,7 @@ class ExplorationEngineV2:
                 exploration_outer=exploration_outer,
                 original_queries=prev_queries,
                 refined_queries=refined_intent,
-                failure_reason=initial_failure_reason,
+                failure_reason=initial_refinement_reason,
                 original_candidate_count=original_count,
                 refined_candidate_count=len(refined_candidates),
                 original_top_score=top_score_initial,
@@ -527,6 +573,31 @@ class ExplorationEngineV2:
             if termination_reason == "no_relevant_candidate":
                 break
             if not ex_state.pending_targets:
+                if not relaxed_pass_used and self._has_unresolved_memory_gaps(memory):
+                    relaxed_pass_used = True
+                    ex_state.expand_direction_hint = None
+                    candidates, discovery_records, _ = self._run_discovery_traced(
+                        exploration_outer,
+                        "relaxed_recovery",
+                        intent,
+                        state,
+                        ex_state,
+                    )
+                    evidence.extend(discovery_records)
+                    memory.ingest_discovery_candidates(candidates, limit=EXPLORATION_MAX_ITEMS)
+                    selection_none = self._enqueue_ranked(
+                        instruction,
+                        intent,
+                        candidates,
+                        ex_state,
+                        limit=3,
+                        expl_parent=exploration_outer,
+                        obs=obs,
+                    )
+                    if selection_none and not ex_state.pending_targets:
+                        termination_reason = "pending_exhausted"
+                        break
+                    continue
                 termination_reason = "pending_exhausted"
                 break
             target = ex_state.pending_targets.pop(0)
@@ -662,6 +733,7 @@ class ExplorationEngineV2:
                         understanding,
                         ex_state,
                         exploration_outer=exploration_outer,
+                        memory=memory,
                     )
                     snippet_mem, read_src_mem = self._item_snippet_and_source(
                         "inspection", inspect_result
@@ -756,6 +828,61 @@ class ExplorationEngineV2:
                 ex_state,
                 exploration_outer=exploration_outer,
             )
+            if (
+                action == "refine"
+                and self._intent_oscillation_detected(refine_intent_history, intent)
+            ):
+                if target.symbol:
+                    ex_state.expanded_symbols.discard(target.symbol)
+                action = "expand"
+            # Memory-aware override: relationship gaps still warrant graph expansion, not discovery refine.
+            if action == "refine" and target is not None:
+                mem_summary = memory.get_summary()
+                sim_needs = list(decision.needs)
+                rel_expand_signal = bool({"callers", "callees"} & set(sim_needs))
+                for row in mem_summary.get("gaps") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    cat = self._classify_gap_category(str(row.get("description") or ""))
+                    if cat == "caller":
+                        if "callers" not in sim_needs:
+                            sim_needs.append("callers")
+                        rel_expand_signal = True
+                    elif cat in ("callee", "flow"):
+                        if "callees" not in sim_needs:
+                            sim_needs.append("callees")
+                        rel_expand_signal = True
+                if rel_expand_signal:
+                    sym = (target.symbol or "").strip()
+                    if (
+                        sym
+                        and ex_state.expansion_depth < EXPLORATION_EXPAND_MAX_DEPTH
+                        and target.symbol not in ex_state.expanded_symbols
+                    ):
+                        decision = decision.model_copy(
+                            update={"next_action": "expand", "needs": sim_needs}
+                        )
+                        action = "expand"
+                        coerced: dict[str, Any] = {
+                            "event": "exploration.refine_to_expand_coercion",
+                            "reason": "memory_relationship_gap_expand_viable",
+                            "needs_after": list(sim_needs),
+                            "target_symbol": (target.symbol or "")[:200],
+                            "expansion_depth": int(ex_state.expansion_depth),
+                            "steps_taken": int(ex_state.steps_taken),
+                        }
+                        _LOG.info(
+                            "exploration.refine_to_expand_coercion %s",
+                            json.dumps(coerced, ensure_ascii=False, default=str),
+                        )
+                        if exploration_outer is not None and hasattr(exploration_outer, "event"):
+                            try:
+                                exploration_outer.event(
+                                    name="exploration.refine_to_expand_coercion",
+                                    metadata=coerced,
+                                )
+                            except Exception:
+                                pass
             if self._should_expand(action, decision, target, ex_state):
                 expand_span: Any = None
                 if exploration_outer is not None and hasattr(exploration_outer, "span"):
@@ -790,6 +917,15 @@ class ExplorationEngineV2:
                     raise
                 gk = (getattr(ex_state, "gap_bundle_key_for_expansion", None) or "").strip().lower()
                 expanded = self._prefilter_expansion_targets(ex_state, expanded, gk)
+                relation_bucket_by_key: dict[tuple[str, str], Literal["primary", "related", "other"]] = {}
+                ex_data = expand_result.output.data if expand_result.output else {}
+                if isinstance(ex_data, dict):
+                    expanded, relation_bucket_by_key = self._enforce_direction_routing(
+                        expanded,
+                        ex_data,
+                        ex_state,
+                        direction_hint=dir_hint,
+                    )
                 lf_span_end_output(
                     expand_span,
                     output=_expand_tool_langfuse_output(expanded, expand_result),
@@ -806,21 +942,76 @@ class ExplorationEngineV2:
                     success=bool(expand_result.success),
                     tool_name=str(ex_tool or "graph_lookup"),
                 )
-                ex_data = expand_result.output.data if expand_result.output else {}
                 if isinstance(ex_data, dict):
                     memory.add_relationships_from_expand(canon, target.symbol, ex_data)
                 if expanded:
                     ex_state.relationships_found = True
-                    self._enqueue_targets(ex_state, expanded)
+                    self._enqueue_targets(
+                        ex_state,
+                        expanded,
+                        relation_bucket_by_key=relation_bucket_by_key,
+                    )
                     ex_state.expansion_depth += 1
                 ex_state.refine_used_last_step = False
                 ex_state.expand_direction_hint = None
                 ex_state.gap_bundle_key_for_expansion = ""
                 continue
 
-            if self._should_refine(action, decision, ex_state):
+            if self._should_refine(action, decision, ex_state, target=target, memory=memory):
                 ex_state.backtracks += 1
                 ex_state.refine_used_last_step = True
+                refine_failure_reason = self._refine_failure_reason(decision, ex_state)
+                memory_summary = memory.get_summary()
+                memory_evidence = memory_summary.get("evidence") or []
+                memory_symbols = sorted(
+                    {
+                        str(row.get("symbol") or "").strip()
+                        for row in memory_evidence
+                        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+                    }
+                )
+                memory_files = sorted(
+                    {
+                        str(row.get("file") or "").strip()
+                        for row in memory_evidence
+                        if isinstance(row, dict) and str(row.get("file") or "").strip()
+                    }
+                )
+                context_feedback = {
+                    "partial_findings": memory_evidence,
+                    "known_entities": {
+                        "symbols": sorted(
+                            set(memory_symbols)
+                            | {s for s in ex_state.seen_symbols if str(s).strip()}
+                        ),
+                        "files": sorted(
+                            set(memory_files)
+                            | {f for f in ex_state.seen_files if str(f).strip()}
+                        ),
+                    },
+                    "knowledge_gaps": memory_summary.get("gaps") or [],
+                    "relationships": memory_summary.get("relationships") or [],
+                }
+                self._log_exploration_context_feedback_trace(
+                    "loop_refine",
+                    context_feedback=context_feedback,
+                    ex_state=ex_state,
+                    failure_reason=str(refine_failure_reason),
+                    extra={"target_file": str(target.file_path)[:1000], "target_symbol": (target.symbol or "")[:500]},
+                    exploration_outer=exploration_outer,
+                )
+                refined_intent = self._intent_parser.parse(
+                    instruction,
+                    previous_queries=intent,
+                    failure_reason=refine_failure_reason,
+                    context_feedback=context_feedback,
+                    lf_exploration_parent=exploration_outer,
+                )
+                # Refine is reinterpretation: always replace current intent before discovery.
+                intent = refined_intent
+                refine_intent_history.append(self._intent_signature(intent))
+                if len(refine_intent_history) > 4:
+                    refine_intent_history = refine_intent_history[-4:]
                 candidates, discovery_records, _ = self._run_discovery_traced(
                     exploration_outer,
                     "refine",
@@ -1268,21 +1459,144 @@ class ExplorationEngineV2:
             or "locate" in s
         )
 
-    def _enqueue_targets(self, ex_state: ExplorationState, targets: list[ExplorationTarget]) -> None:
-        scored: list[tuple[float, int, ExplorationTarget]] = []
-        for idx, target in enumerate(targets):
+    @staticmethod
+    def _context_feedback_payload_counts(cf: dict[str, Any] | None) -> dict[str, int]:
+        """Counts aligned with QueryIntentParser Langfuse input_extra (observability)."""
+        if not isinstance(cf, dict):
+            return {
+                "context_feedback_present": 0,
+                "partial_findings_count": 0,
+                "known_symbols_count": 0,
+                "known_files_count": 0,
+                "knowledge_gaps_count": 0,
+                "relationships_count": 0,
+            }
+        pf = cf.get("partial_findings")
+        n_pf = len(pf) if isinstance(pf, list) else 0
+        ke = cf.get("known_entities")
+        n_sym = n_kf = 0
+        if isinstance(ke, dict):
+            ks = ke.get("symbols")
+            if isinstance(ks, list):
+                n_sym = len(ks)
+            kf = ke.get("files")
+            if isinstance(kf, list):
+                n_kf = len(kf)
+        kg = cf.get("knowledge_gaps")
+        n_kg = len(kg) if isinstance(kg, list) else 0
+        rel = cf.get("relationships")
+        n_rel = len(rel) if isinstance(rel, list) else 0
+        return {
+            "context_feedback_present": 1,
+            "partial_findings_count": n_pf,
+            "known_symbols_count": n_sym,
+            "known_files_count": n_kf,
+            "knowledge_gaps_count": n_kg,
+            "relationships_count": n_rel,
+        }
+
+    def _log_exploration_context_feedback_trace(
+        self,
+        phase: str,
+        *,
+        context_feedback: dict[str, Any],
+        ex_state: ExplorationState,
+        failure_reason: str | None = None,
+        extra: dict[str, Any] | None = None,
+        exploration_outer: Any = None,
+    ) -> None:
+        counts = self._context_feedback_payload_counts(context_feedback)
+        payload: dict[str, Any] = {
+            "event": "exploration.context_feedbacktrace",
+            "phase": phase,
+            **counts,
+            "steps_taken": int(ex_state.steps_taken),
+            "expansion_depth": int(ex_state.expansion_depth),
+            "backtracks": int(ex_state.backtracks),
+            "seen_symbols_count": len(ex_state.seen_symbols),
+            "seen_files_count": len(ex_state.seen_files),
+        }
+        if failure_reason:
+            payload["failure_reason"] = str(failure_reason)[:500]
+        if extra:
+            payload.update(extra)
+        try:
+            line = json.dumps(payload, ensure_ascii=False, default=str)
+        except Exception:
+            line = str(payload)
+        _LOG.info("exploration.context_feedbacktrace %s", line)
+        if exploration_outer is not None and hasattr(exploration_outer, "event"):
+            try:
+                exploration_outer.event(
+                    name="exploration.context_feedbacktrace",
+                    metadata=payload,
+                )
+            except Exception:
+                pass
+
+    def _enqueue_targets(
+        self,
+        ex_state: ExplorationState,
+        targets: list[ExplorationTarget],
+        *,
+        relation_bucket_by_key: dict[tuple[str, str], Literal["primary", "related", "other"]] | None = None,
+    ) -> None:
+        tier_primary_novel: list[ExplorationTarget] = []
+        tier_primary_seen: list[ExplorationTarget] = []
+        tier_related_novel: list[ExplorationTarget] = []
+        tier_related_seen: list[ExplorationTarget] = []
+        tier_other_novel: list[ExplorationTarget] = []
+        tier_other_seen: list[ExplorationTarget] = []
+        gk = (getattr(ex_state, "gap_bundle_key_for_expansion", None) or "").strip().lower()
+        for target in targets:
             edge_hash = self._edge_hash_for_target(ex_state.current_target, target)
             if edge_hash in ex_state.seen_relation_edges:
                 continue
-            if not self._may_enqueue(ex_state, target.file_path, target.symbol):
-                continue
-            score = self._target_priority_score(target, ex_state)
-            scored.append((score, idx, target))
-            ex_state.seen_relation_edges.add(edge_hash)
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        for _score, _idx, target in scored:
             key = self._make_location_key(target.file_path, target.symbol)
-            ex_state.pending_targets.append(target.model_copy(update={"file_path": key[0]}))
+            canon, sym = key[0], key[1]
+            if not self._may_enqueue(ex_state, canon, target.symbol):
+                continue
+            tri = (gk, canon, sym)
+            # Hard constraint: do not revisit same (gap, file, symbol) target.
+            if gk and tri in ex_state.attempted_gap_targets:
+                continue
+            ex_state.seen_relation_edges.add(edge_hash)
+            if gk:
+                ex_state.attempted_gap_targets.add(tri)
+
+            relation_bucket = self._relation_bucket_for_target(
+                target,
+                ex_state,
+                relation_bucket_by_key=relation_bucket_by_key,
+            )
+            novelty_bucket = self._target_priority_score(target, ex_state)
+            normalized = target.model_copy(update={"file_path": canon})
+
+            if relation_bucket == "primary":
+                if novelty_bucket == "novel":
+                    tier_primary_novel.append(normalized)
+                else:
+                    tier_primary_seen.append(normalized)
+            elif relation_bucket == "related":
+                if novelty_bucket == "novel":
+                    tier_related_novel.append(normalized)
+                else:
+                    tier_related_seen.append(normalized)
+            else:
+                if novelty_bucket == "novel":
+                    tier_other_novel.append(normalized)
+                else:
+                    tier_other_seen.append(normalized)
+
+        ordered = (
+            tier_primary_novel
+            + tier_primary_seen
+            + tier_other_novel
+            + tier_other_seen
+            + tier_related_novel
+            + tier_related_seen
+        )
+        ex_state.pending_targets.extend(ordered)
 
     def _apply_gap_driven_decision(
         self,
@@ -1291,9 +1605,14 @@ class ExplorationEngineV2:
         ex_state: ExplorationState,
         *,
         exploration_outer: Any = None,
+        memory: ExplorationWorkingMemory | None = None,
     ) -> ExplorationDecision:
         if not ENABLE_GAP_DRIVEN_EXPANSION:
             return decision
+        if memory is None:
+            memory = ExplorationWorkingMemory()
+        memory_summary = memory.get_summary()
+        rel_count = len(memory_summary.get("relationships") or [])
         gaps = getattr(understanding, "knowledge_gaps", None) or []
         if not isinstance(gaps, list):
             return decision
@@ -1311,89 +1630,87 @@ class ExplorationEngineV2:
                 rejected.append({"gap": gap_s, "reason": "too_generic"})
                 continue
             accepted.append(gap_s)
+        mem_gap_descs: list[str] = []
+        for row in memory_summary.get("gaps") or []:
+            if isinstance(row, dict):
+                d = str(row.get("description") or "").strip()
+                if d:
+                    mem_gap_descs.append(d)
         if exploration_outer is not None and hasattr(exploration_outer, "event"):
             try:
                 exploration_outer.event(
                     name="exploration.gap_filter",
                     metadata={
                         "accepted_count": len(accepted),
+                        "memory_gap_count": len(mem_gap_descs),
+                        "memory_relationship_count": rel_count,
                         "rejected": rejected[:10],
                     },
                 )
             except Exception:
                 pass
-        if not accepted:
+        if not accepted and not mem_gap_descs:
             return decision
-        ex_state.attempted_gaps.update(g.lower() for g in accepted)
+        combined: list[str] = []
+        seen_norm: set[str] = set()
+        for g in accepted + mem_gap_descs:
+            gn = g.lower().strip()[:200]
+            if not gn or gn in seen_norm:
+                continue
+            seen_norm.add(gn)
+            combined.append(g)
+        if not combined:
+            return decision
+        if accepted:
+            ex_state.attempted_gaps.update(g.lower() for g in accepted)
         ex_state.gap_expand_attempts += 1
         ex_state.last_expand_was_gap_driven = False
         ex_state.expand_direction_hint = None
         ex_state.discovery_keyword_inject = []
         ex_state.gap_bundle_key_for_expansion = ""
 
-        bundle_key = "|".join(sorted(g[:200].lower() for g in accepted))[:500]
+        bundle_key = "|".join(sorted(g[:200].lower() for g in combined))[:500]
         ex_state.gap_bundle_key_for_expansion = bundle_key
 
-        needs = list(dict.fromkeys(list(decision.needs or [])))
         inject_keywords: list[str] = []
-        any_refine = False
-        direction: str | None = None
+        has_caller_gap = False
+        has_callee_gap = False
+        has_refine_gap = False
 
-        for gap in accepted:
+        for gap in combined:
             cat = self._classify_gap_category(gap)
             if cat in ("usage", "definition", "config", "usage_symbol_fallback"):
-                any_refine = True
+                has_refine_gap = True
                 inject_keywords.extend(self._extract_inject_keywords(gap, cat))
             elif cat == "caller":
-                if "callers" not in needs:
-                    needs.append("callers")
-                direction = self._merge_expand_direction(direction, "callers")
-            elif cat == "callee":
-                if "callees" not in needs:
-                    needs.append("callees")
-                direction = self._merge_expand_direction(direction, "callees")
-            elif cat == "flow":
-                if "callers" not in needs:
-                    needs.append("callers")
-                if "callees" not in needs:
-                    needs.append("callees")
-                direction = self._merge_expand_direction(direction, "both")
-            elif cat == "none":
-                # Legacy substring pass for callers/callees/definition
-                low = gap.lower()
-                if "caller" in low and "callers" not in needs:
-                    needs.append("callers")
-                    direction = self._merge_expand_direction(direction, "callers")
-                if "callee" in low and "callees" not in needs:
-                    needs.append("callees")
-                    direction = self._merge_expand_direction(direction, "callees")
-                if "defin" in low and "definition" not in needs:
-                    needs.append("definition")
-                if not any(
-                    x in low for x in ("caller", "callee", "defin")
-                ):
-                    if "more_code" not in needs:
-                        needs.append("more_code")
+                has_caller_gap = True
+            elif cat in ("callee", "flow"):
+                has_callee_gap = True
 
         inject_keywords = list(dict.fromkeys(inject_keywords))[:2]
 
-        if any_refine:
+        if has_caller_gap:
+            ex_state.expand_direction_hint = "callers"
+            ex_state.last_expand_was_gap_driven = True
+            return decision.model_copy(
+                update={"next_action": "expand", "needs": ["callers"]}
+            )
+
+        if has_callee_gap:
+            ex_state.expand_direction_hint = "callees"
+            ex_state.last_expand_was_gap_driven = True
+            return decision.model_copy(
+                update={"next_action": "expand", "needs": ["callees"]}
+            )
+
+        if has_refine_gap:
             ex_state.discovery_keyword_inject = inject_keywords
             ex_state.last_expand_was_gap_driven = False
             return decision.model_copy(
-                update={"next_action": "refine", "needs": needs or ["more_code"]}
+                update={"next_action": "refine", "needs": ["more_code"]}
             )
 
-        if not needs:
-            needs = ["more_code"]
-        elif "more_code" not in needs and not (
-            {"callers", "callees"} & set(needs)
-        ):
-            needs.append("more_code")
-
-        ex_state.expand_direction_hint = direction
-        ex_state.last_expand_was_gap_driven = True
-        return decision.model_copy(update={"next_action": "expand", "needs": needs})
+        return decision
 
     def _apply_refine_cooldown(
         self,
@@ -1491,15 +1808,13 @@ class ExplorationEngineV2:
         return any(marker in normalized_gap for marker in cls._GENERIC_GAP_MARKERS)
 
     @staticmethod
-    def _target_priority_score(target: ExplorationTarget, ex_state: ExplorationState) -> float:
-        score = 0.0
+    def _target_priority_score(target: ExplorationTarget, ex_state: ExplorationState) -> Literal["novel", "seen"]:
         if target.symbol and target.symbol not in ex_state.seen_symbols:
-            score += 1.0
-        if target.file_path not in ex_state.seen_files:
-            score += 1.0
-        if target.source == "expansion":
-            score += 0.5
-        return score
+            return "novel"
+        # Keep novelty categorical and symbol-first to stabilize traversal.
+        if not target.symbol and target.file_path not in ex_state.seen_files:
+            return "novel"
+        return "seen"
 
     @staticmethod
     def _edge_hash_for_target(current: ExplorationTarget | None, nxt: ExplorationTarget) -> str:
@@ -1586,12 +1901,191 @@ class ExplorationEngineV2:
         return True
 
     @staticmethod
-    def _should_refine(action: str, decision: ExplorationDecision, ex_state: ExplorationState) -> bool:
+    def _should_refine(
+        action: str,
+        decision: ExplorationDecision,
+        ex_state: ExplorationState,
+        *,
+        target: ExplorationTarget | None = None,
+        memory: ExplorationWorkingMemory | None = None,
+    ) -> bool:
         if ex_state.backtracks >= EXPLORATION_MAX_BACKTRACKS:
             return False
-        if action == "refine":
+        if decision.status == "wrong_target":
             return True
-        return decision.status == "wrong_target"
+        reason_l = str(decision.reason or "").lower()
+        if "low relevance" in reason_l:
+            return True
+        if action != "refine":
+            return False
+        # Relationship-oriented gaps in memory + graph expansion still viable → do not refine here.
+        if target is not None and memory is not None:
+            sim_needs = list(decision.needs)
+            rel_signal = bool({"callers", "callees"} & set(sim_needs))
+            for row in memory.get_summary().get("gaps") or []:
+                if not isinstance(row, dict):
+                    continue
+                cat = ExplorationEngineV2._classify_gap_category(str(row.get("description") or ""))
+                if cat == "caller":
+                    if "callers" not in sim_needs:
+                        sim_needs.append("callers")
+                    rel_signal = True
+                elif cat in ("callee", "flow"):
+                    if "callees" not in sim_needs:
+                        sim_needs.append("callees")
+                    rel_signal = True
+            if rel_signal:
+                sym = (target.symbol or "").strip()
+                if (
+                    sym
+                    and ex_state.expansion_depth < EXPLORATION_EXPAND_MAX_DEPTH
+                    and target.symbol not in ex_state.expanded_symbols
+                ):
+                    return False
+        return decision.status == "partial"
+
+    def _refine_failure_reason(
+        self,
+        decision: ExplorationDecision,
+        ex_state: ExplorationState,
+    ) -> str:
+        if decision.status == "wrong_target":
+            return "low_relevance"
+        if ex_state.no_improvement_streak > 0:
+            return "insufficient_context"
+        reason_low = str(getattr(decision, "reason", "") or "").lower()
+        if "low relevance" in reason_low:
+            return "low_relevance"
+        return "insufficient_context"
+
+    def _enforce_direction_routing(
+        self,
+        expanded: list[ExplorationTarget],
+        expand_data: dict[str, Any],
+        ex_state: ExplorationState,
+        *,
+        direction_hint: str | None,
+    ) -> tuple[list[ExplorationTarget], dict[tuple[str, str], Literal["primary", "related", "other"]]]:
+        hint = (direction_hint or "").strip().lower()
+        if hint not in ("callers", "callees", "both"):
+            return expanded, {}
+        primary_keys: set[tuple[str, str]] = set()
+        related_keys: set[tuple[str, str]] = set()
+        callers = expand_data.get("callers") or []
+        callees = expand_data.get("callees") or []
+        related = expand_data.get("related") or []
+        if hint == "callers":
+            primary_keys = self._expand_bucket_keys(callers)
+        elif hint == "callees":
+            primary_keys = self._expand_bucket_keys(callees)
+        else:
+            primary_keys = self._expand_bucket_keys(callers) | self._expand_bucket_keys(callees)
+        related_keys = self._expand_bucket_keys(related)
+        if not primary_keys and not related_keys:
+            # Missing bucket metadata: preserve original expander output.
+            return expanded, {}
+
+        primary: list[ExplorationTarget] = []
+        fallback_related: list[ExplorationTarget] = []
+        relation_bucket_by_key: dict[tuple[str, str], Literal["primary", "related", "other"]] = {}
+        for t in expanded:
+            key = self._make_location_key(t.file_path, t.symbol)
+            if key in primary_keys:
+                primary.append(t)
+                relation_bucket_by_key[key] = "primary"
+            elif key in related_keys:
+                fallback_related.append(t)
+                relation_bucket_by_key[key] = "related"
+            else:
+                relation_bucket_by_key[key] = "other"
+
+        routed = primary if primary else fallback_related
+        if not routed:
+            return [], relation_bucket_by_key
+
+        # Keep only routed targets as hard direction decision.
+        routed_keys = {self._make_location_key(t.file_path, t.symbol) for t in routed}
+        relation_bucket_by_key = {
+            k: v for k, v in relation_bucket_by_key.items() if k in routed_keys
+        }
+        if ex_state.expand_direction_hint is not None:
+            _LOG.debug(
+                "exploration.direction_routing hint=%s routed=%s primary=%s related_fallback=%s",
+                hint,
+                len(routed),
+                len(primary),
+                len(fallback_related),
+            )
+        return routed, relation_bucket_by_key
+
+    def _relation_bucket_for_target(
+        self,
+        target: ExplorationTarget,
+        ex_state: ExplorationState,
+        *,
+        relation_bucket_by_key: dict[tuple[str, str], Literal["primary", "related", "other"]] | None = None,
+    ) -> Literal["primary", "related", "other"]:
+        key = self._make_location_key(target.file_path, target.symbol)
+        if relation_bucket_by_key and key in relation_bucket_by_key:
+            return relation_bucket_by_key[key]
+        if target.source != "expansion":
+            return "other"
+        if ex_state.expand_direction_hint in ("callers", "callees", "both"):
+            return "primary"
+        return "related"
+
+    def _expand_bucket_keys(self, rows: Any) -> set[tuple[str, str]]:
+        out: set[tuple[str, str]] = set()
+        if not isinstance(rows, list):
+            return out
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            fp = str(row.get("file_path") or row.get("file") or "").strip()
+            if not fp:
+                continue
+            sym_raw = row.get("symbol")
+            sym = str(sym_raw).strip() if sym_raw else ""
+            out.add(self._make_location_key(fp, sym if sym else None))
+        return out
+
+    @staticmethod
+    def _has_unresolved_memory_gaps(memory: ExplorationWorkingMemory) -> bool:
+        try:
+            summary = memory.get_summary()
+            gaps = summary.get("gaps") if isinstance(summary, dict) else []
+            return isinstance(gaps, list) and len(gaps) > 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def _intent_signature(
+        intent: QueryIntent,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        return (
+            tuple(sorted({str(x).strip() for x in (intent.symbols or []) if str(x).strip()})),
+            tuple(sorted({str(x).strip() for x in (intent.keywords or []) if str(x).strip()})),
+            tuple(
+                sorted(
+                    {
+                        str(x).strip()
+                        for x in (getattr(intent, "regex_patterns", None) or [])
+                        if str(x).strip()
+                    }
+                )
+            ),
+            tuple(sorted({str(x).strip() for x in (intent.intents or []) if str(x).strip()})),
+        )
+
+    def _intent_oscillation_detected(
+        self,
+        history: list[tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]],
+        current_intent: QueryIntent,
+    ) -> bool:
+        if len(history) < 2:
+            return False
+        current = self._intent_signature(current_intent)
+        return history[-1] == history[-2] == current
 
     @staticmethod
     def _should_stop(
@@ -1770,11 +2264,16 @@ class ExplorationEngineV2:
             pass
 
     @staticmethod
-    def _classify_initial_failure_reason(
+    def _classify_initial_refinement_reason(
         intent: QueryIntent,
         candidates: list[ExplorationCandidate],
         top_score: float,
     ) -> FailureReason | None:
+        """
+        Classify whether initial discovery quality warrants one query-intent refinement retry.
+
+        NOTE: This is a retrieval-quality signal, not parser execution failure.
+        """
         if not (intent.symbols or intent.keywords or intent.regex_patterns):
             return "ambiguous_intent"
         if not candidates:
@@ -1795,6 +2294,19 @@ class ExplorationEngineV2:
                 return "too_narrow"
             return "low_relevance"
         return None
+
+    @staticmethod
+    def _classify_initial_failure_reason(
+        intent: QueryIntent,
+        candidates: list[ExplorationCandidate],
+        top_score: float,
+    ) -> FailureReason | None:
+        """Backward-compatible alias for older call sites/telemetry wording."""
+        return ExplorationEngineV2._classify_initial_refinement_reason(
+            intent,
+            candidates,
+            top_score,
+        )
 
     def _item_snippet_and_source(
         self, phase: str, result: ExecutionResult

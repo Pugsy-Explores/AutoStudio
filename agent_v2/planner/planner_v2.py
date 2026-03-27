@@ -398,6 +398,11 @@ class PlannerV2:
             )
 
         controller_block = _CONTROLLER_JSON_PROMPT_BLOCK if require_controller_json else ""
+        controller_requirement = (
+            '12. You MUST include a top-level "controller" object exactly as specified in CONTROLLER above.'
+            if require_controller_json
+            else ""
+        )
 
         item_lines: list[str] = []
         for item in exploration.evidence:
@@ -498,7 +503,7 @@ REQUIREMENTS:
 10. "completion_criteria": non-empty array of strings.
 11. Atomic steps: each step must map to a single dispatchable tool action (search/ open_file/edit/…/finish); never a free-form research phase without a tool.
 
-{"12. You MUST include a top-level \"controller\" object exactly as specified in CONTROLLER above." if require_controller_json else ""}
+{controller_requirement}
 
 Return a single JSON object only.
 """
