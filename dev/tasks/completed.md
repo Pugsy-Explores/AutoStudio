@@ -2,6 +2,7 @@
 
 <!-- Finished tasks -->
 
+- Exploration trace-based behavior eval harness (minimal 3-layer graders): `agent_v2/exploration/exploration_behavior_eval_harness.py`, fixtures `tests/fixtures/exploration_behavior_eval_cases.py`, runner `scripts/exploration_behavior_eval.py`, CI test `tests/test_exploration_behavior_eval.py` (stub LLM judge); plan: `Docs/architecture_freeze/EXPLORATION_EVAL_HARNESS_PLAN.md`
 - Iterative Query Refinement + Prompt Role Separation: added failure-aware query refinement inputs (`previous_queries`, `failure_reason`) with one-retry initial retrieval gate, strict no-repeat query filtering, role-separated prompt infrastructure (`system_prompt` + `user_prompt_template`) with compiled render cache, message-native model calls with `[SYSTEM]/[USER]` fallback formatting, and refinement telemetry deltas; validated via focused exploration/prompt/parser tests. Related bug: `BUG-012`.
 - Phase 17 — Retrieval Reranker Infrastructure (agent/retrieval/reranker/: hardware, cache, preprocessor, symbol_query_detector, deduplicator, base_reranker, gpu/cpu_reranker, rerank_queue; BM25, RRF, score threshold, impact telemetry; scripts/run_retrieval_eval.py; Docs/RETRIEVAL_ARCHITECTURE.md)
 - Phase 13 — Prompt Framework (agent/prompt_system/: PromptRegistry, versioned prompts, guardrails, observability, retry_strategies, skills YAML; Docs/PROMPT_ARCHITECTURE.md)
