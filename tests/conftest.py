@@ -55,6 +55,11 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')")
+    config.addinivalue_line(
+        "markers",
+        "retrieval: mid-pipeline retrieval quality tests (require real repo tools; "
+        "deselect with '-m \"not retrieval\"')",
+    )
 
 
 @pytest.fixture(autouse=True)
