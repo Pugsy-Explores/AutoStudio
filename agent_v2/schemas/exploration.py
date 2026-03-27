@@ -10,6 +10,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+SourceChannel = Literal["graph", "grep", "vector"]
+
 ExpandDirectionHint = Literal["callers", "callees", "both"]
 
 
@@ -183,6 +185,19 @@ class ExplorationCandidate(BaseModel):
     file_path: str
     snippet: Optional[str] = None
     source: Literal["graph", "grep", "vector"]
+    symbols: list[str] = Field(default_factory=list)
+    snippet_summary: Optional[str] = None
+    source_channels: list[SourceChannel] = Field(default_factory=list)
+    discovery_max_score: Optional[float] = None
+    discovery_rerank_score: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _sync_legacy_fields(self) -> "ExplorationCandidate":
+        if self.symbols and not self.symbol:
+            self.symbol = self.symbols[0]
+        if not self.source_channels and self.source:
+            self.source_channels = [self.source]
+        return self
 
 
 class ExplorationDecision(BaseModel):

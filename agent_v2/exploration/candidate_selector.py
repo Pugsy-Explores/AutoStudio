@@ -19,6 +19,17 @@ _EXPLORATION_SELECTOR_SINGLE_KEY = "exploration.selector.single"
 _EXPLORATION_SELECTOR_BATCH_KEY = "exploration.selector.batch"
 
 
+def _selector_candidate_payload(c: ExplorationCandidate) -> dict[str, Any]:
+    return {
+        "file_path": c.file_path,
+        "symbol": c.symbol,
+        "source": c.source,
+        "symbols": list(c.symbols) if c.symbols else [],
+        "snippet_summary": c.snippet_summary or c.snippet,
+        "source_channels": list(c.source_channels) if c.source_channels else [c.source],
+    }
+
+
 class CandidateSelector:
     """Select exploration candidates in a single ranking pass."""
 
@@ -60,14 +71,7 @@ class CandidateSelector:
         if self._llm_generate_single is None and self._llm_generate_messages_single is None:
             raise ValueError("CandidateSelector.select requires single LLM callable in strict mode.")
 
-        payload = [
-            {
-                "file_path": c.file_path,
-                "symbol": c.symbol,
-                "source": c.source,
-            }
-            for c in top
-        ]
+        payload = [_selector_candidate_payload(c) for c in top]
         system_prompt, user_prompt = get_registry().render_prompt_parts(
             _EXPLORATION_SELECTOR_SINGLE_KEY,
             model_name=self._model_name_single,
@@ -142,14 +146,7 @@ class CandidateSelector:
         if self._llm_generate_batch is None and self._llm_generate_messages_batch is None:
             raise ValueError("CandidateSelector.select_batch requires batch LLM callable in strict mode.")
 
-        payload = [
-            {
-                "file_path": c.file_path,
-                "symbol": c.symbol,
-                "source": c.source,
-            }
-            for c in top
-        ]
+        payload = [_selector_candidate_payload(c) for c in top]
         explored_block = ""
         if explored_location_keys:
             rows = [

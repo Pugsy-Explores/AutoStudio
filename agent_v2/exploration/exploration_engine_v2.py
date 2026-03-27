@@ -7,12 +7,11 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 from pathlib import Path
 
 from agent_v2.config import (
     ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS,
-    DISCOVERY_MERGE_TOP_K,
     DISCOVERY_REGEX_CAP,
     DISCOVERY_SYMBOL_CAP,
     DISCOVERY_TEXT_CAP,
@@ -36,6 +35,12 @@ from agent_v2.config import (
     ENABLE_REFINE_COOLDOWN,
     ENABLE_UTILITY_STOP,
     EXPLORATION_UTILITY_NO_IMPROVEMENT_STREAK,
+    EXPLORATION_DISCOVERY_POST_RERANK_TOP_K,
+    EXPLORATION_DISCOVERY_PRERERANK_POOL_MAX,
+    EXPLORATION_DISCOVERY_RERANK_ENABLED,
+    EXPLORATION_DISCOVERY_RERANK_MIN_CANDIDATES,
+    EXPLORATION_DISCOVERY_RERANK_USE_FUSION,
+    EXPLORATION_DISCOVERY_SNIPPET_MERGE_MAX_CHARS,
     get_project_root,
 )
 from agent_v2.observability.langfuse_client import create_agent_trace, finalize_agent_trace
@@ -1136,6 +1141,116 @@ class ExplorationEngineV2:
         except (TypeError, ValueError):
             return 0.0
 
+    @staticmethod
+    def _merge_discovery_snippets(parts: list[str], max_chars: int) -> str:
+        seen: set[str] = set()
+        out: list[str] = []
+        for p in parts:
+            p = (p or "").strip()
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+        joined = "\n---\n".join(out)
+        if len(joined) > max_chars:
+            return joined[:max_chars]
+        return joined
+
+    def _may_enqueue_file_candidate(
+        self,
+        ex_state: ExplorationState,
+        path: str,
+        symbols: list[str],
+    ) -> bool:
+        if not symbols:
+            return self._may_enqueue(ex_state, path, None)
+        for s in symbols:
+            if self._may_enqueue(ex_state, path, s if s else None):
+                return True
+        return False
+
+    def run_retrieval_pipeline(
+        self,
+        instruction: str,
+        intent: QueryIntent,
+    ) -> list[ExplorationCandidate]:
+        """Mid-pipeline extraction point for validation harnesses.
+
+        Runs the full discovery path — multi-retrieval → file-level merge →
+        cross-encoder rerank → post-rerank top_k — and returns the resulting
+        candidates without entering the scoper/selector/exploration loop.
+
+        No LLM is called here.  The caller must have wired a real (or stub)
+        dispatcher that responds to SEARCH steps.
+        """
+        from types import SimpleNamespace  # late import: keeps method dependency-free
+
+        ex_state = ExplorationState(instruction=instruction)
+        state = SimpleNamespace(context={})
+        candidates, _ = self._discovery(intent, state, ex_state)
+        return candidates
+
+    def _discovery_rerank_candidates(
+        self,
+        candidates: list[ExplorationCandidate],
+        rank_query: str,
+    ) -> list[ExplorationCandidate]:
+        """Reorder file-level candidates by cross-encoder relevance; fallback on failure."""
+        if not candidates or not (rank_query or "").strip():
+            return candidates
+        try:
+            from config.retrieval_config import (
+                RERANKER_ENABLED,
+                RERANK_FUSION_WEIGHT,
+                RERANK_MIN_CANDIDATES,
+                RETRIEVER_FUSION_WEIGHT,
+            )
+            from agent.retrieval.reranker.reranker_factory import create_reranker
+        except Exception:
+            return candidates
+
+        if not EXPLORATION_DISCOVERY_RERANK_ENABLED or not RERANKER_ENABLED:
+            return candidates
+
+        exp_floor = EXPLORATION_DISCOVERY_RERANK_MIN_CANDIDATES
+        if exp_floor >= 0 and len(candidates) < exp_floor:
+            return candidates
+        if len(candidates) < RERANK_MIN_CANDIDATES:
+            return candidates
+
+        reranker = create_reranker()
+        if reranker is None:
+            return candidates
+
+        docs: list[str] = []
+        for c in candidates:
+            summ = (c.snippet_summary or c.snippet or "").strip()
+            syms = ", ".join(c.symbols) if c.symbols else ""
+            docs.append(f"{c.file_path}\nSymbols: {syms}\n{summ}")
+
+        try:
+            scored = reranker.rerank(rank_query, docs)
+        except Exception as exc:
+            _LOG.warning("exploration.discovery rerank failed — using retriever order: %s", exc)
+            return candidates
+
+        score_by_doc = {d: float(s) for d, s in scored}
+
+        def _fusion(c: ExplorationCandidate, doc: str) -> float:
+            rs = float(score_by_doc.get(doc, 0.0))
+            if not EXPLORATION_DISCOVERY_RERANK_USE_FUSION:
+                return rs
+            ds = float(c.discovery_max_score or 0.0)
+            return rs * RERANK_FUSION_WEIGHT + ds * RETRIEVER_FUSION_WEIGHT
+
+        paired = list(zip(candidates, docs))
+        paired.sort(key=lambda t: _fusion(t[0], t[1]), reverse=True)
+        out: list[ExplorationCandidate] = []
+        for c, doc in paired:
+            c.discovery_rerank_score = float(score_by_doc.get(doc, 0.0))
+            out.append(c)
+        return out
+
     def _discovery(
         self,
         intent: QueryIntent,
@@ -1183,15 +1298,15 @@ class ExplorationEngineV2:
             reg_pairs = f_reg.result()
             txt_pairs = f_txt.result()
 
-        # merge[(canon_path, sym_dedupe_key)] -> { max_score, candidate, breakdown }
-        merge: dict[tuple[str, str], dict[str, Any]] = {}
+        # file_merge[canon_path] -> aggregates (one ExplorationCandidate per file after build)
+        file_merge: dict[str, dict[str, Any]] = {}
 
         def _ingest_pairs(
             pairs: list[tuple[str, ExecutionResult]],
             query_type: Literal["symbol", "regex", "text"],
         ) -> None:
             src_lit = self._discovery_query_channel_to_source(query_type)
-            ch = query_type  # breakdown channel key
+            ch = query_type
             for q, res in pairs:
                 records.append(
                     (
@@ -1213,67 +1328,100 @@ class ExplorationEngineV2:
                     canon = self._canonical_path(fp, base_root=base_root)
                     sym_raw = row.get("symbol")
                     sym = str(sym_raw).strip() if sym_raw else None
-                    sym_dedupe = sym if sym else "__file__"
-                    key = (canon, sym_dedupe)
                     sc = self._discovery_row_score(row)
                     snip = row.get("snippet") or row.get("content")
                     snip_s = str(snip).strip() if snip else None
-                    cand = ExplorationCandidate(
-                        symbol=sym,
-                        file_path=canon,
-                        snippet=snip_s,
-                        source=src_lit,
-                    )
-                    if key not in merge:
-                        merge[key] = {
+                    if canon not in file_merge:
+                        file_merge[canon] = {
                             "max_score": sc,
-                            "candidate": cand,
                             "breakdown": {"symbol": None, "regex": None, "text": None},
+                            "symbols_order": [],
+                            "symbols_set": set(),
+                            "sources_order": [],
+                            "sources_set": set(),
+                            "snippets_order": [],
+                            "snippets_set": set(),
                         }
-                        merge[key]["breakdown"][ch] = sc
-                    else:
-                        m = merge[key]
-                        prev_ch = m["breakdown"].get(ch)
-                        m["breakdown"][ch] = max(
-                            prev_ch if prev_ch is not None else 0.0,
-                            sc,
-                        )
-                        if sc > m["max_score"]:
-                            m["max_score"] = sc
-                            m["candidate"] = cand
+                    m = file_merge[canon]
+                    m["max_score"] = max(float(m["max_score"]), sc)
+                    prev_ch = m["breakdown"].get(ch)
+                    m["breakdown"][ch] = max(
+                        prev_ch if prev_ch is not None else 0.0,
+                        sc,
+                    )
+                    if sym and sym not in m["symbols_set"]:
+                        m["symbols_set"].add(sym)
+                        m["symbols_order"].append(sym)
+                    if src_lit not in m["sources_set"]:
+                        m["sources_set"].add(src_lit)
+                        m["sources_order"].append(src_lit)
+                    if snip_s and snip_s not in m["snippets_set"]:
+                        m["snippets_set"].add(snip_s)
+                        m["snippets_order"].append(snip_s)
 
         _ingest_pairs(sym_pairs, "symbol")
         _ingest_pairs(reg_pairs, "regex")
         _ingest_pairs(txt_pairs, "text")
 
-        sorted_entries = sorted(
-            merge.items(),
-            key=lambda kv: kv[1]["max_score"],
-            reverse=True,
-        )[:DISCOVERY_MERGE_TOP_K]
-
-        deduped: list[ExplorationCandidate] = []
-        for _k, meta in sorted_entries:
-            c = meta["candidate"]
-            bd = dict(meta["breakdown"])
+        merge_cap = EXPLORATION_DISCOVERY_SNIPPET_MERGE_MAX_CHARS
+        built: list[ExplorationCandidate] = []
+        for canon, meta in file_merge.items():
+            summary = self._merge_discovery_snippets(meta["snippets_order"], merge_cap)
+            syms: list[str] = list(meta["symbols_order"])
+            chans: list[str] = list(meta["sources_order"])
+            prim_sym = syms[0] if syms else None
+            prim_src = cast(
+                Literal["graph", "grep", "vector"],
+                chans[0] if chans else "vector",
+            )
             ms = float(meta["max_score"])
+            snippet_legacy = summary[: self.MAX_SNIPPET_CHARS] if summary else None
+            cand = ExplorationCandidate(
+                file_path=canon,
+                symbol=prim_sym,
+                symbols=syms,
+                snippet=snippet_legacy,
+                snippet_summary=summary or None,
+                source=prim_src,
+                source_channels=cast(
+                    list[Literal["graph", "grep", "vector"]],
+                    list(chans) if chans else [prim_src],
+                ),
+                discovery_max_score=ms,
+            )
             try:
-                object.__setattr__(c, "_score_breakdown", bd)
-                object.__setattr__(c, "_discovery_max_score", ms)
+                object.__setattr__(cand, "_score_breakdown", dict(meta["breakdown"]))
             except Exception:
                 pass
-            if self._may_enqueue(ex_state, c.file_path, c.symbol):
-                deduped.append(c)
+            built.append(cand)
+
+        built.sort(key=lambda c: float(c.discovery_max_score or 0.0), reverse=True)
+        built = built[: EXPLORATION_DISCOVERY_PRERERANK_POOL_MAX]
+
+        rank_query = (ex_state.instruction or "").strip()
+        if not rank_query:
+            rank_query = " ".join(intent.keywords or [])[:2000]
+
+        filtered: list[ExplorationCandidate] = [
+            c
+            for c in built
+            if self._may_enqueue_file_candidate(ex_state, c.file_path, c.symbols)
+        ]
+
+        reranked = self._discovery_rerank_candidates(filtered, rank_query)
+        deduped = reranked[: EXPLORATION_DISCOVERY_POST_RERANK_TOP_K]
 
         _LOG.info(
             "exploration.discovery steps_taken=%s budget_symbol=%s regex=%s text=%s "
-            "merged_keys=%s evidence_records=%s candidates_after_may_enqueue=%s",
+            "merged_files=%s evidence_records=%s candidates_after_may_enqueue=%s "
+            "post_rerank_top_k=%s",
             ex_state.steps_taken,
             len(symbol_queries),
             len(regex_queries),
             len(text_queries),
-            len(merge),
+            len(file_merge),
             len(records),
+            len(filtered),
             len(deduped),
         )
         return deduped, records
