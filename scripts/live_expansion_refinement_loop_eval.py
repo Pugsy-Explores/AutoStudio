@@ -210,7 +210,11 @@ def _build_cases(signals: dict[str, list[SymbolEntry]]) -> list[LoopEvalCase]:
     fn0 = _pick(signals["functions"], 0, SymbolEntry("agent_v2/config.py", "get_config", 1, 30, "function"))
     fn1 = _pick(signals["functions"], 3, fn0)
     cls0 = _pick(signals["classes"], 0, SymbolEntry("agent_v2/runtime/mode_manager.py", "ModeManager", 1, 40, "class"))
-    mod0 = _pick(signals["modules"], 0, SymbolEntry("agent_v2", "agent_v2", 1, 1, "module"))
+    mod0 = _pick(
+        signals["classes"],
+        1,
+        SymbolEntry("agent_v2/runtime/mode_manager.py", "ModeManager", 1, 40, "class"),
+    )
     return [
         LoopEvalCase(
             name="gap_driven_expansion",
@@ -349,6 +353,213 @@ def _build_cases(signals: dict[str, list[SymbolEntry]]) -> list[LoopEvalCase]:
             ],
             expected={"dedupe_and_priority": True},
         ),
+        LoopEvalCase(
+            name="medium_multihop_chain_resolution",
+            instruction=(
+                f"Trace multi-hop call graph for {fn0.symbol} through callers and downstream flow; "
+                f"identify the dependency handoff points."
+            ),
+            seed_symbols=[fn0, fn1, cls0, mod0],
+            analyzer_script=[
+                {
+                    "relevance": "medium",
+                    "confidence": 0.45,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [
+                        f"missing caller chain for {fn0.symbol}",
+                        "missing callee flow for dependency handoff",
+                    ],
+                    "summary": "need first-hop relationships",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.5,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [
+                        f"missing caller chain for {fn1.symbol}",
+                        "missing callee flow to dependency boundary",
+                    ],
+                    "summary": "need second-hop relationships",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.5,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [
+                        f"missing caller chain for {cls0.symbol}",
+                        "missing callee flow for final dependency",
+                    ],
+                    "summary": "need third-hop relationships",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.55,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [
+                        f"missing caller chain for {mod0.symbol}",
+                    ],
+                    "summary": "need final caller hop",
+                },
+                {
+                    "relevance": "high",
+                    "confidence": 0.7,
+                    "sufficient": True,
+                    "evidence_sufficiency": "sufficient",
+                    "knowledge_gaps": [],
+                    "summary": "multi-hop chain resolved",
+                },
+            ],
+            expected={"min_iterations": 4, "must_expand_only": True},
+        ),
+        LoopEvalCase(
+            name="hard_multihop_alternating_callers_callees",
+            instruction=(
+                f"Perform deep multi-hop traversal for {fn0.symbol}: alternate caller/callee chain analysis "
+                f"and locate the terminal dependency boundary."
+            ),
+            seed_symbols=[fn0, fn1, cls0, mod0],
+            analyzer_script=[
+                {
+                    "relevance": "medium",
+                    "confidence": 0.45,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [f"missing caller chain for {fn0.symbol}"],
+                    "summary": "hop 1 caller gap",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.47,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": ["missing callee flow for handoff stage 2"],
+                    "summary": "hop 2 callee gap",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.49,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [f"missing caller chain for {fn1.symbol}"],
+                    "summary": "hop 3 caller gap",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.50,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": ["missing callee flow for handoff stage 4"],
+                    "summary": "hop 4 callee gap",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.52,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [f"missing caller chain for {cls0.symbol}"],
+                    "summary": "hop 5 caller gap",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.53,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": ["missing callee flow for handoff stage 6"],
+                    "summary": "hop 6 callee gap",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.55,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [f"missing caller chain for {mod0.symbol}"],
+                    "summary": "hop 7 caller gap",
+                },
+                {
+                    "relevance": "high",
+                    "confidence": 0.72,
+                    "sufficient": True,
+                    "evidence_sufficiency": "sufficient",
+                    "knowledge_gaps": [],
+                    "summary": "deep chain resolved",
+                },
+            ],
+            expected={"min_iterations": 6, "must_expand_only": True, "alternating_relation_gaps": True},
+        ),
+        LoopEvalCase(
+            name="forced_refine_after_hops",
+            instruction=(
+                f"After relationship exploration for {fn1.symbol}, reinterpret the objective and find exact definition path."
+            ),
+            seed_symbols=[fn1, fn0, cls0],
+            analyzer_script=[
+                {
+                    "relevance": "medium",
+                    "confidence": 0.45,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [f"missing caller chain for {fn1.symbol}"],
+                    "summary": "initial relationship gap",
+                },
+                {
+                    "relevance": "medium",
+                    "confidence": 0.48,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [f"missing callee flow for {fn0.symbol}"],
+                    "summary": "second relationship gap",
+                },
+                {
+                    "relevance": "low",
+                    "confidence": 0.40,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [f"missing definition of {fn1.symbol}"],
+                    "summary": "switch to definition refine",
+                },
+                {
+                    "relevance": "high",
+                    "confidence": 0.70,
+                    "sufficient": True,
+                    "evidence_sufficiency": "sufficient",
+                    "knowledge_gaps": [],
+                    "summary": "objective reinterpreted and resolved",
+                },
+            ],
+            expected={"must_include_refine": True, "refine_after_expand_hops": True},
+            force_refine_actions=1,
+        ),
+        LoopEvalCase(
+            name="forced_refine_at_start_definition_gap",
+            instruction=(
+                f"Start by refining query intent for definition tracing of {cls0.symbol} before relationship expansion."
+            ),
+            seed_symbols=[cls0, fn0],
+            analyzer_script=[
+                {
+                    "relevance": "low",
+                    "confidence": 0.40,
+                    "sufficient": False,
+                    "evidence_sufficiency": "partial",
+                    "knowledge_gaps": [f"missing definition of {cls0.symbol}"],
+                    "summary": "definition-first refinement needed",
+                },
+                {
+                    "relevance": "high",
+                    "confidence": 0.70,
+                    "sufficient": True,
+                    "evidence_sufficiency": "sufficient",
+                    "knowledge_gaps": [],
+                    "summary": "definition resolved after refine",
+                },
+            ],
+            expected={"must_include_refine": True, "refine_at_start": True},
+            force_refine_actions=1,
+        ),
     ]
 
 
@@ -424,16 +635,29 @@ def _build_engine(case: LoopEvalCase, signals: dict[str, list[SymbolEntry]]) -> 
             telemetry["actions"].append("expand")
         return out
 
-    def wrap_should_refine(self: ExplorationEngineV2, action: str, decision: Any, ex_state: Any) -> bool:
-        out = original_should_refine(action, decision, ex_state)
+    def wrap_should_refine(
+        self: ExplorationEngineV2,
+        action: str,
+        decision: Any,
+        ex_state: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> bool:
+        out = original_should_refine(action, decision, ex_state, *args, **kwargs)
         if out:
             telemetry["actions"].append("refine")
         return out
 
-    def wrap_enqueue_targets(self: ExplorationEngineV2, ex_state: Any, targets: list[Any]) -> None:
+    def wrap_enqueue_targets(
+        self: ExplorationEngineV2,
+        ex_state: Any,
+        targets: list[Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         before = len(ex_state.pending_targets)
         input_n = len(targets)
-        original_enqueue_targets(ex_state, targets)
+        original_enqueue_targets(ex_state, targets, *args, **kwargs)
         after = len(ex_state.pending_targets)
         accepted = max(0, after - before)
         telemetry["dedupe_skips"] += max(0, input_n - accepted)
