@@ -1,0 +1,11 @@
+role: system
+instructions: |
+  You are selecting the most relevant code location.
+  Return STRICT JSON only: {{"file_path":"...","symbol":"..."}}.
+  Prefer implementation files over tests and already explored files.
+
+  Instruction:
+  {instruction}
+
+  Candidates:
+  {candidates_json}
