@@ -155,11 +155,19 @@ def _get_retrieval_order(chosen_tool: str | None) -> list[str]:
     return order
 
 
+def _is_single_token_symbol_query(q: str) -> bool:
+    """True for one Python-style identifier token (discovery passes bare symbols)."""
+    s = (q or "").strip()
+    if not s or " " in s:
+        return False
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]{2,}$", s))
+
+
 def _search_fn(query: str, state: AgentState):
     """Raw search result: { results, query }. Cache -> graph -> vector -> Serena fallback."""
     # Phase 5: Search query sanity guard (prevent degenerate 1-word queries)
     tokens = (query or "").split()
-    if len(tokens) < 2:
+    if len(tokens) < 2 and not _is_single_token_symbol_query(query or ""):
         original = getattr(state, "instruction", "") or ""
         if original.strip():
             query = " ".join(original.split()[:20])
@@ -173,12 +181,24 @@ def _search_fn(query: str, state: AgentState):
         if project_root is None:
             project_root = os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
 
-        # v2 pipeline: heuristic-free parallel retrieval + RRF.
-        # Bypasses all existing retrieval logic and filter_and_rank_search_results.
+        # v2 pipeline: batched retrieve() + RRF + mandatory rerank (no legacy retrieval fallbacks).
         # Activate with RETRIEVAL_PIPELINE_V2=1.
         if RETRIEVAL_PIPELINE_V2:
-            from agent.retrieval.retrieval_pipeline_v2 import retrieve_v2_as_legacy  # noqa: PLC0415
-            result = retrieve_v2_as_legacy(query, state=state, project_root=project_root)
+            from agent.retrieval.retrieval_pipeline_v2 import (  # noqa: PLC0415
+                retrieve,
+                search_payload_from_retrieval_output,
+            )
+
+            q = str(query or "").strip()
+            if not q:
+                return {
+                    "results": [],
+                    "query": query or "",
+                    "v2": True,
+                    "v2_warnings": [],
+                }
+            out = retrieve([q], state=state, project_root=project_root)[0]
+            result = search_payload_from_retrieval_output(out)
             if state:
                 state.context["retrieval_v2_used"] = True
             return result
@@ -925,6 +945,20 @@ def _search_react(query: str, state: AgentState) -> dict:
     """
     project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
     state.context.setdefault("project_root", project_root)
+    # Same batched v2 path as _search_fn (retrieve([query]); no search_candidates fallback).
+    if RETRIEVAL_PIPELINE_V2:
+        from agent.retrieval.retrieval_pipeline_v2 import (  # noqa: PLC0415
+            retrieve,
+            search_payload_from_retrieval_output,
+        )
+
+        q = str(query or "").strip()
+        if not q:
+            return {"results": [], "query": query or "", "v2": True}
+        out = retrieve([q], state=state, project_root=project_root)[0]
+        payload = search_payload_from_retrieval_output(out)
+        v2_rows = payload.get("results") or []
+        return {"results": v2_rows[:25], "query": query, "v2": True}
     results: list = []
     try:
         out = search_candidates(query, state, artifact_mode="code")

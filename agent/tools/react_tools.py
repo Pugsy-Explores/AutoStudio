@@ -27,6 +27,47 @@ def _search_handler(args: dict, state) -> dict:
     return {"success": True, "output": raw, "classification": ResultClassification.SUCCESS.value}
 
 
+def _search_multi_handler(args: dict, state) -> list[dict]:
+    """Internal multi-query search: ``retrieve(queries)`` (batch vector + per-query RRF + rerank).
+
+    Returns one tool payload dict per query, in order — consumed by Dispatcher.execute (Option A).
+    """
+    from agent.retrieval.retrieval_pipeline_v2 import (  # noqa: PLC0415
+        retrieve,
+        search_payload_from_retrieval_output,
+    )
+
+    raw_q = args.get("queries")
+    if not isinstance(raw_q, list) or not raw_q:
+        err = {
+            "success": False,
+            "output": {},
+            "error": "search_multi requires non-empty queries list",
+            "classification": ResultClassification.RETRYABLE_FAILURE.value,
+        }
+        return [err]
+    queries = [str(q).strip() for q in raw_q if q and str(q).strip()]
+    if not queries:
+        err = {
+            "success": False,
+            "output": {},
+            "error": "search_multi: all queries empty",
+            "classification": ResultClassification.RETRYABLE_FAILURE.value,
+        }
+        return [err]
+    pr = state.context.get("project_root") if state else None
+    outs = retrieve(queries, state=state, project_root=pr)
+    payloads = [search_payload_from_retrieval_output(o) for o in outs]
+    return [
+        {
+            "success": True,
+            "output": p,
+            "classification": ResultClassification.SUCCESS.value,
+        }
+        for p in payloads
+    ]
+
+
 def _read_handler(args: dict, state) -> dict:
     project_root = state.context.get("project_root") or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
     path = str(args.get("path") or "").strip()
@@ -125,6 +166,14 @@ def _run_tests_handler(args: dict, state) -> dict:
 def register_all_tools() -> None:
     """Register the canonical ReAct tools."""
     register_tool(ToolDefinition("search", "Search the codebase", ["query"], _search_handler))
+    register_tool(
+        ToolDefinition(
+            "search_multi",
+            "Batch search (internal — exploration/dispatcher only)",
+            ["queries"],
+            _search_multi_handler,
+        )
+    )
     register_tool(ToolDefinition("open_file", "Read file contents", ["path"], _read_handler))
     # Internal-only bounded read primitive (used by system exploration; not part of user-facing ReAct contract).
     register_tool(ToolDefinition("read_snippet", "Read bounded snippet (internal)", ["path"], _read_snippet_handler))

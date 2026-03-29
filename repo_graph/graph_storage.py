@@ -110,6 +110,28 @@ class GraphStorage:
         row = conn.execute("SELECT * FROM nodes WHERE name = ? LIMIT 1", (name,)).fetchone()
         return dict(row) if row else None
 
+    def list_nodes_by_exact_name(self, name: str, limit: int = 200) -> list[dict]:
+        """All nodes with exact symbol name (for disambiguation)."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT * FROM nodes WHERE name = ? LIMIT ?",
+            (name, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_call_graph_degree(self, symbol_id: int) -> int:
+        """Total in+out edges with call types (for disambiguation tie-break)."""
+        conn = self._connect()
+        inc = conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE target_id = ? AND edge_type IN ('calls', 'call_graph')",
+            (symbol_id,),
+        ).fetchone()[0]
+        outc = conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE source_id = ? AND edge_type IN ('calls', 'call_graph')",
+            (symbol_id,),
+        ).fetchone()[0]
+        return int(inc) + int(outc)
+
     def get_symbols_like(self, pattern: str, limit: int = 10) -> list[dict]:
         """Get nodes where name LIKE %pattern%."""
         conn = self._connect()

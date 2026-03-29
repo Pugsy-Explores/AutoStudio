@@ -1,10 +1,19 @@
 """CLI entrypoint for autostudio command. Routes subcommands to controller or scripts."""
 
+from __future__ import annotations
+
 import argparse
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+from agent.cli.env_bootstrap import (
+    bootstrap_cli_env,
+    configure_cli_logging,
+    logging_cli_parent_parser,
+    register_logging_cli_arguments,
+)
 
 # Ensure project root is on path
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -255,38 +264,50 @@ def _print_workflow_result(result: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="autostudio", description="AutoStudio CLI")
-    parser.add_argument("--project-root", type=Path, default=None, help="Project root for traces/repo")
+    parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=None,
+        help="Sets SERENA_PROJECT_DIR and loads <root>/.env (shell env overrides .env)",
+    )
+    register_logging_cli_arguments(parser)
+    _log_parent = logging_cli_parent_parser()
 
     subparsers = parser.add_subparsers(dest="command", help="Subcommands", required=False)
 
     # explain <symbol>
-    p_explain = subparsers.add_parser("explain", help="Explain a symbol")
+    p_explain = subparsers.add_parser("explain", parents=[_log_parent], help="Explain a symbol")
     p_explain.add_argument("symbol", nargs="?", help="Symbol to explain")
     p_explain.set_defaults(cmd=cmd_explain)
 
     # edit <instruction>
-    p_edit = subparsers.add_parser("edit", help="Edit code per instruction")
+    p_edit = subparsers.add_parser("edit", parents=[_log_parent], help="Edit code per instruction")
     p_edit.add_argument("instruction", nargs="*", help="Edit instruction")
     p_edit.set_defaults(cmd=cmd_edit)
 
     # trace <task_id>
-    p_trace = subparsers.add_parser("trace", help="View trace by task_id or trace_id")
+    p_trace = subparsers.add_parser("trace", parents=[_log_parent], help="View trace by task_id or trace_id")
     p_trace.add_argument("trace_id", nargs="?", help="Task ID or trace ID")
     p_trace.set_defaults(cmd=cmd_trace)
 
     # debug last-run
-    p_debug = subparsers.add_parser("debug", help="Debug last run (interactive trace viewer)")
+    p_debug = subparsers.add_parser("debug", parents=[_log_parent], help="Debug last run (interactive trace viewer)")
     p_debug.add_argument("target", nargs="?", default="last-run", help="Target (last-run)")
     p_debug.set_defaults(cmd=cmd_debug)
 
     # chat
-    p_chat = subparsers.add_parser("chat", help="Interactive session mode")
+    p_chat = subparsers.add_parser("chat", parents=[_log_parent], help="Interactive session mode")
     p_chat.add_argument("--live", action="store_true", help="Show live step visualization")
     p_chat.set_defaults(cmd=cmd_chat)
 
     # run <instruction> (single-shot)
-    p_run = subparsers.add_parser("run", help="Single-shot run")
-    p_run.add_argument("--mode", choices=["act", "plan", "deep_plan"], default="act", help="Runtime mode")
+    p_run = subparsers.add_parser("run", parents=[_log_parent], help="Single-shot run")
+    p_run.add_argument(
+        "--mode",
+        choices=["act", "plan", "plan_legacy", "deep_plan", "plan_execute"],
+        default="act",
+        help="Runtime mode: plan=safe iterative execution; plan_legacy=explore+plan only",
+    )
     p_run.add_argument("instruction", nargs="*", help="Instruction to run")
     p_run.set_defaults(cmd=cmd_run)
 
@@ -295,17 +316,17 @@ def main() -> int:
     p_issue.add_argument("issue_text", nargs="*", help="Issue text or ID")
     p_issue.set_defaults(cmd=cmd_issue)
 
-    p_fix = subparsers.add_parser("fix", help="Run multi-agent solve only")
+    p_fix = subparsers.add_parser("fix", parents=[_log_parent], help="Run multi-agent solve only")
     p_fix.add_argument("instruction", nargs="*", help="Instruction to fix")
     p_fix.set_defaults(cmd=cmd_fix)
 
-    p_pr = subparsers.add_parser("pr", help="Generate PR from last workflow")
+    p_pr = subparsers.add_parser("pr", parents=[_log_parent], help="Generate PR from last workflow")
     p_pr.set_defaults(cmd=cmd_pr)
 
-    p_review = subparsers.add_parser("review", help="Review last patch")
+    p_review = subparsers.add_parser("review", parents=[_log_parent], help="Review last patch")
     p_review.set_defaults(cmd=cmd_review)
 
-    p_ci = subparsers.add_parser("ci", help="Run CI on project root")
+    p_ci = subparsers.add_parser("ci", parents=[_log_parent], help="Run CI on project root")
     p_ci.set_defaults(cmd=cmd_ci)
 
     args = parser.parse_args()
@@ -313,6 +334,9 @@ def main() -> int:
     if not args.command:
         parser.print_help()
         return 0
+
+    bootstrap_cli_env(getattr(args, "project_root", None))
+    configure_cli_logging(args)
 
     # Normalize remainder for subparsers that use it
     if getattr(args, "remainder", None) is None:

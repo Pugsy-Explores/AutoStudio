@@ -207,18 +207,25 @@ def _build_embedding_index(root_dir: str, symbols: list[dict], out_path: Path) -
     if not INDEX_EMBEDDINGS:
         return {"status": "skipped", "reason": "INDEX_EMBEDDINGS=0"}
     try:
-        import chromadb
         from sentence_transformers import SentenceTransformer
     except ImportError as e:
         logger.debug("[indexer] chromadb/sentence-transformers not available, skipping embeddings")
         return {"status": "skipped", "reason": f"missing dependency ({e})"}
+
+    from agent.retrieval.chroma_utils import try_persistent_chroma_client  # noqa: PLC0415
 
     root = Path(root_dir).resolve()
     emb_path = out_path / EMBEDDINGS_SUBDIR
     emb_path.mkdir(parents=True, exist_ok=True)
 
     try:
-        client = chromadb.PersistentClient(path=str(emb_path))
+        client = try_persistent_chroma_client(emb_path)
+        if client is None:
+            return {
+                "status": "failed",
+                "error": "Chroma PersistentClient unavailable (see logs; often fix: rm -rf embeddings + re-index)",
+                "persist_path": str(emb_path),
+            }
         model = SentenceTransformer(VECTOR_EMBEDDING_MODEL)
 
         docs = []

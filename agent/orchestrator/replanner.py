@@ -322,12 +322,12 @@ Use it only if it helps refine a search grounded in the instruction."""
             pass
 
     def _call_replanner_llm() -> str:
-        model_type = get_model_for_task("replanner")
+        model_type = get_model_for_task("PLANNER_REPLAN_ORCHESTRATOR")
         if model_type == ModelType.SMALL:
             full_prompt = f"{REPLANNER_SYSTEM_PROMPT}\n\n{user_prompt}"
             return call_small_model(
                 full_prompt,
-                task_name="replanner",
+                task_name="PLANNER_REPLAN_ORCHESTRATOR",
                 max_tokens=2048,
                 prompt_name="replanner",
                 debug_replanner=debug_replanner,
@@ -336,7 +336,7 @@ Use it only if it helps refine a search grounded in the instruction."""
             user_prompt,
             system_prompt=REPLANNER_SYSTEM_PROMPT,
             max_tokens=2048,
-            task_name="replanner",
+            task_name="PLANNER_REPLAN_ORCHESTRATOR",
             prompt_name="replanner",
             debug_replanner=debug_replanner,
         )
