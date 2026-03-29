@@ -8,9 +8,20 @@ exclusively by the executor during a run.
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# Phase 1: search_web omitted (disabled in prompt + schema). No analyze_code — dishonest vs executor.
+PlannerPlannerTool = Literal[
+    "explore",
+    "open_file",
+    "search_code",
+    "run_shell",
+    "edit",
+    "run_tests",
+    "none",
+]
 
 from .execution import ErrorType
 
@@ -77,13 +88,88 @@ class PlanMetadata(BaseModel):
 
 class PlannerControllerOutput(BaseModel):
     """
-    Structured decision from the planner LLM (ModeManager interprets; no guessing).
-    action is the single source of truth for explore vs continue vs replan.
+    Structured decision from the planner LLM (orchestration maps to PlannerDecision).
+    action is the single source of truth for explore vs continue vs replan vs stop.
     """
 
-    action: Literal["continue", "replan", "explore"] = "continue"
+    action: Literal["continue", "replan", "explore", "stop"] = "continue"
     next_step_instruction: str = ""
     exploration_query: str = ""
+
+
+class PlannerEngineStepSpec(BaseModel):
+    """
+    Single next executor step when decision is \"act\".
+
+    Maps to PlanStep.action / inputs synthesis in PlannerV2 (not free-form only).
+    """
+
+    action: Literal["search", "open_file", "edit", "run_tests", "shell"] = "search"
+    input: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def _strip_input(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return str(v).strip()[:8000]
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _normalize_metadata(cls, v: Any) -> dict[str, Any]:
+        if v is None or v == "":
+            return {}
+        if not isinstance(v, dict):
+            return {}
+        out: dict[str, Any] = {}
+        for i, (k, val) in enumerate(v.items()):
+            if i >= 16:
+                break
+            ks = str(k).strip()[:64]
+            if not ks:
+                continue
+            if isinstance(val, str):
+                out[ks] = val.strip()[:4000]
+            elif isinstance(val, (int, float, bool)):
+                out[ks] = val
+            else:
+                out[ks] = str(val).strip()[:4000]
+        return out
+
+
+class PlannerEngineOutput(BaseModel):
+    """
+    Decision-first planner output (replaces multi-step JSON from the LLM).
+
+    Executor-facing PlanStep rows are synthesized from this for PlanExecutor compatibility.
+    """
+
+    decision: Literal["act", "explore", "replan", "stop"]
+    tool: PlannerPlannerTool = "none"
+    reason: str = ""
+    query: str = ""
+    step: Optional[PlannerEngineStepSpec] = None
+
+    @field_validator("tool", mode="before")
+    @classmethod
+    def _coerce_tool(cls, v: Any) -> Any:
+        if v is None or (isinstance(v, str) and not str(v).strip()):
+            return "none"
+        return v
+
+    @field_validator("step", mode="before")
+    @classmethod
+    def _coerce_step_legacy_string(cls, v: Any) -> Any:
+        """Allow legacy plain string for ``step`` (treated as search input)."""
+        if v is None or v == "":
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            return {"action": "search", "input": s[:8000]}
+        return v
 
 
 class PlanDocument(BaseModel):
@@ -99,7 +185,11 @@ class PlanDocument(BaseModel):
     risks: list[PlanRisk]
     completion_criteria: list[str]
     metadata: PlanMetadata
+    engine: Optional[PlannerEngineOutput] = Field(
+        default=None,
+        description="Decision-first output from planner LLM; drives PlannerDecision when set.",
+    )
     controller: Optional[PlannerControllerOutput] = Field(
         default=None,
-        description="Parsed from planner JSON when present; used by controller loop.",
+        description="Legacy orchestration; optional when engine is set.",
     )

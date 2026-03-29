@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from agent_v2.config import EXPLORATION_SNIPPET_MAX_CHARS
 from agent_v2.schemas.execution import ExecutionResult
 from agent_v2.schemas.exploration import ExplorationCandidate, ReadPacket
+
+_LOG = logging.getLogger(__name__)
 
 
 class InspectionReader:
@@ -20,6 +24,7 @@ class InspectionReader:
         window: int = 80,
         state,
     ) -> tuple[str, ExecutionResult]:
+        _LOG.debug("[InspectionReader.inspect]")
         step_count = int(getattr(state, "steps_taken", 0))
         step = {
             "id": f"inspect_{step_count + 1}",

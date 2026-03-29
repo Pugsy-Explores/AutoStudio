@@ -6,13 +6,28 @@ No raw data dumps — only distilled, structured content.
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
 SourceChannel = Literal["graph", "grep", "vector"]
 
 ExpandDirectionHint = Literal["callers", "callees", "both"]
+
+RelationshipHint = Literal["none", "callers", "callees", "both"]
+
+IntentTaskType = Literal["explanation", "debugging", "navigation", "modification"]
+IntentScopeLevel = Literal["narrow", "component", "system"]
+IntentFocusKind = Literal["internal_logic", "relationships", "usage"]
+
+# Canonical store: agent ``state.context[QUERY_INTENT_CONTEXT_KEY]`` (QueryIntent).
+QUERY_INTENT_CONTEXT_KEY = "query_intent"
+
+SelectionConfidence = Literal["high", "medium", "low"]
+
+CoverageSignal = Literal["good", "weak", "fragmented", "empty", "unknown"]
+
+ExplorationControlAction = Literal["stop", "expand", "refine"]
 
 
 FailureReason = Literal[
@@ -82,6 +97,10 @@ class ExplorationSummary(BaseModel):
         return self
 
 
+# Planner advisory cap only (intent-aligned budget); not enforced in engine control flow.
+EXPLORATION_BUDGET_GLOBAL_CAP: int = 3
+
+
 class ExplorationResultMetadata(BaseModel):
     total_items: int
     created_at: str
@@ -89,6 +108,8 @@ class ExplorationResultMetadata(BaseModel):
     termination_reason: str = "unknown"
     explored_files: int = 0
     explored_symbols: int = 0
+    # Inner-loop iterations for this explore() run (for planner cost visibility).
+    engine_loop_steps: int = 0
     # Phase 12.6.E (additive): structural counts only (no ranking/quality)
     source_summary: dict[str, int] = Field(default_factory=dict)
 
@@ -123,6 +144,95 @@ class QueryIntent(BaseModel):
     # Optional regex-style patterns (same SEARCH tool path as text; labeled grep in discovery mapping)
     regex_patterns: list[str] = Field(default_factory=list)
     intents: list[str] = Field(default_factory=list)
+    relationship_hint: RelationshipHint = "none"
+    # User task (from instruction only in parser prompt; sticky on refine via merge)
+    intent_type: Optional[IntentTaskType] = None
+    target: Optional[str] = None
+    scope: Optional[IntentScopeLevel] = None
+    focus: Optional[IntentFocusKind] = None
+
+    def has_meaningful_queries(self) -> bool:
+        """True when at least one non-empty symbol, keyword, or regex pattern is present."""
+        if any(str(x).strip() for x in (self.symbols or [])):
+            return True
+        if any(str(x).strip() for x in (self.keywords or [])):
+            return True
+        if any(str(x).strip() for x in (self.regex_patterns or [])):
+            return True
+        return False
+
+
+def read_query_intent_from_agent_state(state: Any) -> Optional[QueryIntent]:
+    """Read canonical query intent from ``state.context`` (single source of truth)."""
+    ctx = getattr(state, "context", None)
+    if not isinstance(ctx, dict):
+        return None
+    raw = ctx.get(QUERY_INTENT_CONTEXT_KEY)
+    if raw is None:
+        return None
+    if isinstance(raw, QueryIntent):
+        return raw
+    if isinstance(raw, dict):
+        try:
+            return QueryIntent.model_validate(raw)
+        except Exception:
+            return None
+    return None
+
+
+def write_query_intent_to_agent_state(state: Any, qi: QueryIntent) -> None:
+    """Persist intent to ``state.context``; no-op if context is not a dict."""
+    ctx = getattr(state, "context", None)
+    if isinstance(ctx, dict):
+        ctx[QUERY_INTENT_CONTEXT_KEY] = qi
+
+
+def _intent_budget_raw_units(qi: Optional[QueryIntent]) -> int:
+    """
+    Deterministic advisory units before global cap.
+
+    Order: intent_type → focus (relationships = explanation tier) → relationship_hint → default explanation.
+    """
+    if qi is None:
+        return 2
+    if qi.intent_type:
+        t = qi.intent_type
+        if t == "navigation":
+            return 1
+        if t == "explanation":
+            return 2
+        if t == "debugging":
+            return 3
+        if t == "modification":
+            return 2
+        return 2
+    if qi.focus:
+        return 2
+    rh = qi.relationship_hint
+    if rh is not None and str(rh) != "none":
+        return 2
+    return 2
+
+
+def effective_exploration_budget(qi: Optional[QueryIntent]) -> int:
+    """Advisory planner budget: min(intent-derived units, EXPLORATION_BUDGET_GLOBAL_CAP)."""
+    return min(_intent_budget_raw_units(qi), EXPLORATION_BUDGET_GLOBAL_CAP)
+
+
+def task_intent_summary_for_analyzer(qi: QueryIntent, instruction: str) -> str:
+    """Deterministic summary for analyzer prompt (formatting only)."""
+    parts: list[str] = []
+    if qi.intent_type:
+        parts.append(f"type={qi.intent_type}")
+    if qi.target and str(qi.target).strip():
+        parts.append(f"target={qi.target.strip()}")
+    if qi.scope:
+        parts.append(f"scope={qi.scope}")
+    if qi.focus:
+        parts.append(f"focus={qi.focus}")
+    head = "; ".join(parts) if parts else "(task fields not set by query-intent parser)"
+    instr = (instruction or "").strip()
+    return f"{head}\ninstruction: {instr[:2000]}".strip()
 
 
 class ReadPacket(BaseModel):
@@ -172,12 +282,25 @@ class ContextBlock(BaseModel):
 
 
 class UnderstandingResult(BaseModel):
+    """Semantic interpretation only (no control flow). Legacy fields kept for adapters."""
+
     relevance: Literal["high", "medium", "low"] = "medium"
     confidence: float = Field(ge=0.0, le=1.0, default=0.5)
     sufficient: bool = False
     evidence_sufficiency: Literal["insufficient", "partial", "sufficient"] = "partial"
     knowledge_gaps: list[str] = Field(default_factory=list)
     summary: str = ""
+    # Refactor fields (prompt JSON)
+    semantic_understanding: str = ""
+    relevant_files: list[str] = Field(default_factory=list)
+    relationship_strings: list[str] = Field(default_factory=list)
+    confidence_label: Literal["high", "medium", "low"] = "medium"
+    is_sufficient: bool = False
+    gaps_relevant_to_intent: list[str] = Field(default_factory=list)
+
+    @property
+    def effective_sufficient(self) -> bool:
+        return self.is_sufficient or self.sufficient or self.evidence_sufficiency == "sufficient"
 
 
 class ExplorationCandidate(BaseModel):
@@ -190,6 +313,8 @@ class ExplorationCandidate(BaseModel):
     source_channels: list[SourceChannel] = Field(default_factory=list)
     discovery_max_score: Optional[float] = None
     discovery_rerank_score: Optional[float] = None
+    # Which configured exploration test repo this file belongs to (multi-root eval); None if unknown.
+    repo: Optional[str] = None
 
     @model_validator(mode="after")
     def _sync_legacy_fields(self) -> "ExplorationCandidate":
@@ -200,7 +325,16 @@ class ExplorationCandidate(BaseModel):
         return self
 
 
+class ExplorationControl(BaseModel):
+    """Single control output from EngineDecisionMapper."""
+
+    action: ExplorationControlAction
+    reason: str = ""
+
+
 class ExplorationDecision(BaseModel):
+    """Legacy structured decision; prefer ExplorationControl for new orchestration."""
+
     status: Literal["wrong_target", "partial", "sufficient"]
     needs: list[
         Literal["more_code", "callers", "callees", "definition", "different_symbol"]
@@ -211,11 +345,34 @@ class ExplorationDecision(BaseModel):
     wrong_target_scope: Optional[Literal["file"]] = None
 
 
+class SelectorBatchResult(BaseModel):
+    """Signal provider output (not control)."""
+
+    selected_candidates: list["ExplorationCandidate"] = Field(default_factory=list)
+    selection_confidence: SelectionConfidence = "medium"
+    coverage_signal: CoverageSignal = "good"
+    # Symbol picks keyed by batch payload index ("0".."n-1") into candidates[:SELECTOR_TOP_K].
+    # Sole source of truth for selector-chosen symbols; never copy onto ExplorationCandidate.
+    selected_symbols: dict[str, list[str]] = Field(default_factory=dict)
+    # Parallel to selected_candidates: top-row index used for selected_symbols lookup.
+    selected_top_indices: list[int] = Field(default_factory=list)
+
+
+class ScopedCandidatesResult(BaseModel):
+    """Scoper contract wrapper."""
+
+    scoped_candidates: list["ExplorationCandidate"] = Field(default_factory=list)
+
+
 class ExplorationTarget(BaseModel):
     file_path: str
     symbol: Optional[str] = None
     line: Optional[int] = None
     source: Literal["discovery", "expansion"]
+    # Selector output for the discovery batch that enqueued this target (not used for graph expansion).
+    selector_batch: Optional[SelectorBatchResult] = None
+    # Index into the selector batch top slice (candidates[:SELECTOR_TOP_K]) for selected_symbols[str(i)].
+    selector_top_index: Optional[int] = None
 
 
 class GraphExpansionResult(BaseModel):
@@ -254,7 +411,14 @@ class ExplorationState(BaseModel):
     expand_direction_hint: Optional[ExpandDirectionHint] = None
     # (normalized gap bundle key, canonical file, symbol) — avoid repeat gap→target expansion
     attempted_gap_targets: set[tuple[str, str, str]] = Field(default_factory=set)
-    # Merged into discovery text queries for refine-only gap paths (engine-local; parser unchanged)
+    # Merged into discovery text queries only during REFINE-phase discovery (mapper-approved).
     discovery_keyword_inject: list[str] = Field(default_factory=list)
-    # Key for attempted_gap_targets and prefilter (set during gap-driven decision; cleared after expand)
+    # Key for attempted_gap_targets and prefilter (legacy expansion bookkeeping)
     gap_bundle_key_for_expansion: str = ""
+    # Refactor: mapper-driven counters
+    expanded_once: bool = False
+    refine_count: int = 0
+    # Intent bootstrap passes before the main loop (re-parse + discovery when queue empty).
+    # Not EngineDecisionMapper REFINE; does not consume refine_count.
+    intent_bootstrap_pass_count: int = 0
+    last_selector_batch: Optional[SelectorBatchResult] = None

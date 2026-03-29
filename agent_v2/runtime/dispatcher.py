@@ -1,8 +1,8 @@
 """
 Phase 2 dispatcher — enforces the ToolResult → ExecutionResult normalization boundary.
 
-Invariant: Dispatcher.execute() ALWAYS returns ExecutionResult.
-           AgentLoop / PlanExecutor MUST NEVER receive raw ToolResult or dicts from here.
+Invariant: Dispatcher.execute() returns ExecutionResult, or list[ExecutionResult] for
+           internal ``search_multi`` (Option A — one logical multi-search, N normalized results).
 
 Legacy bridge path (until all tool handlers return the schema ToolResult natively):
   _execute_fn(step, state) → raw (dict | old ToolResult dataclass)
@@ -13,6 +13,7 @@ Legacy bridge path (until all tool handlers return the schema ToolResult nativel
 # DO NOT import from agent.* here
 import copy
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, cast
 
@@ -86,11 +87,10 @@ class Dispatcher:
             self._editor = editor
             self._browser = browser
 
-    def execute(self, step, state) -> ExecutionResult:
+    def execute(self, step, state) -> ExecutionResult | list[ExecutionResult]:
         """
-        Execute a step and return a normalized ExecutionResult.
-
-        Never returns ToolResult, never returns a raw dict.
+        Execute a step and return a normalized ExecutionResult, or list[ExecutionResult]
+        for ``search_multi`` (batched vector retrieval path).
         """
         if getattr(state, "context", None) is not None:
             state.context.setdefault("shell", self._shell)
@@ -110,6 +110,25 @@ class Dispatcher:
             raw = fault_raw
         else:
             raw = self._execute_fn(step, state)
+
+        # search_multi: handler returns list[dict] → list[ExecutionResult] (Option A).
+        if (
+            tool_name == "search_multi"
+            and isinstance(raw, list)
+            and raw
+            and all(isinstance(x, dict) for x in raw)
+        ):
+            out_list: list[ExecutionResult] = []
+            for i, r in enumerate(raw):
+                tr = coerce_to_tool_result(r, tool_name="search")
+                assert isinstance(tr, ToolResult), (
+                    f"coerce_to_tool_result must return ToolResult; got {type(tr).__name__}"
+                )
+                er = map_tool_result_to_execution_result(tr, step_id=f"{step_id}_{i}")
+                if er.output is None or not str(er.output.summary or "").strip():
+                    raise ValueError("ExecutionResult.output.summary must be present and non-empty")
+                out_list.append(er)
+            return out_list
 
         # Step 3 (legacy bridge): coerce whatever came back into schema ToolResult
         tool_result = coerce_to_tool_result(raw, tool_name=tool_name)
@@ -144,16 +163,31 @@ class Dispatcher:
         max_workers: int = 4,
     ) -> list[ExecutionResult]:
         """
-        Run multiple SEARCH steps in parallel, one per query.
+        Run discovery searches for ``queries`` in order.
 
-        Each execution uses a shallow-copied state with deep-copied context to avoid
-        cross-thread races on nested context dicts.
-        Returns ExecutionResult list in the same order as ``queries``.
+        When ``RETRIEVAL_V2_MULTI_SEARCH`` is enabled and len(queries) > 1, uses a single
+        ``search_multi`` step so ``retrieve`` issues one ``vector_retriever.search_batch``
+        (daemon ``POST /retrieve/vector/batch`` when remote-first). Otherwise falls back to
+        N parallel ``execute(SEARCH)`` (one vector call per query).
         """
         if not queries:
             return []
 
         n = len(queries)
+        multi_on = os.getenv("RETRIEVAL_V2_MULTI_SEARCH", "1").lower() in ("1", "true", "yes")
+        if multi_on and n > 1:
+            step = {
+                "id": f"{step_id_prefix}_multi",
+                "action": "SEARCH",
+                "_react_action_raw": "search_multi",
+                "_react_args": {"queries": list(queries)},
+                "query": "",
+                "description": f"search_multi:{mode}:{n}",
+            }
+            merged = self.execute(step, state)
+            if isinstance(merged, list) and len(merged) == n:
+                return merged
+
         out: list[ExecutionResult | None] = [None] * n
 
         def _run_index(i: int, q: str) -> tuple[int, ExecutionResult]:
@@ -168,7 +202,10 @@ class Dispatcher:
             task_state = copy.copy(state)
             base_ctx = getattr(state, "context", None)
             task_state.context = copy.deepcopy(base_ctx) if isinstance(base_ctx, dict) else {}
-            return (i, self.execute(step, task_state))
+            res = self.execute(step, task_state)
+            if isinstance(res, list):
+                raise RuntimeError("unexpected list from single SEARCH execute")
+            return (i, res)
 
         workers = min(max_workers, max(1, n))
         with ThreadPoolExecutor(max_workers=workers) as ex:

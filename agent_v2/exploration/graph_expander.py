@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,8 @@ from agent_v2.config import EXPLORATION_EXPAND_MAX_DEPTH, EXPLORATION_EXPAND_MAX
 from agent_v2.schemas.execution import ExecutionMetadata, ExecutionOutput
 from agent_v2.schemas.execution import ExecutionResult
 from agent_v2.schemas.exploration import ExplorationTarget
+
+_LOG = logging.getLogger(__name__)
 
 
 class GraphExpander:
@@ -33,17 +36,22 @@ class GraphExpander:
         skip_files: set[str] | None = None,
         skip_symbols: set[str] | None = None,
     ) -> tuple[list[ExplorationTarget], ExecutionResult]:
+        _LOG.debug("[GraphExpander.expand]")
         if not symbol.strip():
             return [], self._make_result("empty symbol", {}, success=False)
 
         # Expansion is graph-first by contract; fallback to search if graph has no rows.
         from agent.retrieval.adapters.graph import fetch_graph  # noqa: PLC0415
+        from config.retrieval_config import ENABLE_GRAPH_LOOKUP  # noqa: PLC0415
 
         project_root = ""
         ctx = getattr(state, "context", None)
         if isinstance(ctx, dict):
             project_root = str(ctx.get("project_root") or "")
-        graph_rows, warnings = fetch_graph(symbol, project_root=project_root, top_k=max_nodes * 2)
+        graph_rows: list = []
+        warnings: list = []
+        if ENABLE_GRAPH_LOOKUP:
+            graph_rows, warnings = fetch_graph(symbol, project_root=project_root, top_k=max_nodes * 2)
         skip_files = skip_files or set()
         skip_symbols = skip_symbols or set()
 

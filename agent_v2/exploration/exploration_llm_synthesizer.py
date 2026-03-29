@@ -6,6 +6,7 @@ Input contract: memory.get_summary() order, cap after sort — see design doc.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from agent_v2.config import EXPLORATION_MAX_ITEMS
@@ -17,6 +18,8 @@ from agent_v2.exploration.exploration_result_adapter import ADAPTER_VERSION
 from agent_v2.exploration.exploration_working_memory import ExplorationWorkingMemory
 from agent_v2.schemas.final_exploration import ExplorationAdapterTrace, FinalExplorationSchema
 from agent_v2.utils.json_extractor import JSONExtractor
+
+_LOG = logging.getLogger(__name__)
 
 _LLM_CAP_EVIDENCE = EXPLORATION_MAX_ITEMS
 _SUMMARY_MAX_CHARS = 200
@@ -109,6 +112,7 @@ def apply_optional_llm_synthesis(
     Returns a copy with key_insights / objective_coverage / trace updated.
     On any failure, returns the same factual fields with synthesis_success=False.
     """
+    _LOG.debug("[apply_optional_llm_synthesis]")
     prompt = _build_prompt(instruction, memory)
     syn_span: Any = None
     if lf_exploration_parent is not None and hasattr(lf_exploration_parent, "span"):

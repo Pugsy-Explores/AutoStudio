@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from agent_v2.schemas.exploration import ContextBlock, ReadPacket
+
+_LOG = logging.getLogger(__name__)
 
 
 class ContextBlockBuilder:
@@ -12,6 +16,7 @@ class ContextBlockBuilder:
         *,
         max_total_lines: int = 300,
     ) -> list[ContextBlock]:
+        _LOG.debug("[ContextBlockBuilder.from_packets]")
         blocks: list[ContextBlock] = []
         used_lines = 0
         for packet in self._ordered_packets(packets):
@@ -43,6 +48,7 @@ class ContextBlockBuilder:
         *,
         max_total_lines: int = 300,
     ) -> list[ContextBlock]:
+        _LOG.debug("[ContextBlockBuilder.finalize]")
         ordered = sorted(blocks, key=lambda b: (b.file_path, b.start, b.end))
         out: list[ContextBlock] = []
         used_lines = 0

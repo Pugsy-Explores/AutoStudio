@@ -22,14 +22,92 @@ from agent_v2.schemas.execution import (
 from agent_v2.schemas.plan import PlanDocument, PlanStep, PlanStepLastResult
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.runtime.replanner import Replanner, merge_preserved_completed_steps
+from agent_v2.runtime.session_memory import SessionMemory
 from agent_v2.runtime.tool_mapper import coerce_to_tool_result, map_tool_result_to_execution_result
 from agent_v2.runtime.trace_emitter import TraceEmitter, TraceEmitterFactory
+from agent_v2.runtime.phase1_tool_exposure import (
+    PLAN_STEP_ACTION_TO_PLANNER_TOOL,
+    PLAN_STEP_TO_LEGACY_REACT_ACTION,
+)
+from agent_v2.runtime.tool_policy import plan_safe_shell_command_allowed
 from agent_v2.validation.plan_validator import PlanValidator
 
 _LOG = logging.getLogger(__name__)
 
+
+def _plan_safe_execution_active(state: Any) -> bool:
+    """True when executor must enforce plan-safe invariants (edit deny + plan-mode shell rules)."""
+    ctx = getattr(state, "context", None)
+    if isinstance(ctx, dict) and ctx.get("plan_safe_execute"):
+        return True
+    md = getattr(state, "metadata", None)
+    if isinstance(md, dict) and md.get("mode") == "plan":
+        return True
+    return False
+
+
+def _tool_execution_log_tool_id(plan_step_action: str) -> str:
+    return PLAN_STEP_ACTION_TO_PLANNER_TOOL.get(plan_step_action, plan_step_action)
+
+
+def _emit_tool_execution_log(
+    *,
+    step: PlanStep,
+    success: bool,
+    latency_ms: int,
+    error: str | None,
+    input_summary: str = "",
+    tool_input: dict[str, Any] | None = None,
+    output_summary: str = "",
+    mode: str | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "component": "tool_execution",
+        "tool": _tool_execution_log_tool_id(step.action),
+        "action": step.action,
+        "step_id": step.step_id,
+        "success": success,
+        "latency_ms": int(latency_ms),
+        "error": error,
+        "input_summary": input_summary,
+    }
+    if output_summary:
+        cap = _TOOL_EXECUTION_OUTPUT_SUMMARY_MAX
+        payload["output_summary"] = output_summary if len(output_summary) <= cap else output_summary[: cap - 1] + "…"
+    if tool_input:
+        payload["tool_input"] = tool_input
+    if mode is not None and str(mode).strip():
+        payload["mode"] = str(mode).strip()
+    _LOG.info("tool_execution %s", json.dumps(payload, default=str))
+
+
+def _planner_session_memory_from_state(state: Any) -> SessionMemory:
+    """
+    Session for Replanner → Planner must always be wired (correctness).
+
+    If the ACT path never created memory, attach a new SessionMemory on state.context.
+    """
+    ctx = getattr(state, "context", None)
+    if not isinstance(ctx, dict):
+        try:
+            state.context = {}
+            ctx = state.context
+        except Exception:
+            return SessionMemory()
+    key = "planner_session_memory"
+    existing = ctx.get(key)
+    if isinstance(existing, SessionMemory):
+        return existing
+    mem = SessionMemory()
+    ctx[key] = mem
+    return mem
+
+
 _LANGFUSE_TOOL_ARG_STR_MAX = 4000
 _LANGFUSE_TOOL_ARG_LIST_MAX = 50
+# Whole JSON line cap for logs (after per-field truncation via _tool_args_for_langfuse_input).
+_TOOL_EXECUTION_INPUT_SUMMARY_MAX = 512
+_TOOL_EXECUTION_OUTPUT_SUMMARY_MAX = 1200
 
 
 def _tool_args_for_langfuse_input(args: dict[str, Any]) -> dict[str, Any]:
@@ -47,6 +125,35 @@ def _tool_args_for_langfuse_input(args: dict[str, Any]) -> dict[str, Any]:
             except Exception:
                 out[k] = repr(v)[:_LANGFUSE_TOOL_ARG_STR_MAX]
     return out
+
+
+def _tool_execution_input_summary(merged_args: dict[str, Any] | None) -> str:
+    """Truncated, JSON-safe summary of dispatch args (not full payload)."""
+    if not merged_args:
+        return ""
+    safe = _tool_args_for_langfuse_input(merged_args)
+    try:
+        s = json.dumps(safe, sort_keys=True, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        s = repr(safe)
+    cap = _TOOL_EXECUTION_INPUT_SUMMARY_MAX
+    if len(s) > cap:
+        return s[: cap - 1] + "…"
+    return s
+
+
+def _tool_policy_mode_from_state(state: Any) -> str | None:
+    md = getattr(state, "metadata", None)
+    if isinstance(md, dict):
+        m = md.get("tool_policy_mode")
+        if m is not None and str(m).strip():
+            return str(m).strip()
+    ctx = getattr(state, "context", None)
+    if isinstance(ctx, dict):
+        m = ctx.get("tool_policy_mode")
+        if m is not None and str(m).strip():
+            return str(m).strip()
+    return None
 
 
 def _execution_error_payload(err: ExecutionError | None) -> Any:
@@ -142,14 +249,6 @@ def _lf_end_dispatch_span(span: Any, result: ExecutionResult | None) -> None:
         except Exception:
             pass
 
-
-# Legacy ReAct dispatch expects uppercase internal actions (agent.core.actions.Action).
-_PLAN_TO_LEGACY_ACTION: dict[str, str] = {
-    "search": "SEARCH",
-    "open_file": "READ",
-    "edit": "EDIT",
-    "run_tests": "RUN_TEST",
-}
 
 _DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
 
@@ -248,7 +347,20 @@ class PlanExecutor:
             req = self.replanner.build_replan_request(state, work_plan, failed_step, result)
             md = self._metadata_dict(state)
             lf = md.get("langfuse_trace")
-            replan_res, new_plan = self.replanner.replan(req, langfuse_trace=lf, obs=md.get("obs"))
+            session = _planner_session_memory_from_state(state)
+            vtm_raw = md.get("plan_validation_task_mode")
+            vtm = (
+                str(vtm_raw).strip()
+                if isinstance(vtm_raw, str) and str(vtm_raw).strip()
+                else None
+            )
+            replan_res, new_plan = self.replanner.replan(
+                req,
+                langfuse_trace=lf,
+                obs=md.get("obs"),
+                session=session,
+                validation_task_mode=vtm,
+            )
 
             if replan_res.status != "success" or new_plan is None:
                 md["plan_executor_status"] = "failed_final"
@@ -261,7 +373,7 @@ class PlanExecutor:
 
             if req.constraints.preserve_completed:
                 new_plan = merge_preserved_completed_steps(work_plan, new_plan)
-            PlanValidator.validate_plan(new_plan, policy=self._policy)
+            PlanValidator.validate_plan(new_plan, policy=self._policy, task_mode=vtm)
 
             work_plan = new_plan
             self._pin_active_plan(state, work_plan)
@@ -772,22 +884,107 @@ class PlanExecutor:
         md = self._metadata_dict(state)
         md["executor_dispatch_count"] = int(md.get("executor_dispatch_count", 0)) + 1
 
-        args = self.argument_generator.generate(step, state)
-        merged = self._merge_args(step, args)
-
-        parent = md.get("_current_langfuse_span")
-        dispatch_span = _lf_executor_dispatch_span(parent, step, merged)
+        t0 = time.perf_counter()
         result: ExecutionResult | None = None
+        exc: BaseException | None = None
+        merged: dict[str, Any] | None = None
         try:
-            if step.action == "shell":
-                result = self._dispatch_shell(step.step_id, merged, state)
-            else:
-                dispatch_dict = self._to_dispatch_step(step, merged)
-                result = self.dispatcher.execute(dispatch_dict, state)
-            self._ensure_execution_result_contract(result, step.step_id)
-            return result
+            args = self.argument_generator.generate(step, state)
+            merged = self._merge_args(step, args)
+
+            guard_res = self._plan_safe_guard_dispatch(state, step, merged)
+            if guard_res is not None:
+                self._ensure_execution_result_contract(guard_res, step.step_id)
+                return guard_res
+
+            parent = md.get("_current_langfuse_span")
+            dispatch_span = _lf_executor_dispatch_span(parent, step, merged)
+            try:
+                if step.action == "shell":
+                    result = self._dispatch_shell(step.step_id, merged, state)
+                else:
+                    dispatch_dict = self._to_dispatch_step(step, merged)
+                    result = self.dispatcher.execute(dispatch_dict, state)
+                self._ensure_execution_result_contract(result, step.step_id)
+                return result
+            finally:
+                _lf_end_dispatch_span(dispatch_span, result)
+        except BaseException as e:
+            exc = e
+            raise
         finally:
-            _lf_end_dispatch_span(dispatch_span, result)
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            err_msg: str | None = None
+            ok = False
+            if exc is not None:
+                err_msg = str(exc)[:800]
+            elif result is not None:
+                ok = bool(result.success)
+                if not ok and result.error is not None:
+                    em = str(result.error.message or "").strip()
+                    err_msg = em or str(result.error.type.value)
+            structured_in = _tool_args_for_langfuse_input(merged) if merged else {}
+            out_sum = ""
+            if result is not None and result.output is not None:
+                out_sum = str(result.output.summary or "").strip()
+            _emit_tool_execution_log(
+                step=step,
+                success=ok,
+                latency_ms=latency_ms,
+                error=err_msg,
+                input_summary=_tool_execution_input_summary(merged),
+                tool_input=structured_in or None,
+                output_summary=out_sum,
+                mode=_tool_policy_mode_from_state(state),
+            )
+
+    def _plan_safe_guard_dispatch(
+        self, state: Any, step: PlanStep, merged: dict[str, Any]
+    ) -> ExecutionResult | None:
+        if not _plan_safe_execution_active(state):
+            return None
+        if step.action == "edit":
+            return ExecutionResult(
+                step_id=step.step_id,
+                success=False,
+                status="failure",
+                output=ExecutionOutput(
+                    summary="plan_safe guard: edit is not allowed in this runtime mode",
+                    data={},
+                ),
+                error=ExecutionError(
+                    type=ErrorType.unknown,
+                    message="plan_safe_guard: edit blocked at executor",
+                ),
+                metadata=ExecutionMetadata(
+                    tool_name="plan_executor",
+                    duration_ms=0,
+                    timestamp=self._utc_now(),
+                ),
+            )
+        if step.action == "shell":
+            cmd = str(merged.get("command") or "").strip()
+            if cmd and not plan_safe_shell_command_allowed(cmd):
+                return ExecutionResult(
+                    step_id=step.step_id,
+                    success=False,
+                    status="failure",
+                    output=ExecutionOutput(
+                        summary="plan_safe guard: shell command violates plan-mode policy "
+                        "(allowed first tokens: ls, rg, grep, cat; no && ; | `)",
+                        data={},
+                    ),
+                    error=ExecutionError(
+                        type=ErrorType.unknown,
+                        message="plan_safe_guard: shell blocked at executor",
+                    ),
+                    metadata=ExecutionMetadata(
+                        tool_name="plan_executor",
+                        duration_ms=0,
+                        timestamp=self._utc_now(),
+                    ),
+                )
+        return None
 
     def _merge_args(self, step: PlanStep, generated: dict) -> dict:
         base: dict = {}
@@ -804,7 +1001,7 @@ class PlanExecutor:
     def _to_dispatch_step(self, step: PlanStep, args: dict) -> dict:
         """Build the legacy ReAct step dict expected by _dispatch_react + Dispatcher."""
         pa = step.action
-        legacy = _PLAN_TO_LEGACY_ACTION.get(pa)
+        legacy = PLAN_STEP_TO_LEGACY_REACT_ACTION.get(pa)
         if legacy is None:
             raise ValueError(f"Unsupported plan action for ReAct dispatch: {pa!r}")
 

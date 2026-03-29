@@ -14,6 +14,7 @@ from agent_v2.schemas.exploration import (
     ExplorationItem,
     ExplorationResultMetadata,
     ExplorationSummary,
+    QueryIntent,
 )
 
 ExplorationConfidenceBand = Literal["high", "medium", "low"]
@@ -58,6 +59,8 @@ class FinalExplorationSchema(BaseModel):
     objective_coverage: Optional[str] = None
     confidence: ExplorationConfidenceBand
     trace: ExplorationAdapterTrace
+    # Read-only mirror of ``state.context["query_intent"]`` at adapter build time (transport).
+    query_intent: Optional[QueryIntent] = None
 
     @field_validator("key_insights")
     @classmethod

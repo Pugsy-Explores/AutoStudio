@@ -12,7 +12,12 @@ from pathlib import Path
 
 from agent_v2.config import (
     ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS,
+    ENABLE_SYMBOL_AWARE_EXPLORATION,
+    EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS,
+    EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_NAMES,
+    DISCOVERY_QUERY_POOL_MAX_WORKERS,
     DISCOVERY_REGEX_CAP,
+    DISCOVERY_SEARCH_BATCH_MAX_WORKERS,
     DISCOVERY_SYMBOL_CAP,
     DISCOVERY_TEXT_CAP,
     EXPLORATION_MAX_QUERY_RETRIES,
@@ -20,27 +25,28 @@ from agent_v2.config import (
     EXPLORATION_EXPAND_MAX_NODES,
     EXPLORATION_MAX_BACKTRACKS,
     EXPLORATION_MAX_ITEMS,
+    EXPLORATION_MAX_REFINE_CYCLES,
     EXPLORATION_MAX_STEPS,
+    EXPLORATION_OUTLINE_TOP_K_FOR_SELECTOR,
     EXPLORATION_READ_WINDOW,
     EXPLORATION_SCOPER_K,
     EXPLORATION_SCOPER_SKIP_BELOW,
+    EXPLORATION_SELECTOR_TOP_K,
     EXPLORATION_STAGNATION_STEPS,
+    EXPLORATION_SYMBOL_GRAPH_CONTEXT_K,
+    EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_CHARS,
     EXPLORATION_RETRY_LOW_RELEVANCE_THRESHOLD,
     EXPLORATION_ROUTING_SIMPLE_MAX_LINES,
     EXPLORATION_ROUTING_COMPLEX_MAX_LINES,
     EXPLORATION_CONTEXT_MAX_TOTAL_LINES,
     EXPLORATION_CONTEXT_TOP_K_RANGES,
-    ENABLE_GAP_DRIVEN_EXPANSION,
-    ENABLE_GAP_QUALITY_FILTER,
-    ENABLE_REFINE_COOLDOWN,
-    ENABLE_UTILITY_STOP,
-    EXPLORATION_UTILITY_NO_IMPROVEMENT_STREAK,
     EXPLORATION_DISCOVERY_POST_RERANK_TOP_K,
     EXPLORATION_DISCOVERY_PRERERANK_POOL_MAX,
     EXPLORATION_DISCOVERY_RERANK_ENABLED,
     EXPLORATION_DISCOVERY_RERANK_MIN_CANDIDATES,
     EXPLORATION_DISCOVERY_RERANK_USE_FUSION,
     EXPLORATION_DISCOVERY_SNIPPET_MERGE_MAX_CHARS,
+    exploration_symbol_graph_lookup_enabled,
     get_project_root,
 )
 from agent_v2.observability.langfuse_client import create_agent_trace, finalize_agent_trace
@@ -75,7 +81,11 @@ from agent_v2.schemas.exploration import (
     ExplorationTarget,
     ReadPacket,
     QueryIntent,
+    SelectorBatchResult,
+    UnderstandingResult,
     FailureReason,
+    task_intent_summary_for_analyzer,
+    write_query_intent_to_agent_state,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -336,6 +346,7 @@ class ExplorationEngineV2:
         self._result_synthesis_model_name = result_synthesis_model_name
         self.last_working_memory: ExplorationWorkingMemory | None = None
         self.last_final_exploration: FinalExplorationSchema | None = None
+        self._symbol_outline_cache: dict[str, list[dict[str, str]]] = {}
 
     def explore(
         self,
@@ -345,6 +356,7 @@ class ExplorationEngineV2:
         obs: Any = None,
         langfuse_trace: Any = None,
     ) -> FinalExplorationSchema:
+        _LOG.debug("[ExplorationEngineV2.explore]")
         lf = langfuse_trace
         if lf is None and obs is not None:
             lf = getattr(obs, "langfuse_trace", None)
@@ -399,6 +411,8 @@ class ExplorationEngineV2:
         exploration_outer: Any,
         lf: Any,
     ) -> FinalExplorationSchema:
+        _LOG.debug("[ExplorationEngineV2._explore_inner]")
+        self._symbol_outline_cache = {}
         ex_state = ExplorationState(instruction=instruction)
         memory = ExplorationWorkingMemory(
             max_evidence=EXPLORATION_MAX_ITEMS,
@@ -411,8 +425,6 @@ class ExplorationEngineV2:
         # System-level evidence delta: (canonical_path, symbol, read_source) — no scoring, identity only
         evidence_keys_seen: set[tuple[str, str, str]] = set()
         stagnation_counter = 0
-        relaxed_pass_used = False
-        refine_intent_history: list[tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = []
 
         intent_span: Any = None
         if exploration_outer is not None and hasattr(exploration_outer, "span"):
@@ -434,6 +446,7 @@ class ExplorationEngineV2:
             )
         finally:
             _lf_end(intent_span)
+        write_query_intent_to_agent_state(state, intent)
 
         candidates, discovery_records, discovery_ms = self._run_discovery_traced(
             exploration_outer,
@@ -441,114 +454,12 @@ class ExplorationEngineV2:
             intent,
             state,
             ex_state,
+            refine_phase=False,
         )
         evidence.extend(discovery_records)
         memory.ingest_discovery_candidates(candidates, limit=EXPLORATION_MAX_ITEMS)
-        retry_attempts = 0
-        top_score_initial = self._top_discovery_score(candidates)
-        initial_refinement_reason = self._classify_initial_refinement_reason(
-            intent, candidates, top_score_initial
-        )
-        if initial_refinement_reason and retry_attempts < EXPLORATION_MAX_QUERY_RETRIES:
-            retry_attempts += 1
-            prev_queries = intent
-            refined_intent_span: Any = None
-            if exploration_outer is not None and hasattr(exploration_outer, "span"):
-                try:
-                    refined_intent_span = exploration_outer.span(
-                        "exploration.query_intent.retry",
-                        input={
-                            # Backward-compatible field + clearer semantic alias.
-                            "failure_reason": initial_refinement_reason,
-                            "refinement_reason": initial_refinement_reason,
-                            "retry_attempt": retry_attempts,
-                        },
-                    )
-                except Exception:
-                    refined_intent_span = None
-            try:
-                memory_summary = memory.get_summary()
-                memory_evidence = memory_summary.get("evidence") or []
-                memory_symbols = sorted(
-                    {
-                        str(row.get("symbol") or "").strip()
-                        for row in memory_evidence
-                        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
-                    }
-                )
-                memory_files = sorted(
-                    {
-                        str(row.get("file") or "").strip()
-                        for row in memory_evidence
-                        if isinstance(row, dict) and str(row.get("file") or "").strip()
-                    }
-                )
-                context_feedback = {
-                    "partial_findings": memory_evidence,
-                    "known_entities": {
-                        "symbols": sorted(
-                            set(memory_symbols)
-                            | {s for s in ex_state.seen_symbols if str(s).strip()}
-                        ),
-                        "files": sorted(
-                            set(memory_files)
-                            | {f for f in ex_state.seen_files if str(f).strip()}
-                        ),
-                    },
-                    "knowledge_gaps": memory_summary.get("gaps") or [],
-                    "relationships": memory_summary.get("relationships") or [],
-                }
-                self._log_exploration_context_feedback_trace(
-                    "initial_query_retry",
-                    context_feedback=context_feedback,
-                    ex_state=ex_state,
-                    failure_reason=str(initial_refinement_reason),
-                    extra={"retry_attempt": retry_attempts},
-                    exploration_outer=exploration_outer,
-                )
-                refined_intent = self._intent_parser.parse(
-                    instruction,
-                    previous_queries=prev_queries,
-                    failure_reason=initial_refinement_reason,
-                    context_feedback=context_feedback,
-                    lf_exploration_parent=exploration_outer,
-                    lf_intent_span=refined_intent_span,
-                )
-            finally:
-                _lf_end(refined_intent_span)
-            refined_candidates, refined_discovery_records, _ = self._run_discovery_traced(
-                exploration_outer,
-                "retry",
-                refined_intent,
-                state,
-                ex_state,
-            )
-            evidence.extend(refined_discovery_records)
-            top_score_refined = self._top_discovery_score(refined_candidates)
-            original_count = len(candidates)
-            improved = self._has_retry_improvement(
-                old_candidates=candidates,
-                new_candidates=refined_candidates,
-                old_top=top_score_initial,
-                new_top=top_score_refined,
-            )
-            if improved:
-                intent = refined_intent
-                candidates = refined_candidates
-                memory.ingest_discovery_candidates(refined_candidates, limit=EXPLORATION_MAX_ITEMS)
-            self._emit_query_retry_telemetry(
-                exploration_outer=exploration_outer,
-                original_queries=prev_queries,
-                refined_queries=refined_intent,
-                failure_reason=initial_refinement_reason,
-                original_candidate_count=original_count,
-                refined_candidate_count=len(refined_candidates),
-                original_top_score=top_score_initial,
-                refined_top_score=top_score_refined,
-                improved=improved,
-            )
         t_enq0 = time.perf_counter()
-        selection_none = self._enqueue_ranked(
+        selection_none, _ = self._enqueue_ranked(
             instruction,
             intent,
             candidates,
@@ -571,6 +482,85 @@ class ExplorationEngineV2:
                 )
             except Exception:
                 pass
+
+        # Intent bootstrap: re-parse + discovery when the work queue is still empty and selector
+        # coverage is weak/empty/fragmented. This is NOT mapper REFINE (no EngineDecisionMapper);
+        # refine_count is unchanged.
+        while (
+            not ex_state.pending_targets
+            and ex_state.last_selector_batch is not None
+            and ex_state.last_selector_batch.coverage_signal in ("empty", "weak", "fragmented")
+            and ex_state.intent_bootstrap_pass_count < EXPLORATION_MAX_REFINE_CYCLES
+        ):
+            ex_state.intent_bootstrap_pass_count += 1
+            memory_summary = memory.get_summary()
+            memory_evidence = memory_summary.get("evidence") or []
+            memory_symbols = sorted(
+                {
+                    str(row.get("symbol") or "").strip()
+                    for row in memory_evidence
+                    if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+                }
+            )
+            memory_files = sorted(
+                {
+                    str(row.get("file") or "").strip()
+                    for row in memory_evidence
+                    if isinstance(row, dict) and str(row.get("file") or "").strip()
+                }
+            )
+            context_feedback = {
+                "partial_findings": memory_evidence,
+                "known_entities": {
+                    "symbols": sorted(
+                        set(memory_symbols) | {s for s in ex_state.seen_symbols if str(s).strip()}
+                    ),
+                    "files": sorted(
+                        set(memory_files) | {f for f in ex_state.seen_files if str(f).strip()}
+                    ),
+                },
+                "knowledge_gaps": memory_summary.get("gaps") or [],
+                "relationships": memory_summary.get("relationships") or [],
+            }
+            self._log_exploration_context_feedback_trace(
+                "intent_bootstrap_pass",
+                context_feedback=context_feedback,
+                ex_state=ex_state,
+                failure_reason="low_relevance",
+                extra={"refine_phase": True, "intent_bootstrap_pass": True},
+                exploration_outer=exploration_outer,
+            )
+            intent = self._intent_parser.parse(
+                instruction,
+                previous_queries=intent,
+                failure_reason="low_relevance",
+                context_feedback=context_feedback,
+                refine_context=memory_summary,
+                lf_exploration_parent=exploration_outer,
+            )
+            write_query_intent_to_agent_state(state, intent)
+            candidates, discovery_records, _ = self._run_discovery_traced(
+                exploration_outer,
+                "intent_bootstrap_pass",
+                intent,
+                state,
+                ex_state,
+                refine_phase=True,
+            )
+            evidence.extend(discovery_records)
+            memory.ingest_discovery_candidates(candidates, limit=EXPLORATION_MAX_ITEMS)
+            selection_none, _ = self._enqueue_ranked(
+                instruction,
+                intent,
+                candidates,
+                ex_state,
+                limit=3,
+                expl_parent=exploration_outer,
+                obs=obs,
+            )
+            if not selection_none:
+                break
+
         if selection_none and not ex_state.pending_targets:
             termination_reason = "no_relevant_candidate"
 
@@ -578,31 +568,6 @@ class ExplorationEngineV2:
             if termination_reason == "no_relevant_candidate":
                 break
             if not ex_state.pending_targets:
-                if not relaxed_pass_used and self._has_unresolved_memory_gaps(memory):
-                    relaxed_pass_used = True
-                    ex_state.expand_direction_hint = None
-                    candidates, discovery_records, _ = self._run_discovery_traced(
-                        exploration_outer,
-                        "relaxed_recovery",
-                        intent,
-                        state,
-                        ex_state,
-                    )
-                    evidence.extend(discovery_records)
-                    memory.ingest_discovery_candidates(candidates, limit=EXPLORATION_MAX_ITEMS)
-                    selection_none = self._enqueue_ranked(
-                        instruction,
-                        intent,
-                        candidates,
-                        ex_state,
-                        limit=3,
-                        expl_parent=exploration_outer,
-                        obs=obs,
-                    )
-                    if selection_none and not ex_state.pending_targets:
-                        termination_reason = "pending_exhausted"
-                        break
-                    continue
                 termination_reason = "pending_exhausted"
                 break
             target = ex_state.pending_targets.pop(0)
@@ -618,15 +583,22 @@ class ExplorationEngineV2:
             ex_state.explored_location_keys.add(key)
             stagnation_counter = 0  # new (file_path, symbol) visit — not stalled on duplicate-queue skips
 
-            pre_stop, pre_stop_reason = self._should_stop_pre(
-                ex_state,
-                primary_symbol_body_seen=primary_symbol_body_seen,
-            )
+            pre_stop, pre_stop_reason = self._should_stop_pre(ex_state)
             if pre_stop:
                 termination_reason = pre_stop_reason
                 break
 
             ex_state.steps_taken += 1
+
+            if ENABLE_SYMBOL_AWARE_EXPLORATION and EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS:
+                _LOG.info(
+                    "exploration.symbol_aware inspect step=%s/%s file=%s read_mode=%s source=%s",
+                    ex_state.steps_taken,
+                    EXPLORATION_MAX_STEPS,
+                    Path(str(target.file_path)).name or target.file_path,
+                    "symbol" if target.symbol else "file_only",
+                    target.source,
+                )
 
             selected = ExplorationCandidate(
                 symbol=target.symbol,
@@ -690,10 +662,7 @@ class ExplorationEngineV2:
             evidence_key = self._evidence_delta_key(canon, target, data)
             meaningful = self._is_meaningful_new_evidence(evidence_keys_seen, evidence_key)
 
-            post_inspect_stop, post_inspect_reason = self._should_stop_pre(
-                ex_state,
-                primary_symbol_body_seen=primary_symbol_body_seen,
-            )
+            post_inspect_stop, post_inspect_reason = self._should_stop_pre(ex_state)
             if post_inspect_stop:
                 termination_reason = post_inspect_reason
                 break
@@ -712,6 +681,7 @@ class ExplorationEngineV2:
                             obs.current_span = analyze_span
                     except Exception:
                         analyze_span = None
+                understanding: UnderstandingResult | None = None
                 try:
                     context_blocks, routing_meta = self._build_context_blocks_for_analysis(
                         intent,
@@ -725,21 +695,25 @@ class ExplorationEngineV2:
                             )
                         except Exception:
                             pass
+                    rel_block = self._symbol_relationships_block_for_target(target, state)
+                    if ENABLE_SYMBOL_AWARE_EXPLORATION and EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS:
+                        _LOG.info(
+                            "exploration.symbol_aware analyze relationships_chars=%s file=%s symbol=%s",
+                            len(rel_block),
+                            Path(str(target.file_path)).name or target.file_path,
+                            target.symbol or "",
+                        )
                     understanding = self._analyzer.analyze(
                         instruction,
-                        intent=", ".join([s for s in (intent.intents or []) if str(s).strip()]) or "no intent",
+                        intent=", ".join([s for s in (intent.intents or []) if str(s).strip()])
+                        or "no retrieval intents",
                         context_blocks=context_blocks,
+                        task_intent_summary=task_intent_summary_for_analyzer(intent, instruction),
+                        symbol_relationships_block=rel_block,
                         lf_analyze_span=analyze_span,
                         lf_exploration_parent=exploration_outer,
                     )
                     decision = self._decision_mapper.to_exploration_decision(understanding)
-                    decision = self._apply_gap_driven_decision(
-                        decision,
-                        understanding,
-                        ex_state,
-                        exploration_outer=exploration_outer,
-                        memory=memory,
-                    )
                     snippet_mem, read_src_mem = self._item_snippet_and_source(
                         "inspection", inspect_result
                     )
@@ -771,21 +745,230 @@ class ExplorationEngineV2:
                             confidence=_conf,
                             source="analyzer",
                         )
-                    utility_stop, utility_reason = self._update_utility_and_should_stop(
-                        understanding,
-                        ex_state,
-                        exploration_outer=exploration_outer,
-                    )
-                    if utility_stop:
-                        termination_reason = utility_reason
-                        break
                 finally:
                     if obs is not None:
                         obs.current_span = None
                     _lf_end(analyze_span)
+                if understanding is None:
+                    continue
                 ex_state.last_decision = decision.status
                 if decision.wrong_target_scope == "file":
                     ex_state.excluded_paths.add(canon)
+
+                stop, stop_reason = self._should_stop(ex_state, decision)
+                if stop:
+                    termination_reason = stop_reason
+                    break
+
+                sel_batch = target.selector_batch or SelectorBatchResult(
+                    selected_candidates=[],
+                    selection_confidence="medium",
+                    coverage_signal="unknown",
+                )
+                control = EngineDecisionMapper.decide_control(
+                    understanding,
+                    sel_batch,
+                    intent.relationship_hint,
+                    expanded_once=ex_state.expanded_once,
+                    refine_count=ex_state.refine_count,
+                    refine_limit=EXPLORATION_MAX_REFINE_CYCLES,
+                )
+                if control.action == "stop":
+                    termination_reason = (
+                        "analyzer_sufficient"
+                        if control.reason == "analyzer_sufficient"
+                        else "mapper_default_stop"
+                    )
+                    break
+
+                if control.action == "expand":
+                    rh = intent.relationship_hint
+                    if rh in ("callers", "callees", "both"):
+                        ex_state.expand_direction_hint = rh
+                    if not target.symbol:
+                        continue
+                    if ex_state.expansion_depth >= EXPLORATION_EXPAND_MAX_DEPTH:
+                        continue
+                    if target.symbol in ex_state.expanded_symbols:
+                        continue
+                    ex_state.expanded_symbols.add(target.symbol)
+                    expand_span: Any = None
+                    if exploration_outer is not None and hasattr(exploration_outer, "span"):
+                        try:
+                            expand_span = exploration_outer.span(
+                                "exploration.expand",
+                                input={
+                                    "symbol": (target.symbol or "")[:500],
+                                    "file_path": str(target.file_path)[:1000],
+                                },
+                            )
+                        except Exception:
+                            expand_span = None
+                    dir_hint = getattr(ex_state, "expand_direction_hint", None)
+                    skip_files, skip_symbols = self._expand_skip_sets(ex_state)
+                    try:
+                        expanded, expand_result = self._graph_expander.expand(
+                            target.symbol or "",
+                            target.file_path,
+                            state,
+                            max_nodes=EXPLORATION_EXPAND_MAX_NODES,
+                            max_depth=EXPLORATION_EXPAND_MAX_DEPTH,
+                            direction_hint=dir_hint,
+                            skip_files=skip_files,
+                            skip_symbols=skip_symbols,
+                        )
+                    except Exception as exc:
+                        lf_span_end_output(
+                            expand_span,
+                            output={"tool": "expand", "error": str(exc)[:2000]},
+                        )
+                        raise
+                    gk = (getattr(ex_state, "gap_bundle_key_for_expansion", None) or "").strip().lower()
+                    expanded = self._prefilter_expansion_targets(ex_state, expanded, gk)
+                    relation_bucket_by_key: dict[
+                        tuple[str, str], Literal["primary", "related", "other"]
+                    ] = {}
+                    ex_data = expand_result.output.data if expand_result.output else {}
+                    if isinstance(ex_data, dict):
+                        expanded, relation_bucket_by_key = self._enforce_direction_routing(
+                            expanded,
+                            ex_data,
+                            ex_state,
+                            direction_hint=dir_hint,
+                        )
+                    lf_span_end_output(
+                        expand_span,
+                        output=_expand_tool_langfuse_output(expanded, expand_result),
+                    )
+                    evidence.append(("expansion", {"symbol": target.symbol or ""}, expand_result))
+                    ex_tool = getattr(getattr(expand_result, "metadata", None), "tool_name", None)
+                    ex_summary = ""
+                    if expand_result.output:
+                        ex_summary = str(expand_result.output.summary or "").strip()
+                    memory.add_expansion_evidence_row(
+                        canon,
+                        target.symbol,
+                        ex_summary,
+                        success=bool(expand_result.success),
+                        tool_name=str(ex_tool or "graph_lookup"),
+                    )
+                    if isinstance(ex_data, dict):
+                        memory.add_relationships_from_expand(canon, target.symbol, ex_data)
+                    if expanded:
+                        ex_state.relationships_found = True
+                        self._enqueue_targets(
+                            ex_state,
+                            expanded,
+                            relation_bucket_by_key=relation_bucket_by_key,
+                        )
+                        ex_state.expansion_depth += 1
+                        ex_state.expanded_once = True
+                    ex_state.expand_direction_hint = None
+                    ex_state.gap_bundle_key_for_expansion = ""
+                    continue
+
+                if control.action == "refine":
+                    if ex_state.backtracks >= EXPLORATION_MAX_BACKTRACKS:
+                        _LOG.info(
+                            "exploration.control event=refine_blocked_by_backtrack_limit "
+                            "backtracks=%s max=%s steps_taken=%s",
+                            ex_state.backtracks,
+                            EXPLORATION_MAX_BACKTRACKS,
+                            ex_state.steps_taken,
+                        )
+                        if exploration_outer is not None and hasattr(
+                            exploration_outer, "event"
+                        ):
+                            try:
+                                exploration_outer.event(
+                                    name="refine_blocked_by_backtrack_limit",
+                                    metadata={
+                                        "backtracks": ex_state.backtracks,
+                                        "max_backtracks": EXPLORATION_MAX_BACKTRACKS,
+                                        "steps_taken": ex_state.steps_taken,
+                                    },
+                                )
+                            except Exception:
+                                pass
+                        continue
+                    ex_state.refine_count += 1
+                    ex_state.backtracks += 1
+                    memory_summary = memory.get_summary()
+                    memory_evidence = memory_summary.get("evidence") or []
+                    memory_symbols = sorted(
+                        {
+                            str(row.get("symbol") or "").strip()
+                            for row in memory_evidence
+                            if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+                        }
+                    )
+                    memory_files = sorted(
+                        {
+                            str(row.get("file") or "").strip()
+                            for row in memory_evidence
+                            if isinstance(row, dict) and str(row.get("file") or "").strip()
+                        }
+                    )
+                    context_feedback = {
+                        "partial_findings": memory_evidence,
+                        "known_entities": {
+                            "symbols": sorted(
+                                set(memory_symbols)
+                                | {s for s in ex_state.seen_symbols if str(s).strip()}
+                            ),
+                            "files": sorted(
+                                set(memory_files)
+                                | {f for f in ex_state.seen_files if str(f).strip()}
+                            ),
+                        },
+                        "knowledge_gaps": memory_summary.get("gaps") or [],
+                        "relationships": memory_summary.get("relationships") or [],
+                    }
+                    self._log_exploration_context_feedback_trace(
+                        "loop_refine",
+                        context_feedback=context_feedback,
+                        ex_state=ex_state,
+                        failure_reason=str(control.reason),
+                        extra={
+                            "target_file": str(target.file_path)[:1000],
+                            "target_symbol": (target.symbol or "")[:500],
+                        },
+                        exploration_outer=exploration_outer,
+                    )
+                    refined_intent = self._intent_parser.parse(
+                        instruction,
+                        previous_queries=intent,
+                        failure_reason=control.reason,
+                        context_feedback=context_feedback,
+                        refine_context=memory_summary,
+                        lf_exploration_parent=exploration_outer,
+                    )
+                    intent = refined_intent
+                    write_query_intent_to_agent_state(state, intent)
+                    candidates, discovery_records, _ = self._run_discovery_traced(
+                        exploration_outer,
+                        "refine",
+                        intent,
+                        state,
+                        ex_state,
+                        refine_phase=True,
+                    )
+                    evidence.extend(discovery_records)
+                    memory.ingest_discovery_candidates(candidates, limit=EXPLORATION_MAX_ITEMS)
+                    selection_none, _ = self._enqueue_ranked(
+                        instruction,
+                        intent,
+                        candidates,
+                        ex_state,
+                        limit=3,
+                        expl_parent=exploration_outer,
+                        obs=obs,
+                    )
+                    if selection_none and not ex_state.pending_targets:
+                        termination_reason = "no_relevant_candidate"
+                        break
+                    continue
+
             else:
                 snippet_mem, read_src_mem = self._item_snippet_and_source(
                     "inspection", inspect_result
@@ -815,229 +998,11 @@ class ExplorationEngineV2:
                     reason="No new evidence key (file, symbol, read_source); analyzer skipped.",
                     next_action="stop",
                 )
-
-            stop, stop_reason = self._should_stop(
-                ex_state,
-                decision,
-                primary_symbol_body_seen=primary_symbol_body_seen,
-            )
-            if stop:
-                termination_reason = stop_reason
-                break
-
-            action = self._next_action(decision)
-            action = self._apply_refine_cooldown(
-                action,
-                decision,
-                target,
-                ex_state,
-                exploration_outer=exploration_outer,
-            )
-            if (
-                action == "refine"
-                and self._intent_oscillation_detected(refine_intent_history, intent)
-            ):
-                if target.symbol:
-                    ex_state.expanded_symbols.discard(target.symbol)
-                action = "expand"
-            # Memory-aware override: relationship gaps still warrant graph expansion, not discovery refine.
-            if action == "refine" and target is not None:
-                mem_summary = memory.get_summary()
-                sim_needs = list(decision.needs)
-                rel_expand_signal = bool({"callers", "callees"} & set(sim_needs))
-                for row in mem_summary.get("gaps") or []:
-                    if not isinstance(row, dict):
-                        continue
-                    cat = self._classify_gap_category(str(row.get("description") or ""))
-                    if cat == "caller":
-                        if "callers" not in sim_needs:
-                            sim_needs.append("callers")
-                        rel_expand_signal = True
-                    elif cat in ("callee", "flow"):
-                        if "callees" not in sim_needs:
-                            sim_needs.append("callees")
-                        rel_expand_signal = True
-                if rel_expand_signal:
-                    sym = (target.symbol or "").strip()
-                    if (
-                        sym
-                        and ex_state.expansion_depth < EXPLORATION_EXPAND_MAX_DEPTH
-                        and target.symbol not in ex_state.expanded_symbols
-                    ):
-                        decision = decision.model_copy(
-                            update={"next_action": "expand", "needs": sim_needs}
-                        )
-                        action = "expand"
-                        coerced: dict[str, Any] = {
-                            "event": "exploration.refine_to_expand_coercion",
-                            "reason": "memory_relationship_gap_expand_viable",
-                            "needs_after": list(sim_needs),
-                            "target_symbol": (target.symbol or "")[:200],
-                            "expansion_depth": int(ex_state.expansion_depth),
-                            "steps_taken": int(ex_state.steps_taken),
-                        }
-                        _LOG.info(
-                            "exploration.refine_to_expand_coercion %s",
-                            json.dumps(coerced, ensure_ascii=False, default=str),
-                        )
-                        if exploration_outer is not None and hasattr(exploration_outer, "event"):
-                            try:
-                                exploration_outer.event(
-                                    name="exploration.refine_to_expand_coercion",
-                                    metadata=coerced,
-                                )
-                            except Exception:
-                                pass
-            if self._should_expand(action, decision, target, ex_state):
-                expand_span: Any = None
-                if exploration_outer is not None and hasattr(exploration_outer, "span"):
-                    try:
-                        expand_span = exploration_outer.span(
-                            "exploration.expand",
-                            input={
-                                "symbol": (target.symbol or "")[:500],
-                                "file_path": str(target.file_path)[:1000],
-                            },
-                        )
-                    except Exception:
-                        expand_span = None
-                dir_hint = getattr(ex_state, "expand_direction_hint", None)
-                skip_files, skip_symbols = self._expand_skip_sets(ex_state)
-                try:
-                    expanded, expand_result = self._graph_expander.expand(
-                        target.symbol or "",
-                        target.file_path,
-                        state,
-                        max_nodes=EXPLORATION_EXPAND_MAX_NODES,
-                        max_depth=EXPLORATION_EXPAND_MAX_DEPTH,
-                        direction_hint=dir_hint,
-                        skip_files=skip_files,
-                        skip_symbols=skip_symbols,
-                    )
-                except Exception as exc:
-                    lf_span_end_output(
-                        expand_span,
-                        output={"tool": "expand", "error": str(exc)[:2000]},
-                    )
-                    raise
-                gk = (getattr(ex_state, "gap_bundle_key_for_expansion", None) or "").strip().lower()
-                expanded = self._prefilter_expansion_targets(ex_state, expanded, gk)
-                relation_bucket_by_key: dict[tuple[str, str], Literal["primary", "related", "other"]] = {}
-                ex_data = expand_result.output.data if expand_result.output else {}
-                if isinstance(ex_data, dict):
-                    expanded, relation_bucket_by_key = self._enforce_direction_routing(
-                        expanded,
-                        ex_data,
-                        ex_state,
-                        direction_hint=dir_hint,
-                    )
-                lf_span_end_output(
-                    expand_span,
-                    output=_expand_tool_langfuse_output(expanded, expand_result),
-                )
-                evidence.append(("expansion", {"symbol": target.symbol or ""}, expand_result))
-                ex_tool = getattr(getattr(expand_result, "metadata", None), "tool_name", None)
-                ex_summary = ""
-                if expand_result.output:
-                    ex_summary = str(expand_result.output.summary or "").strip()
-                memory.add_expansion_evidence_row(
-                    canon,
-                    target.symbol,
-                    ex_summary,
-                    success=bool(expand_result.success),
-                    tool_name=str(ex_tool or "graph_lookup"),
-                )
-                if isinstance(ex_data, dict):
-                    memory.add_relationships_from_expand(canon, target.symbol, ex_data)
-                if expanded:
-                    ex_state.relationships_found = True
-                    self._enqueue_targets(
-                        ex_state,
-                        expanded,
-                        relation_bucket_by_key=relation_bucket_by_key,
-                    )
-                    ex_state.expansion_depth += 1
-                ex_state.refine_used_last_step = False
-                ex_state.expand_direction_hint = None
-                ex_state.gap_bundle_key_for_expansion = ""
-                continue
-
-            if self._should_refine(action, decision, ex_state, target=target, memory=memory):
-                ex_state.backtracks += 1
-                ex_state.refine_used_last_step = True
-                refine_failure_reason = self._refine_failure_reason(decision, ex_state)
-                memory_summary = memory.get_summary()
-                memory_evidence = memory_summary.get("evidence") or []
-                memory_symbols = sorted(
-                    {
-                        str(row.get("symbol") or "").strip()
-                        for row in memory_evidence
-                        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
-                    }
-                )
-                memory_files = sorted(
-                    {
-                        str(row.get("file") or "").strip()
-                        for row in memory_evidence
-                        if isinstance(row, dict) and str(row.get("file") or "").strip()
-                    }
-                )
-                context_feedback = {
-                    "partial_findings": memory_evidence,
-                    "known_entities": {
-                        "symbols": sorted(
-                            set(memory_symbols)
-                            | {s for s in ex_state.seen_symbols if str(s).strip()}
-                        ),
-                        "files": sorted(
-                            set(memory_files)
-                            | {f for f in ex_state.seen_files if str(f).strip()}
-                        ),
-                    },
-                    "knowledge_gaps": memory_summary.get("gaps") or [],
-                    "relationships": memory_summary.get("relationships") or [],
-                }
-                self._log_exploration_context_feedback_trace(
-                    "loop_refine",
-                    context_feedback=context_feedback,
-                    ex_state=ex_state,
-                    failure_reason=str(refine_failure_reason),
-                    extra={"target_file": str(target.file_path)[:1000], "target_symbol": (target.symbol or "")[:500]},
-                    exploration_outer=exploration_outer,
-                )
-                refined_intent = self._intent_parser.parse(
-                    instruction,
-                    previous_queries=intent,
-                    failure_reason=refine_failure_reason,
-                    context_feedback=context_feedback,
-                    lf_exploration_parent=exploration_outer,
-                )
-                # Refine is reinterpretation: always replace current intent before discovery.
-                intent = refined_intent
-                refine_intent_history.append(self._intent_signature(intent))
-                if len(refine_intent_history) > 4:
-                    refine_intent_history = refine_intent_history[-4:]
-                candidates, discovery_records, _ = self._run_discovery_traced(
-                    exploration_outer,
-                    "refine",
-                    intent,
-                    state,
-                    ex_state,
-                )
-                evidence.extend(discovery_records)
-                memory.ingest_discovery_candidates(candidates, limit=EXPLORATION_MAX_ITEMS)
-                selection_none = self._enqueue_ranked(
-                    instruction,
-                    intent,
-                    candidates,
-                    ex_state,
-                    limit=3,
-                    expl_parent=exploration_outer,
-                    obs=obs,
-                )
-                if selection_none and not ex_state.pending_targets:
-                    termination_reason = "no_relevant_candidate"
+                stop, stop_reason = self._should_stop(ex_state, decision)
+                if stop:
+                    termination_reason = stop_reason
                     break
+                continue
 
         allow_definition_complete = "find_definition" in (intent.intents or [])
         completion_status = "incomplete"
@@ -1066,6 +1031,8 @@ class ExplorationEngineV2:
             explored_files=len(ex_state.seen_files),
             explored_symbols=len(ex_state.seen_symbols),
             exploration_outer=exploration_outer,
+            state=state,
+            engine_loop_steps=ex_state.steps_taken,
         )
 
     def _run_discovery_traced(
@@ -1075,6 +1042,8 @@ class ExplorationEngineV2:
         intent: QueryIntent,
         state: Any,
         ex_state: ExplorationState,
+        *,
+        refine_phase: bool = False,
     ) -> tuple[list[ExplorationCandidate], list[tuple[str, dict, ExecutionResult]], int]:
         """
         Run ``_discovery`` under a Langfuse span ``exploration.discovery`` (batched SEARCH tools).
@@ -1098,7 +1067,9 @@ class ExplorationEngineV2:
                 discovery_span = None
         t0 = time.perf_counter()
         try:
-            candidates, discovery_records = self._discovery(intent, state, ex_state)
+            candidates, discovery_records = self._discovery(
+                intent, state, ex_state, refine_phase=refine_phase
+            )
         except Exception as exc:
             lf_span_end_output(
                 discovery_span,
@@ -1183,6 +1154,7 @@ class ExplorationEngineV2:
         No LLM is called here.  The caller must have wired a real (or stub)
         dispatcher that responds to SEARCH steps.
         """
+        _LOG.debug("[ExplorationEngineV2.run_retrieval_pipeline]")
         from types import SimpleNamespace  # late import: keeps method dependency-free
 
         ex_state = ExplorationState(instruction=instruction)
@@ -1195,7 +1167,7 @@ class ExplorationEngineV2:
         candidates: list[ExplorationCandidate],
         rank_query: str,
     ) -> list[ExplorationCandidate]:
-        """Reorder file-level candidates by cross-encoder relevance; fallback on failure."""
+        """Reorder file-level candidates by cross-encoder relevance (MiniLM ONNX CPU)."""
         if not candidates or not (rank_query or "").strip():
             return candidates
         try:
@@ -1228,11 +1200,7 @@ class ExplorationEngineV2:
             syms = ", ".join(c.symbols) if c.symbols else ""
             docs.append(f"{c.file_path}\nSymbols: {syms}\n{summ}")
 
-        try:
-            scored = reranker.rerank(rank_query, docs)
-        except Exception as exc:
-            _LOG.warning("exploration.discovery rerank failed — using retriever order: %s", exc)
-            return candidates
+        scored = reranker.rerank_batch([(rank_query, docs)])[0]
 
         score_by_doc = {d: float(s) for d, s in scored}
 
@@ -1256,16 +1224,21 @@ class ExplorationEngineV2:
         intent: QueryIntent,
         state: Any,
         ex_state: ExplorationState,
+        *,
+        refine_phase: bool = False,
     ) -> tuple[list[ExplorationCandidate], list[tuple[str, dict, ExecutionResult]]]:
         records: list[tuple[str, dict, ExecutionResult]] = []
         base_root = get_project_root()
+
+        if not refine_phase:
+            ex_state.discovery_keyword_inject = []
 
         symbol_queries = list(dict.fromkeys(intent.symbols))[:DISCOVERY_SYMBOL_CAP]
         text_queries = list(dict.fromkeys(intent.keywords))[:DISCOVERY_TEXT_CAP]
         inject_kw = list(dict.fromkeys(getattr(ex_state, "discovery_keyword_inject", None) or []))[
             :2
         ]
-        if inject_kw:
+        if inject_kw and refine_phase:
             text_queries = list(dict.fromkeys(text_queries + inject_kw))[:DISCOVERY_TEXT_CAP]
             ex_state.discovery_keyword_inject = []
         regex_src = getattr(intent, "regex_patterns", None)
@@ -1286,11 +1259,11 @@ class ExplorationEngineV2:
                 state,
                 mode=query_type,
                 step_id_prefix=prefix,
-                max_workers=4,
+                max_workers=DISCOVERY_SEARCH_BATCH_MAX_WORKERS,
             )
             return list(zip(queries, results))
 
-        with ThreadPoolExecutor(max_workers=3) as outer:
+        with ThreadPoolExecutor(max_workers=DISCOVERY_QUERY_POOL_MAX_WORKERS) as outer:
             f_sym = outer.submit(_collect_pairs, "symbol", symbol_queries)
             f_reg = outer.submit(_collect_pairs, "regex", regex_queries)
             f_txt = outer.submit(_collect_pairs, "text", text_queries)
@@ -1376,6 +1349,15 @@ class ExplorationEngineV2:
             )
             ms = float(meta["max_score"])
             snippet_legacy = summary[: self.MAX_SNIPPET_CHARS] if summary else None
+            repo_lbl: str | None = None
+            try:
+                from pathlib import Path as _Path
+
+                from agent_v2.exploration_test_repos import label_for_path  # noqa: PLC0415
+
+                repo_lbl = label_for_path(canon, _Path(get_project_root()))
+            except Exception:
+                repo_lbl = None
             cand = ExplorationCandidate(
                 file_path=canon,
                 symbol=prim_sym,
@@ -1388,6 +1370,7 @@ class ExplorationEngineV2:
                     list(chans) if chans else [prim_src],
                 ),
                 discovery_max_score=ms,
+                repo=repo_lbl,
             )
             try:
                 object.__setattr__(cand, "_score_breakdown", dict(meta["breakdown"]))
@@ -1426,6 +1409,108 @@ class ExplorationEngineV2:
         )
         return deduped, records
 
+    def _outline_full_for_file(self, canon_path: str) -> list[dict[str, str]]:
+        if not canon_path:
+            return []
+        if canon_path in self._symbol_outline_cache:
+            return self._symbol_outline_cache[canon_path]
+        from agent_v2.exploration.file_symbol_outline import load_python_file_outline
+
+        raw = load_python_file_outline(canon_path)
+        self._symbol_outline_cache[canon_path] = raw
+        return raw
+
+    def _outline_rows_for_selector_batch(
+        self,
+        top_slice: list[ExplorationCandidate],
+        instruction: str,
+        intent_text: str,
+    ) -> list[list[dict[str, str]]] | None:
+        if not ENABLE_SYMBOL_AWARE_EXPLORATION:
+            return None
+        from agent_v2.exploration.file_symbol_outline import rank_outline_for_selector_query
+
+        base_root = get_project_root()
+        rows: list[list[dict[str, str]]] = []
+        q = f"{instruction}\n{intent_text}"
+        for c in top_slice:
+            canon = self._canonical_path(c.file_path, base_root=base_root)
+            full = self._outline_full_for_file(canon) if canon else []
+            rows.append(rank_outline_for_selector_query(full, q, EXPLORATION_OUTLINE_TOP_K_FOR_SELECTOR))
+        if rows and EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS:
+            ranked_total = sum(len(r) for r in rows)
+            ranked_max = max((len(r) for r in rows), default=0)
+            _LOG.info(
+                "exploration.symbol_aware outlines_ready files=%s ranked_symbol_slots_sum=%s max_per_file=%s",
+                len(rows),
+                ranked_total,
+                ranked_max,
+            )
+        return rows
+
+    def _symbol_relationships_block_for_target(self, target: ExplorationTarget, state: Any) -> str:
+        if not ENABLE_SYMBOL_AWARE_EXPLORATION:
+            return ""
+        if not exploration_symbol_graph_lookup_enabled():
+            return ""
+        batch = target.selector_batch
+        if batch is None:
+            return ""
+        j = target.selector_top_index
+        names: list[str] = []
+        if j is not None:
+            names = list(batch.selected_symbols.get(str(j), []) or [])
+        # Symbol-aware only: never mix graph hints with discovery `target.symbol` when
+        # selector symbols were absent or fully invalidated (file-only inspect path).
+        names = [n.strip() for n in names if str(n).strip()][:EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_NAMES]
+        if not names:
+            return ""
+        ctx = getattr(state, "context", None)
+        project_root = ""
+        if isinstance(ctx, dict):
+            project_root = str(ctx.get("project_root") or "")
+        base_root = project_root or get_project_root()
+        from agent_v2.exploration.graph_symbol_edges_batch import (
+            fetch_callers_callees_batch,
+            format_symbol_relationships_block,
+        )
+
+        canon = self._canonical_path(target.file_path, base_root=base_root)
+        items: list[tuple[str, str]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for n in names:
+            pair = (canon, n)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            items.append((canon, n))
+        if EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS:
+            _LOG.info(
+                "exploration.symbol_aware graph_fetch start symbols=%s deduped_pairs=%s file=%s",
+                names,
+                len(items),
+                Path(canon).name if canon else "",
+            )
+        edges = fetch_callers_callees_batch(
+            items,
+            project_root or base_root,
+            k_each=EXPLORATION_SYMBOL_GRAPH_CONTEXT_K,
+        )
+        block = format_symbol_relationships_block(
+            edges,
+            max_chars=EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_CHARS,
+        )
+        if EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS:
+            if block.strip():
+                _LOG.info(
+                    "exploration.symbol_aware graph_fetch block_chars=%s max=%s",
+                    len(block),
+                    EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_CHARS,
+                )
+            else:
+                _LOG.info("exploration.symbol_aware graph_fetch block_empty (no edges or truncated config)")
+        return block
+
     def _enqueue_ranked(
         self,
         instruction: str,
@@ -1436,12 +1521,28 @@ class ExplorationEngineV2:
         limit: int,
         expl_parent: Any = None,
         obs: Any = None,
-    ) -> bool:
+    ) -> tuple[bool, SelectorBatchResult]:
+        """
+        Returns (selection_none, selector_batch). selection_none is True when no targets were enqueued.
+        Always sets ex_state.last_selector_batch to the selector output (incl. empty/weak coverage).
+        """
+        empty_batch = SelectorBatchResult(
+            selected_candidates=[],
+            selection_confidence="low",
+            coverage_signal="empty",
+        )
         if not candidates:
-            return False
+            ex_state.last_selector_batch = empty_batch
+            return True, empty_batch
         candidates = [c for c in candidates if self._may_enqueue(ex_state, c.file_path, c.symbol)]
         if not candidates:
-            return True
+            skipped = SelectorBatchResult(
+                selected_candidates=[],
+                selection_confidence="low",
+                coverage_signal="weak",
+            )
+            ex_state.last_selector_batch = skipped
+            return True, skipped
         capped = candidates[:EXPLORATION_SCOPER_K]
         need_scope_llm = self._scoper is not None and len(capped) > EXPLORATION_SCOPER_SKIP_BELOW
         scope_span: Any = None
@@ -1492,34 +1593,84 @@ class ExplorationEngineV2:
             except Exception:
                 select_span = None
         try:
-            local_seen_files = set(ex_state.seen_files)
             intent_text = ", ".join([s for s in (intent.intents or []) if str(s).strip()]) or "no intent"
+            top_slice = scoped[:EXPLORATION_SELECTOR_TOP_K]
+            outline_rows = self._outline_rows_for_selector_batch(top_slice, instruction, intent_text)
             ranked = self._selector.select_batch(
                 instruction,
                 intent_text,
                 scoped,
-                local_seen_files,
                 limit=min(limit, len(scoped)),
                 explored_location_keys=ex_state.explored_location_keys,
                 lf_select_span=select_span,
                 lf_exploration_parent=expl_parent,
+                outline_rows=outline_rows,
             )
         finally:
             if obs is not None:
                 obs.current_span = None
             _lf_end(select_span)
-        if ranked is None:
-            return True
-        targets = [
-            ExplorationTarget(
-                file_path=str(c.file_path),
-                symbol=c.symbol,
-                source="discovery",
+        ex_state.last_selector_batch = ranked
+        if (
+            ENABLE_SYMBOL_AWARE_EXPLORATION
+            and EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS
+            and outline_rows is not None
+        ):
+            _LOG.info(
+                "exploration.symbol_aware selector_batch done selected=%s top_idx=%s "
+                "selected_symbol_keys=%s coverage=%s conf=%s",
+                len(ranked.selected_candidates),
+                ranked.selected_top_indices,
+                sorted(ranked.selected_symbols.keys()),
+                ranked.coverage_signal,
+                ranked.selection_confidence,
             )
-            for c in (ranked or [])
-        ]
+        targets: list[ExplorationTarget] = []
+        for i, c in enumerate(ranked.selected_candidates):
+            j = (
+                ranked.selected_top_indices[i]
+                if i < len(ranked.selected_top_indices)
+                else None
+            )
+            syms = ranked.selected_symbols.get(str(j), []) if j is not None else []
+            if ENABLE_SYMBOL_AWARE_EXPLORATION:
+                # Clean split: validated selector symbols → symbol-body read; else file-level only
+                # (do not fall back to discovery candidate.symbol — avoids silent mismatch).
+                primary: str | None = syms[0] if syms else None
+                if syms:
+                    _LOG.debug(
+                        "exploration.enqueue discovery target symbol_aware=true file=%s symbol=%s",
+                        c.file_path,
+                        primary,
+                    )
+                else:
+                    _LOG.debug(
+                        "exploration.enqueue discovery symbol_aware=file_only file=%s (no validated selected_symbols)",
+                        c.file_path,
+                    )
+            else:
+                primary = syms[0] if syms else c.symbol
+            targets.append(
+                ExplorationTarget(
+                    file_path=str(c.file_path),
+                    symbol=primary,
+                    source="discovery",
+                    selector_batch=ranked,
+                    selector_top_index=j,
+                )
+            )
+        if not targets:
+            return True, ranked
+        if ENABLE_SYMBOL_AWARE_EXPLORATION and EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS:
+            n_sym = sum(1 for t in targets if t.symbol)
+            _LOG.info(
+                "exploration.symbol_aware enqueue_targets n=%s symbol_read=%s file_only=%s",
+                len(targets),
+                n_sym,
+                len(targets) - n_sym,
+            )
         self._enqueue_targets(ex_state, targets)
-        return False
+        return False, ranked
 
     @staticmethod
     def _canonical_path(path: str, *, base_root: str) -> str:
@@ -1746,209 +1897,6 @@ class ExplorationEngineV2:
         )
         ex_state.pending_targets.extend(ordered)
 
-    def _apply_gap_driven_decision(
-        self,
-        decision: ExplorationDecision,
-        understanding: Any,
-        ex_state: ExplorationState,
-        *,
-        exploration_outer: Any = None,
-        memory: ExplorationWorkingMemory | None = None,
-    ) -> ExplorationDecision:
-        if not ENABLE_GAP_DRIVEN_EXPANSION:
-            return decision
-        if memory is None:
-            memory = ExplorationWorkingMemory()
-        memory_summary = memory.get_summary()
-        rel_count = len(memory_summary.get("relationships") or [])
-        gaps = getattr(understanding, "knowledge_gaps", None) or []
-        if not isinstance(gaps, list):
-            return decision
-        accepted: list[str] = []
-        rejected: list[dict[str, str]] = []
-        for gap in gaps:
-            gap_s = str(gap or "").strip()
-            if not gap_s:
-                continue
-            normalized = gap_s.lower()
-            if ENABLE_GAP_QUALITY_FILTER and normalized in ex_state.attempted_gaps:
-                rejected.append({"gap": gap_s, "reason": "already_attempted"})
-                continue
-            if ENABLE_GAP_QUALITY_FILTER and self._is_generic_gap(normalized):
-                rejected.append({"gap": gap_s, "reason": "too_generic"})
-                continue
-            accepted.append(gap_s)
-        mem_gap_descs: list[str] = []
-        for row in memory_summary.get("gaps") or []:
-            if isinstance(row, dict):
-                d = str(row.get("description") or "").strip()
-                if d:
-                    mem_gap_descs.append(d)
-        if exploration_outer is not None and hasattr(exploration_outer, "event"):
-            try:
-                exploration_outer.event(
-                    name="exploration.gap_filter",
-                    metadata={
-                        "accepted_count": len(accepted),
-                        "memory_gap_count": len(mem_gap_descs),
-                        "memory_relationship_count": rel_count,
-                        "rejected": rejected[:10],
-                    },
-                )
-            except Exception:
-                pass
-        if not accepted and not mem_gap_descs:
-            return decision
-        combined: list[str] = []
-        seen_norm: set[str] = set()
-        for g in accepted + mem_gap_descs:
-            gn = g.lower().strip()[:200]
-            if not gn or gn in seen_norm:
-                continue
-            seen_norm.add(gn)
-            combined.append(g)
-        if not combined:
-            return decision
-        if accepted:
-            ex_state.attempted_gaps.update(g.lower() for g in accepted)
-        ex_state.gap_expand_attempts += 1
-        ex_state.last_expand_was_gap_driven = False
-        ex_state.expand_direction_hint = None
-        ex_state.discovery_keyword_inject = []
-        ex_state.gap_bundle_key_for_expansion = ""
-
-        bundle_key = "|".join(sorted(g[:200].lower() for g in combined))[:500]
-        ex_state.gap_bundle_key_for_expansion = bundle_key
-
-        inject_keywords: list[str] = []
-        has_caller_gap = False
-        has_callee_gap = False
-        has_refine_gap = False
-
-        for gap in combined:
-            cat = self._classify_gap_category(gap)
-            if cat in ("usage", "definition", "config", "usage_symbol_fallback"):
-                has_refine_gap = True
-                inject_keywords.extend(self._extract_inject_keywords(gap, cat))
-            elif cat == "caller":
-                has_caller_gap = True
-            elif cat in ("callee", "flow"):
-                has_callee_gap = True
-
-        inject_keywords = list(dict.fromkeys(inject_keywords))[:2]
-
-        if has_caller_gap:
-            ex_state.expand_direction_hint = "callers"
-            ex_state.last_expand_was_gap_driven = True
-            return decision.model_copy(
-                update={"next_action": "expand", "needs": ["callers"]}
-            )
-
-        if has_callee_gap:
-            ex_state.expand_direction_hint = "callees"
-            ex_state.last_expand_was_gap_driven = True
-            return decision.model_copy(
-                update={"next_action": "expand", "needs": ["callees"]}
-            )
-
-        if has_refine_gap:
-            ex_state.discovery_keyword_inject = inject_keywords
-            ex_state.last_expand_was_gap_driven = False
-            return decision.model_copy(
-                update={"next_action": "refine", "needs": ["more_code"]}
-            )
-
-        return decision
-
-    def _apply_refine_cooldown(
-        self,
-        action: str,
-        decision: ExplorationDecision,
-        target: ExplorationTarget,
-        ex_state: ExplorationState,
-        *,
-        exploration_outer: Any = None,
-    ) -> str:
-        if not ENABLE_REFINE_COOLDOWN:
-            return action
-        if not ex_state.refine_used_last_step:
-            return action
-        if action != "refine":
-            return action
-        if not self._should_expand("expand", decision, target, ex_state):
-            return action
-        if target.symbol:
-            ex_state.expanded_symbols.discard(target.symbol)
-        if exploration_outer is not None and hasattr(exploration_outer, "event"):
-            try:
-                exploration_outer.event(
-                    name="exploration.refine_cooldown",
-                    metadata={"forced_action": "expand"},
-                )
-            except Exception:
-                pass
-        return "expand"
-
-    def _update_utility_and_should_stop(
-        self,
-        understanding: Any,
-        ex_state: ExplorationState,
-        *,
-        exploration_outer: Any = None,
-    ) -> tuple[bool, str]:
-        if not ENABLE_UTILITY_STOP:
-            return False, ""
-        relevance = str(getattr(understanding, "relevance", "medium") or "medium")
-        gaps = getattr(understanding, "knowledge_gaps", None) or []
-        actionable_gaps = [g for g in gaps if str(g or "").strip()]
-        signature = (
-            bool(getattr(understanding, "sufficient", False)),
-            relevance,
-            len(actionable_gaps),
-        )
-        prev = ex_state.last_improvement_signature
-        improved = (
-            prev is None
-            or (not prev[0] and signature[0])
-            or self._relevance_rank(signature[1]) > self._relevance_rank(prev[1])
-            or signature[2] < prev[2]
-        )
-        gap_reduced = prev is not None and signature[2] < prev[2]
-        gap_to_success = False
-        if ex_state.last_expand_was_gap_driven and gap_reduced:
-            ex_state.gap_expand_successes += 1
-            gap_to_success = True
-        # Metric-only latch reset: expansion attribution is single-step.
-        ex_state.last_expand_was_gap_driven = False
-        if improved:
-            ex_state.no_improvement_streak = 0
-        else:
-            ex_state.no_improvement_streak += 1
-        ex_state.last_improvement_signature = signature
-        if exploration_outer is not None and hasattr(exploration_outer, "event"):
-            try:
-                exploration_outer.event(
-                    name="exploration.utility_signal",
-                    metadata={
-                        "improved": improved,
-                        "gap_reduced": gap_reduced,
-                        "gap_to_successful_expansion": gap_to_success,
-                        "gap_expand_attempts": ex_state.gap_expand_attempts,
-                        "gap_expand_successes": ex_state.gap_expand_successes,
-                        "no_improvement_streak": ex_state.no_improvement_streak,
-                        "signature": {
-                            "sufficient": signature[0],
-                            "relevance": signature[1],
-                            "actionable_gaps": signature[2],
-                        },
-                    },
-                )
-            except Exception:
-                pass
-        if ex_state.no_improvement_streak >= EXPLORATION_UTILITY_NO_IMPROVEMENT_STREAK:
-            return True, "no_improvement_streak"
-        return False, ""
-
     @classmethod
     def _is_generic_gap(cls, normalized_gap: str) -> bool:
         if len(normalized_gap) < 8:
@@ -2092,20 +2040,6 @@ class ExplorationEngineV2:
                     return False
         return decision.status == "partial"
 
-    def _refine_failure_reason(
-        self,
-        decision: ExplorationDecision,
-        ex_state: ExplorationState,
-    ) -> str:
-        if decision.status == "wrong_target":
-            return "low_relevance"
-        if ex_state.no_improvement_streak > 0:
-            return "insufficient_context"
-        reason_low = str(getattr(decision, "reason", "") or "").lower()
-        if "low relevance" in reason_low:
-            return "low_relevance"
-        return "insufficient_context"
-
     def _enforce_direction_routing(
         self,
         expanded: list[ExplorationTarget],
@@ -2238,46 +2172,17 @@ class ExplorationEngineV2:
     @staticmethod
     def _should_stop(
         ex_state: ExplorationState,
-        decision: ExplorationDecision,
-        *,
-        primary_symbol_body_seen: bool = False,
+        _decision: ExplorationDecision,
     ) -> tuple[bool, str]:
+        # Hard limit only; sufficient / relationship completion is handled by EngineDecisionMapper.
         if ex_state.steps_taken >= EXPLORATION_MAX_STEPS:
             return True, "max_steps"
-        if (
-            ex_state.primary_symbol
-            and primary_symbol_body_seen
-            and decision.status == "sufficient"
-        ):
-            return True, "primary_symbol_sufficient"
-        if (
-            ex_state.primary_symbol
-            and ex_state.relationships_found
-            and decision.status == "sufficient"
-        ):
-            return True, "relationships_satisfied"
         return False, ""
 
     @staticmethod
-    def _should_stop_pre(
-        ex_state: ExplorationState,
-        *,
-        primary_symbol_body_seen: bool = False,
-    ) -> tuple[bool, str]:
+    def _should_stop_pre(ex_state: ExplorationState) -> tuple[bool, str]:
         if ex_state.steps_taken >= EXPLORATION_MAX_STEPS:
             return True, "max_steps"
-        if (
-            ex_state.primary_symbol
-            and primary_symbol_body_seen
-            and ex_state.last_decision == "sufficient"
-        ):
-            return True, "primary_symbol_sufficient"
-        if (
-            ex_state.primary_symbol
-            and ex_state.relationships_found
-            and ex_state.last_decision == "sufficient"
-        ):
-            return True, "relationships_satisfied"
         return False, ""
 
     @staticmethod
@@ -2335,6 +2240,8 @@ class ExplorationEngineV2:
         explored_files: int,
         explored_symbols: int,
         exploration_outer: Any = None,
+        state: Any = None,
+        engine_loop_steps: int = 0,
     ) -> FinalExplorationSchema:
         """Planner contract via ExplorationResultAdapter (single mapping path)."""
         final = ExplorationResultAdapter.build(
@@ -2346,6 +2253,8 @@ class ExplorationEngineV2:
             explored_symbols=explored_symbols,
             max_items=EXPLORATION_MAX_ITEMS,
             max_snippet_chars=self.MAX_SNIPPET_CHARS,
+            state=state,
+            engine_loop_steps=engine_loop_steps,
         )
         if ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS and self._result_synthesis_llm is not None:
             final = apply_optional_llm_synthesis(
@@ -2364,7 +2273,7 @@ class ExplorationEngineV2:
         best = 0.0
         for c in candidates or []:
             try:
-                best = max(best, float(getattr(c, "_discovery_max_score", 0.0) or 0.0))
+                best = max(best, float(getattr(c, "discovery_max_score", 0.0) or 0.0))
             except Exception:
                 continue
         return best
@@ -2422,8 +2331,6 @@ class ExplorationEngineV2:
 
         NOTE: This is a retrieval-quality signal, not parser execution failure.
         """
-        if not (intent.symbols or intent.keywords or intent.regex_patterns):
-            return "ambiguous_intent"
         if not candidates:
             if not intent.symbols:
                 return "missing_symbol_signal"

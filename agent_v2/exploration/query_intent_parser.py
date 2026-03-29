@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Callable
 
 from agent_v2.observability.langfuse_helpers import (
@@ -10,6 +11,8 @@ from agent_v2.observability.langfuse_helpers import (
 from agent.prompt_system.registry import get_registry
 from agent_v2.schemas.exploration import FailureReason, QueryIntent
 from agent_v2.utils.json_extractor import JSONExtractor
+
+_LOG = logging.getLogger(__name__)
 
 _EXPLORATION_QUERY_INTENT_KEY = "exploration.query_intent_parser"
 
@@ -41,7 +44,58 @@ def _coerce_for_query_intent(data: dict) -> dict:
     rp = out.get("regex_patterns")
     if rp is not None and not isinstance(rp, list):
         out["regex_patterns"] = []
+    rh = out.get("relationship_hint")
+    if rh is not None:
+        rhl = str(rh).strip().lower()
+        if rhl in ("none", "callers", "callees", "both"):
+            out["relationship_hint"] = rhl
+        else:
+            out.pop("relationship_hint", None)
+    it = out.get("intent_type")
+    if it is not None:
+        iv = str(it).strip().lower()
+        if iv in ("explanation", "debugging", "navigation", "modification"):
+            out["intent_type"] = iv
+        else:
+            out.pop("intent_type", None)
+    sc = out.get("scope")
+    if sc is not None:
+        sv = str(sc).strip().lower()
+        if sv in ("narrow", "component", "system"):
+            out["scope"] = sv
+        else:
+            out.pop("scope", None)
+    fc = out.get("focus")
+    if fc is not None:
+        fv = str(fc).strip().lower().replace("-", "_")
+        if fv in ("internal_logic", "relationships", "usage"):
+            out["focus"] = fv
+        else:
+            out.pop("focus", None)
+    tg = out.get("target")
+    if tg is not None:
+        ts = str(tg).strip()
+        out["target"] = ts if ts else None
     return out
+
+
+def _merge_sticky_task_fields(
+    qi: QueryIntent, previous_payload: dict[str, Any] | None
+) -> QueryIntent:
+    """Preserve user-task fields across refine/bootstrap re-parses when the model omits them."""
+    if not previous_payload:
+        return qi
+    prev = QueryIntent.model_validate(_coerce_for_query_intent(dict(previous_payload)))
+    d = qi.model_dump()
+    if d.get("intent_type") is None and prev.intent_type is not None:
+        d["intent_type"] = prev.intent_type
+    if (not str(d.get("target") or "").strip()) and prev.target and str(prev.target).strip():
+        d["target"] = prev.target
+    if d.get("scope") is None and prev.scope is not None:
+        d["scope"] = prev.scope
+    if d.get("focus") is None and prev.focus is not None:
+        d["focus"] = prev.focus
+    return QueryIntent.model_validate(d)
 
 
 class QueryIntentParser:
@@ -65,6 +119,7 @@ class QueryIntentParser:
         previous_queries: QueryIntent | dict[str, Any] | None = None,
         failure_reason: FailureReason | str | None = None,
         context_feedback: dict[str, Any] | None = None,
+        refine_context: dict[str, Any] | None = None,
         lf_exploration_parent: Any = None,
         lf_intent_span: Any = None,
     ) -> QueryIntent:
@@ -75,6 +130,7 @@ class QueryIntentParser:
         ``lf_exploration_parent`` so the LLM call is recorded as generation
         ``exploration.query_intent`` with full prompt input and structured output.
         """
+        _LOG.debug("[QueryIntentParser.parse]")
         if self._llm_generate is None and self._llm_generate_messages is None:
             raise ValueError("QueryIntentParser requires llm_generate/llm_generate_messages in strict mode.")
 
@@ -93,6 +149,11 @@ class QueryIntentParser:
         context_feedback_json = (
             json.dumps(context_feedback, ensure_ascii=False, sort_keys=True)
             if context_feedback
+            else "none"
+        )
+        refine_context_json = (
+            json.dumps(refine_context, ensure_ascii=False, sort_keys=True)
+            if refine_context
             else "none"
         )
         partial_findings_count = 0
@@ -126,6 +187,7 @@ class QueryIntentParser:
                 "previous_queries": previous_json,
                 "failure_reason": fr,
                 "context_feedback": context_feedback_json,
+                "refine_context": refine_context_json,
             },
         )
         prompt = (
@@ -158,6 +220,7 @@ class QueryIntentParser:
                 raise Exception("Fatal error: Failed to parse intent JSON output.") from exc
             if previous_payload:
                 qi = self._remove_repeated_queries(qi, previous_payload)
+                qi = _merge_sticky_task_fields(qi, previous_payload)
             parsed.append(qi)
             return (
                 {
@@ -180,6 +243,7 @@ class QueryIntentParser:
                 "instruction_preview": instruction[:2000],
                 "instruction_chars": len(instruction),
                 "context_feedback_present": bool(context_feedback),
+                "refine_context_present": bool(refine_context),
                 "partial_findings_count": partial_findings_count,
                 "known_symbols_count": known_symbols_count,
                 "known_files_count": known_files_count,
@@ -207,4 +271,9 @@ class QueryIntentParser:
                 x for x in parsed.regex_patterns if x.strip() and x.strip() not in seen_regex
             ],
             intents=[x for x in parsed.intents if x.strip() and x.strip() not in seen_intents],
+            relationship_hint=parsed.relationship_hint,
+            intent_type=parsed.intent_type,
+            target=parsed.target,
+            scope=parsed.scope,
+            focus=parsed.focus,
         )

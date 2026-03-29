@@ -15,6 +15,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -107,9 +108,20 @@ def summarize_tool_result(tool_result: ToolResult) -> str:
             return "Edit applied successfully"
 
         if name == "run_tests":
+            stdout = data.get("stdout") or ""
+            if isinstance(stdout, str) and stdout.strip():
+                tail = stdout.strip().split("\n")[-1][:400]
+                return f"Tests executed successfully — {tail}"
             return "Tests executed successfully"
 
         if name == "shell":
+            out = data.get("stdout") or data.get("output") or ""
+            if isinstance(out, str) and out.strip():
+                one_line = out.strip().replace("\n", " ")
+                cap = 800
+                if len(one_line) > cap:
+                    one_line = one_line[: cap - 1] + "…"
+                return f"Shell output ({len(out.strip())} chars): {one_line}"
             return "Shell command executed successfully"
 
         return f"{name} executed successfully"
@@ -120,6 +132,11 @@ def summarize_tool_result(tool_result: ToolResult) -> str:
         return f"Patch failed: {msg}"
     if name == "run_tests":
         return f"Tests failed: {msg}"
+    if name == "shell":
+        err_txt = data.get("stderr") or data.get("error") or ""
+        if isinstance(err_txt, str) and err_txt.strip():
+            return f"Shell failed: {msg} — {err_txt.strip()[:400]}"
+        return f"Shell failed: {msg}"
     return f"{name} failed: {msg}"
 
 
@@ -217,6 +234,79 @@ def _build_tool_error(error_raw: Any) -> ToolError | None:
     return ToolError(type="unknown", message=str(error_raw), details={})
 
 
+# Cap for ExecutionOutput.full_output (avoid multi‑MB traces in memory / JSON).
+_FULL_OUTPUT_DEBUG_MAX_CHARS = 200_000
+
+
+def _debug_full_output(tool_result: ToolResult) -> str | None:
+    """Build optional full text for debugging (summary stays short)."""
+    name = tool_result.tool_name
+    data = tool_result.data or {}
+    cap = _FULL_OUTPUT_DEBUG_MAX_CHARS
+
+    def _clip(s: str) -> str:
+        s = s or ""
+        if len(s) <= cap:
+            return s
+        return s[: cap - 1] + "…"
+
+    if name == "shell":
+        out = data.get("stdout") if isinstance(data.get("stdout"), str) else ""
+        err = data.get("stderr") if isinstance(data.get("stderr"), str) else ""
+        if not out and isinstance(data.get("output"), str):
+            out = data.get("output") or ""
+        if not (out or err).strip():
+            return None
+        parts = []
+        if out:
+            parts.append(f"--- stdout ---\n{_clip(out)}")
+        if err.strip():
+            parts.append(f"--- stderr ---\n{_clip(err)}")
+        return "\n".join(parts)
+
+    if name == "run_tests":
+        so = data.get("stdout") if isinstance(data.get("stdout"), str) else ""
+        se = data.get("stderr") if isinstance(data.get("stderr"), str) else ""
+        if not (so or se).strip():
+            return None
+        parts = []
+        if so.strip():
+            parts.append(f"--- stdout ---\n{_clip(so)}")
+        if se.strip():
+            parts.append(f"--- stderr ---\n{_clip(se)}")
+        return "\n".join(parts)
+
+    if name == "open_file":
+        body = data.get("output")
+        if isinstance(body, str) and body.strip():
+            return _clip(body)
+        return None
+
+    if name == "search":
+        raw = data.get("results") if data.get("results") is not None else data.get("candidates")
+        if raw is None:
+            return None
+        try:
+            s = json.dumps(raw, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            s = repr(raw)
+        return _clip(s)
+
+    if name == "edit":
+        so = data.get("stdout") if isinstance(data.get("stdout"), str) else ""
+        se = data.get("stderr") if isinstance(data.get("stderr"), str) else ""
+        if not (so or se).strip():
+            return None
+        parts = []
+        if so.strip():
+            parts.append(f"--- stdout ---\n{_clip(so)}")
+        if se.strip():
+            parts.append(f"--- stderr ---\n{_clip(se)}")
+        return "\n".join(parts)
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Main normalization function (ToolResult → ExecutionResult)
 # ---------------------------------------------------------------------------
@@ -239,6 +329,7 @@ def map_tool_result_to_execution_result(
     """
     success = tool_result.success
     summary = (summarize_tool_result(tool_result) or "").strip() or "(no summary)"
+    full_dbg = _debug_full_output(tool_result)
 
     if success:
         error_block = None
@@ -264,6 +355,7 @@ def map_tool_result_to_execution_result(
         output=ExecutionOutput(
             data=tool_result.data or {},
             summary=summary,
+            full_output=full_dbg,
         ),
         error=error_block,
         metadata=ExecutionMetadata(

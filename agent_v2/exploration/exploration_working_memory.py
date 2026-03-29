@@ -140,7 +140,7 @@ class ExplorationWorkingMemory:
         limit: int,
     ) -> None:
         for c in (candidates or [])[:limit]:
-            raw = float(getattr(c, "_discovery_max_score", 0.0) or 0.0)
+            raw = float(getattr(c, "discovery_max_score", 0.0) or 0.0)
             conf = max(self.min_confidence, min(1.0, raw))
             snip = (c.snippet or "").strip()
             summary = snip[:600] if snip else "discovery candidate"

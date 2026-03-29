@@ -6,11 +6,17 @@ Structured replan only; no silent in-place plan mutation. Validation via agent_v
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from agent_v2.schemas.execution import ExecutionResult, ErrorType
+from agent_v2.schemas.exploration import (
+    effective_exploration_budget,
+    read_query_intent_from_agent_state,
+)
 from agent_v2.schemas.plan import PlanDocument, PlanStep
+from agent_v2.schemas.planner_plan_context import PlannerPlanContext
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.replan import (
     ReplanCompletedStep,
@@ -40,7 +46,7 @@ _DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_repla
 class Replanner:
     """
     Builds ReplanRequest from runtime state, maps to ReplanContext for PlannerInput,
-    invokes planner (PlannerV2 / V2PlannerAdapter with planner_input=), returns ReplanResult.
+    invokes planner (PlannerV2 / V2PlannerAdapter with PlannerPlanContext(replan=...)), returns ReplanResult.
     """
 
     def __init__(self, planner: Any, policy: Optional[ExecutionPolicy] = None):
@@ -133,6 +139,7 @@ class Replanner:
             exploration_context=exploration_context,
             constraints=constraints,
             metadata=meta,
+            query_intent=read_query_intent_from_agent_state(state),
         )
 
     def build_replan_context(self, request: ReplanRequest) -> ReplanContext:
@@ -149,6 +156,7 @@ class Replanner:
             completed_steps=list(request.execution_context.completed_steps),
             exploration_summary=exploration_summary,
             trigger="failure",
+            query_intent=request.query_intent,
         )
 
     def replan(
@@ -157,15 +165,28 @@ class Replanner:
         *,
         langfuse_trace: Any = None,
         obs: Any = None,
+        session: Any = None,
+        validation_task_mode: Optional[str] = None,
     ) -> tuple[ReplanResult, Optional[PlanDocument]]:
+        """
+        ``session`` should be the run's ``SessionMemory`` (``state.context['planner_session_memory']``).
+        PlanExecutor always passes a concrete instance (creates/pins one if missing) so replan does not
+        drop planner continuity. Callers that omit ``session`` get no memory in the planner prompt.
+        """
         replan_context = self.build_replan_context(request)
         try:
             new_plan = self.planner.plan(
                 request.instruction,
+                planner_context=PlannerPlanContext(
+                    replan=replan_context,
+                    session=session,
+                    query_intent=replan_context.query_intent,
+                    exploration_budget=effective_exploration_budget(replan_context.query_intent),
+                ),
                 deep=True,
-                planner_input=replan_context,
                 langfuse_trace=langfuse_trace,
                 obs=obs,
+                validation_task_mode=validation_task_mode,
             )
         except (PlanValidationError, ValueError, TypeError) as e:
             ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -193,7 +214,9 @@ class Replanner:
             ReplanResultValidator.validate_replan_result(failed)
             return failed, None
 
-        PlanValidator.validate_plan(new_plan, policy=self._policy)
+        PlanValidator.validate_plan(
+            new_plan, policy=self._policy, task_mode=validation_task_mode
+        )
         result = self._build_replan_result(request, new_plan)
         ReplanResultValidator.validate_replan_result(result)
         return result, new_plan
@@ -263,10 +286,22 @@ def validate_completed_steps_immutable(old: PlanDocument, new: PlanDocument) -> 
 
 def merge_preserved_completed_steps(old: PlanDocument, new: PlanDocument) -> PlanDocument:
     """
-    When constraints.preserve_completed is True, copy execution + failure from old steps
-    into new plan steps that share the same step_id and were completed in the old plan.
+    When constraints.preserve_completed is True, freeze planner-owned fields for completed
+    steps: copy ``index``, ``type``, ``goal``, ``action``, ``inputs``, ``outputs``,
+    ``dependencies``, plus ``execution`` and ``failure`` from ``old`` into matching
+    ``new.steps`` by ``step_id``. The replan LLM often reuses ids with different actions;
+    completed work must not change.
+
+    Also prepends completed steps from ``old`` that are missing from ``new.steps`` (controller
+    re-plan often emits only the next synthetic tail, e.g. s3/s4, while s1 remains completed).
     """
     old_by_id = {s.step_id: s for s in old.steps}
+    new_ids = {s.step_id for s in new.steps}
+    prefix: list[PlanStep] = []
+    for s in sorted(old.steps, key=lambda x: x.index):
+        if s.execution.status == "completed" and s.step_id not in new_ids:
+            prefix.append(s)
+
     merged: list[PlanStep] = []
     for s in new.steps:
         o = old_by_id.get(s.step_id)
@@ -274,6 +309,13 @@ def merge_preserved_completed_steps(old: PlanDocument, new: PlanDocument) -> Pla
             merged.append(
                 s.model_copy(
                     update={
+                        "index": o.index,
+                        "type": o.type,
+                        "goal": o.goal,
+                        "action": o.action,
+                        "inputs": deepcopy(o.inputs) if o.inputs else {},
+                        "outputs": deepcopy(o.outputs) if o.outputs else {},
+                        "dependencies": list(o.dependencies),
                         "execution": o.execution.model_copy(),
                         "failure": o.failure.model_copy(),
                     }
@@ -281,4 +323,4 @@ def merge_preserved_completed_steps(old: PlanDocument, new: PlanDocument) -> Pla
             )
         else:
             merged.append(s)
-    return new.model_copy(update={"steps": merged})
+    return new.model_copy(update={"steps": prefix + merged})

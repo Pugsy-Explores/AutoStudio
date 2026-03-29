@@ -61,6 +61,7 @@ class ExplorationScoper:
         ``lf_exploration_parent`` is the ``exploration`` span: used as a fallback parent for the
         Langfuse generation when the ``exploration.scope`` span is missing or ``.generation`` fails.
         """
+        _LOG.debug("[ExplorationScoper.scope]")
         input_n = len(candidates)
         if input_n == 0:
             return []

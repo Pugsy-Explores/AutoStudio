@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from agent_v2.config import (
     EXPLORATION_READ_WINDOW,
 )
 from agent_v2.primitives import get_editor
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,7 @@ def read(request: ReadRequest, *, state) -> dict:
     Returns a normalized dict payload for tool output:
       { file_path, start_line, end_line, content, mode }
     """
+    _LOG.debug("[read_router.read]")
     path = str(request.path or "").strip()
     if not path:
         return {"file_path": "", "start_line": 0, "end_line": 0, "content": "", "mode": "empty"}

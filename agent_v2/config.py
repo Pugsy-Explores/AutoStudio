@@ -5,9 +5,12 @@ Env overrides use AGENT_V2_* prefix to avoid colliding with legacy agent config.
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from typing import Any
 
+from agent_v2.runtime.phase1_tool_exposure import ALLOWED_PLAN_STEP_ACTIONS
 from agent_v2.schemas.policies import ExecutionPolicy
 
 
@@ -21,11 +24,20 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 # Plan / exploration (architecture freeze §3.1)
 MAX_PLAN_STEPS: int = _int_env("AGENT_V2_MAX_PLAN_STEPS", 8)
 EXPLORATION_STEPS: int = _int_env("AGENT_V2_EXPLORATION_STEPS", 5)
 EXPLORATION_MAX_STEPS: int = _int_env("AGENT_V2_EXPLORATION_MAX_STEPS", 5)
 EXPLORATION_MAX_BACKTRACKS: int = _int_env("AGENT_V2_EXPLORATION_MAX_BACKTRACKS", 2)
+# Exploration refactor: max REFINE cycles (mapper-driven); separate from legacy backtracks.
+EXPLORATION_MAX_REFINE_CYCLES: int = _int_env("AGENT_V2_EXPLORATION_MAX_REFINE_CYCLES", 2)
 EXPLORATION_MAX_ITEMS: int = _int_env("AGENT_V2_EXPLORATION_MAX_ITEMS", 6)
 # Consecutive steps with no new evidence key (file, symbol, read_source) or duplicate-queue skips → stalled
 EXPLORATION_STAGNATION_STEPS: int = _int_env("AGENT_V2_EXPLORATION_STAGNATION_STEPS", 3)
@@ -34,6 +46,13 @@ ENABLE_EXPLORATION_ENGINE_V2: bool = _int_env("AGENT_V2_ENABLE_EXPLORATION_ENGIN
 ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS: bool = (
     _int_env("AGENT_V2_ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS", 0) == 1
 )
+# V1 user-facing answer from exploration (post-exploration, pre-planner). Default off; see Docs/agent_v2_answer_synthesis_audit_and_spec.md
+ENABLE_ANSWER_SYNTHESIS: bool = _int_env("AGENT_V2_ENABLE_ANSWER_SYNTHESIS", 0) == 1
+# Evidence rows passed to answer synthesizer prompt (7B: ideal 3–6; cap at 8).
+ANSWER_SYNTHESIS_MAX_EVIDENCE_ITEMS: int = max(
+    1, min(8, _int_env("AGENT_V2_ANSWER_SYNTHESIS_MAX_EVIDENCE_ITEMS", 8))
+)
+ANSWER_SYNTHESIS_IDEAL_EVIDENCE_ITEMS: int = 6
 
 # Phase 12.6.F — exploration scoper (K = prompt budget only; selector applies final batch limit)
 EXPLORATION_SCOPER_K: int = _int_env("AGENT_V2_EXPLORATION_SCOPER_K", 20)
@@ -45,6 +64,14 @@ DISCOVERY_SYMBOL_CAP: int = _int_env("AGENT_V2_DISCOVERY_SYMBOL_CAP", 8)
 DISCOVERY_REGEX_CAP: int = _int_env("AGENT_V2_DISCOVERY_REGEX_CAP", 6)
 DISCOVERY_TEXT_CAP: int = _int_env("AGENT_V2_DISCOVERY_TEXT_CAP", 6)
 DISCOVERY_MERGE_TOP_K: int = _int_env("AGENT_V2_DISCOVERY_MERGE_TOP_K", 50)
+# Discovery parallelism: nested pools previously allowed up to 3×4 parallel SEARCH runs (multi‑GB agent RSS).
+# Defaults favor memory; raise for throughput (e.g. batch=4, pool=3).
+DISCOVERY_SEARCH_BATCH_MAX_WORKERS: int = max(
+    1, min(16, _int_env("AGENT_V2_DISCOVERY_SEARCH_BATCH_MAX_WORKERS", 1))
+)
+DISCOVERY_QUERY_POOL_MAX_WORKERS: int = max(
+    1, min(8, _int_env("AGENT_V2_DISCOVERY_QUERY_POOL_MAX_WORKERS", 1))
+)
 # Discovery: file-level merge → optional cross-encoder rerank → post-rerank cap (before scoper).
 EXPLORATION_DISCOVERY_RERANK_ENABLED: bool = (
     _int_env("AGENT_V2_EXPLORATION_DISCOVERY_RERANK_ENABLED", 1) == 1
@@ -72,12 +99,76 @@ EXPLORATION_DISCOVERY_SNIPPET_MERGE_MAX_CHARS: int = _int_env(
 EXPLORATION_RETRY_LOW_RELEVANCE_THRESHOLD: int = _int_env(
     "AGENT_V2_EXPLORATION_RETRY_LOW_RELEVANCE_THRESHOLD_PCT", 20
 )
-EXPLORATION_MAX_QUERY_RETRIES: int = _int_env("AGENT_V2_EXPLORATION_MAX_QUERY_RETRIES", 1)
+# Initial discovery-only query-intent re-parse (extra LLM + duplicate SEARCH). Default 0: rely on first intent + loop refine.
+EXPLORATION_MAX_QUERY_RETRIES: int = _int_env("AGENT_V2_EXPLORATION_MAX_QUERY_RETRIES", 0)
+
+# Multi-repo retrieval evaluation (indexed clones + path roots). JSON list overrides defaults.
+EXPLORATION_TEST_REPOS_JSON: str | None = (
+    os.environ.get("AGENT_V2_EXPLORATION_TEST_REPOS_JSON", "").strip() or None
+)
+# When 1, resolved git/path repo directories are appended to multi-root retrieval (with RETRIEVAL_EXTRA_PROJECT_ROOTS).
+APPEND_EXPLORATION_TEST_REPOS_TO_RETRIEVAL: bool = (
+    _int_env("AGENT_V2_APPEND_EXPLORATION_TEST_REPOS_TO_RETRIEVAL", 0) == 1
+)
+
+EXPLORATION_TEST_REPOS: list[dict[str, str]] = [
+    {"name": "local_repo", "path": "agent_v2"},
+    {
+        "name": "mini_projects",
+        "git": "https://github.com/Python-World/python-mini-projects.git",
+    },
+    {
+        "name": "concurrency_repo",
+        "git": "https://github.com/kevinknights29/Concurrent-and-Parallel-Programming-in-Python.git",
+    },
+]
+
+
+def exploration_test_repos_resolved() -> list[dict[str, Any]]:
+    """Exploration harness repo specs: env JSON or embedded default (no hardcoded clone paths)."""
+    # Read env at call time — module-level EXPLORATION_TEST_REPOS_JSON is fixed at first import;
+    # harnesses set AGENT_V2_EXPLORATION_TEST_REPOS_JSON after startup.
+    raw = os.environ.get("AGENT_V2_EXPLORATION_TEST_REPOS_JSON", "").strip()
+    if raw:
+        return json.loads(raw)
+    if EXPLORATION_TEST_REPOS_JSON:
+        return json.loads(EXPLORATION_TEST_REPOS_JSON)
+    return list(EXPLORATION_TEST_REPOS)
 # Selector/scoper/read/expand limits
 EXPLORATION_SELECTOR_TOP_K: int = _int_env("AGENT_V2_EXPLORATION_SELECTOR_TOP_K", 10)
 EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K: int = _int_env(
     "AGENT_V2_EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K", 16
 )
+# Symbol-aware selection: deterministic outlines + batched graph context for analyzer (default on).
+ENABLE_SYMBOL_AWARE_EXPLORATION: bool = (
+    _int_env("AGENT_V2_ENABLE_SYMBOL_AWARE_EXPLORATION", 1) == 1
+)
+# Max outline entries per file shown to the batch selector after deterministic rank (plan: 10–15).
+EXPLORATION_OUTLINE_TOP_K_FOR_SELECTOR: int = max(
+    1, min(30, _int_env("AGENT_V2_EXPLORATION_OUTLINE_TOP_K_FOR_SELECTOR", 12))
+)
+# Callers/callees per symbol side in analyzer SYMBOL RELATIONSHIPS block.
+EXPLORATION_SYMBOL_GRAPH_CONTEXT_K: int = max(
+    1, _int_env("AGENT_V2_EXPLORATION_SYMBOL_GRAPH_CONTEXT_K", 5)
+)
+EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_CHARS: int = max(
+    200, _int_env("AGENT_V2_EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_CHARS", 4000)
+)
+# Cap how many validated selector symbol names are passed to the graph batch per target.
+EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_NAMES: int = max(
+    1, min(20, _int_env("AGENT_V2_EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_NAMES", 3))
+)
+# Terminal INFO lines for symbol-aware phases (outlines, batch select, sqlite graph, inspect/analyze).
+EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS: bool = (
+    _int_env("AGENT_V2_EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS", 1) == 1
+)
+# Symbol graph SQLite paths (same env keys as config.repo_graph_config; centralized for agent_v2).
+try:
+    from config.repo_graph_config import INDEX_SQLITE as EXPLORATION_REPO_GRAPH_INDEX_SQLITE
+    from config.repo_graph_config import SYMBOL_GRAPH_DIR as EXPLORATION_REPO_SYMBOL_GRAPH_DIR
+except ImportError:
+    EXPLORATION_REPO_SYMBOL_GRAPH_DIR = ".symbol_graph"
+    EXPLORATION_REPO_GRAPH_INDEX_SQLITE = "index.sqlite"
 EXPLORATION_SNIPPET_MAX_CHARS: int = _int_env("AGENT_V2_EXPLORATION_SNIPPET_MAX_CHARS", 8000)
 EXPLORATION_READ_WINDOW: int = _int_env("AGENT_V2_EXPLORATION_READ_WINDOW", 80)
 EXPLORATION_READ_SYMBOL_PADDING_LINES: int = _int_env(
@@ -116,15 +207,27 @@ MAX_REPLANS: int = _int_env("AGENT_V2_MAX_REPLANS", 2)
 PLANNER_CONTROLLER_LOOP: bool = _int_env("AGENT_V2_PLANNER_CONTROLLER_LOOP", 1) == 1
 MAX_SUB_EXPLORATIONS_PER_TASK: int = _int_env("AGENT_V2_MAX_SUB_EXPLORATIONS_PER_TASK", 2)
 MAX_PLANNER_CONTROLLER_CALLS: int = _int_env("AGENT_V2_MAX_PLANNER_CONTROLLER_CALLS", 16)
+# Phase B: require explicit planner `tool` in JSON (no inference from step). Env: PLANNER_STRICT_TOOL=1 or AGENT_V2_PLANNER_STRICT_TOOL=1
+PLANNER_STRICT_TOOL: bool = _bool_env("PLANNER_STRICT_TOOL") or _bool_env("AGENT_V2_PLANNER_STRICT_TOOL")
 
 # Executor guards (Phase 10 Step 8)
 MAX_EXECUTOR_DISPATCHES: int = _int_env("AGENT_V2_MAX_EXECUTOR_DISPATCHES", 20)
 MAX_RUNTIME_SECONDS: int = _int_env("AGENT_V2_MAX_RUNTIME_SECONDS", 600)
+# Cap tool output embedded in planner prompts (e.g. open_file) so small-context endpoints do not 400.
+PLANNER_PROMPT_MAX_LAST_RESULT_CHARS: int = _int_env(
+    "AGENT_V2_PLANNER_PROMPT_MAX_LAST_RESULT_CHARS", 8000
+)
 
 
 @dataclass(frozen=True)
 class PlannerConfig:
     allowed_actions_read_only: frozenset[str]
+    """Steps allowed when task_mode=read_only (validator); excludes run_tests/shell."""
+
+    allowed_actions_plan_safe: frozenset[str]
+    """Steps allowed when task_mode=plan_safe (iterative plan execution); excludes edit."""
+
+    strict_tool: bool
 
 
 @dataclass(frozen=True)
@@ -163,6 +266,10 @@ def _build_config() -> AgentV2Config:
         planner=PlannerConfig(
             # No behavior change: keep current read-only policy defaults.
             allowed_actions_read_only=frozenset({"search", "open_file", "finish"}),
+            allowed_actions_plan_safe=frozenset(
+                {"search", "open_file", "run_tests", "shell", "finish"}
+            ),
+            strict_tool=PLANNER_STRICT_TOOL,
         ),
         exploration=ExplorationConfig(
             max_steps=EXPLORATION_MAX_STEPS,
@@ -188,6 +295,15 @@ def get_project_root() -> str:
     return os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
 
 
+def exploration_symbol_graph_lookup_enabled() -> bool:
+    """Whether symbol-relationships block may query the repo graph (mirrors ENABLE_GRAPH_LOOKUP)."""
+    try:
+        from config.retrieval_config import ENABLE_GRAPH_LOOKUP
+    except ImportError:
+        return True
+    return bool(ENABLE_GRAPH_LOOKUP)
+
+
 def validate_config(config: AgentV2Config) -> None:
     if config.planner_loop.max_sub_explorations_per_task < 0:
         raise ValueError("config.planner_loop.max_sub_explorations_per_task must be >= 0")
@@ -200,6 +316,15 @@ def validate_config(config: AgentV2Config) -> None:
     write_actions = {"edit", "run_tests", "shell"}
     if set(config.planner.allowed_actions_read_only) & write_actions:
         raise ValueError("config.planner.allowed_actions_read_only must exclude write actions")
+    if not config.planner.allowed_actions_plan_safe:
+        raise ValueError("config.planner.allowed_actions_plan_safe must not be empty")
+    if "edit" in config.planner.allowed_actions_plan_safe:
+        raise ValueError("config.planner.allowed_actions_plan_safe must exclude 'edit'")
+    bad_ps = set(config.planner.allowed_actions_plan_safe) - ALLOWED_PLAN_STEP_ACTIONS
+    if bad_ps:
+        raise ValueError(
+            f"config.planner.allowed_actions_plan_safe contains unknown actions: {bad_ps}"
+        )
     if not isinstance(config.pytest.ignore_dirs, tuple):
         raise ValueError("config.pytest.ignore_dirs must be a tuple")
     if DISCOVERY_SYMBOL_CAP < 1 or DISCOVERY_REGEX_CAP < 1 or DISCOVERY_TEXT_CAP < 1:
@@ -216,6 +341,10 @@ def validate_config(config: AgentV2Config) -> None:
         raise ValueError("EXPLORATION_SELECTOR_TOP_K must be >= 1")
     if EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K < 1:
         raise ValueError("EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K must be >= 1")
+    if EXPLORATION_OUTLINE_TOP_K_FOR_SELECTOR < 1:
+        raise ValueError("EXPLORATION_OUTLINE_TOP_K_FOR_SELECTOR must be >= 1")
+    if EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_NAMES < 1:
+        raise ValueError("EXPLORATION_SYMBOL_RELATIONSHIPS_MAX_NAMES must be >= 1")
     if EXPLORATION_SNIPPET_MAX_CHARS < 1:
         raise ValueError("EXPLORATION_SNIPPET_MAX_CHARS must be >= 1")
     if EXPLORATION_READ_WINDOW < 1:
@@ -238,6 +367,8 @@ def validate_config(config: AgentV2Config) -> None:
         raise ValueError("EXPLORATION_CONTEXT_MAX_TOTAL_LINES must be >= 1")
     if EXPLORATION_CONTEXT_TOP_K_RANGES < 1:
         raise ValueError("EXPLORATION_CONTEXT_TOP_K_RANGES must be >= 1")
+    if ANSWER_SYNTHESIS_MAX_EVIDENCE_ITEMS < 1 or ANSWER_SYNTHESIS_MAX_EVIDENCE_ITEMS > 8:
+        raise ValueError("ANSWER_SYNTHESIS_MAX_EVIDENCE_ITEMS must be in 1..8")
 
 
 def get_execution_policy() -> ExecutionPolicy:

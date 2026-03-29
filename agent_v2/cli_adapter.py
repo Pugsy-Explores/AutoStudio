@@ -3,7 +3,7 @@
 import json
 
 
-VALID_MODES = {"act", "plan", "deep_plan", "plan_execute"}
+VALID_MODES = {"act", "plan", "plan_legacy", "deep_plan", "plan_execute"}
 
 
 def parse_mode(argv: list[str]) -> tuple[str, list[str]]:

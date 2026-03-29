@@ -22,6 +22,14 @@ from agent_v2.observability.langfuse_helpers import (
 from agent_v2.schemas.plan import PlanStep
 
 
+def _model_task_for_tool_args(state: Any) -> str:
+    """Plan-safe execution (``state.context['plan_safe_execute']``) vs act / plan_execute."""
+    ctx = getattr(state, "context", None)
+    if isinstance(ctx, dict) and ctx.get("plan_safe_execute"):
+        return "PLANNER_TOOL_ARGS_PLAN"
+    return "PLANNER_TOOL_ARGS_ACT"
+
+
 def _strip_json_fence(text: str) -> str:
     text = (text or "").strip()
     if "```" in text:
@@ -37,9 +45,12 @@ class PlanArgumentGenerator:
     """
 
     def __init__(self, generate_fn=None):
-        self._generate_fn: Callable[[str], str] = generate_fn or (
-            lambda prompt: call_reasoning_model(prompt, task_name="PLAN_ARG_GEN")
-        )
+        self._generate_fn: Callable[[str], str] | None = generate_fn
+
+    def _call_llm(self, prompt: str, state: Any) -> str:
+        if self._generate_fn is not None:
+            return self._generate_fn(prompt)
+        return call_reasoning_model(prompt, task_name=_model_task_for_tool_args(state))
 
     def _generate_with_langfuse(self, prompt: str, step: PlanStep, state: Any) -> str:
         md = getattr(state, "metadata", None) or {}
@@ -63,7 +74,7 @@ class PlanArgumentGenerator:
         )
         text = ""
         try:
-            text = self._generate_fn(prompt)
+            text = self._call_llm(prompt, state)
             return text
         finally:
             if gen is not None:

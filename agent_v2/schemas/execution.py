@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ErrorType(str, Enum):
@@ -32,6 +32,8 @@ class ExecutionStep(BaseModel):
 class ExecutionOutput(BaseModel):
     data: dict = {}
     summary: str
+    # Full tool stream / body for debugging (shell stdout, test stdout+stderr, etc.). Kept out of summary.
+    full_output: Optional[str] = Field(default=None, description="Unabridged tool text output when available")
 
 
 class ExecutionError(BaseModel):
@@ -50,7 +52,8 @@ class ExecutionResult(BaseModel):
     """
     Bridge between tools and the plan system.
     error MUST be null when success=True.
-    output.summary MUST always be present.
+    output.summary MUST always be present (short, LLM-facing).
+    output.full_output MAY hold long tool streams (shell/tests/file body/search JSON) for debugging.
     """
     step_id: str
     success: bool

@@ -28,6 +28,11 @@ from .plan import (
     PlanStepLastResult,
 )
 from .plan_state import PlanState, plan_state_from_plan_document
+from .planner_decision import PlannerDecision, PlannerDecisionType
+from .planner_plan_context import (
+    ExplorationInsufficientContext,
+    PlannerPlanContext,
+)
 from .exploration import (
     ExplorationCandidate,
     ExplorationContent,
@@ -110,6 +115,10 @@ __all__ = [
     "PlanStepLastResult",
     "PlanState",
     "plan_state_from_plan_document",
+    "PlannerDecision",
+    "PlannerDecisionType",
+    "ExplorationInsufficientContext",
+    "PlannerPlanContext",
     # exploration
     "ExplorationCandidate",
     "ExplorationContent",

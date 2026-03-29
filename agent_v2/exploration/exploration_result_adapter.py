@@ -6,6 +6,7 @@ See: Docs/architecture_freeze/EXPLORATION_RESULT_ADAPTER_HYBRID.md
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +22,7 @@ from agent_v2.schemas.exploration import (
     ExplorationResultMetadata,
     ExplorationSource,
     ExplorationSummary,
+    read_query_intent_from_agent_state,
 )
 from agent_v2.schemas.final_exploration import (
     ExplorationAdapterTrace,
@@ -28,6 +30,8 @@ from agent_v2.schemas.final_exploration import (
     ExplorationRelationshipEdge,
     FinalExplorationSchema,
 )
+
+_LOG = logging.getLogger(__name__)
 
 ADAPTER_VERSION = "v1"
 
@@ -188,7 +192,10 @@ class ExplorationResultAdapter:
         explored_symbols: int,
         max_items: int = EXPLORATION_MAX_ITEMS,
         max_snippet_chars: int = 600,
+        state: Any = None,
+        engine_loop_steps: int = 0,
     ) -> FinalExplorationSchema:
+        _LOG.debug("[ExplorationResultAdapter.build]")
         snap = memory.get_summary()
         evs = snap.get("evidence") or []
         rel_dicts = snap.get("relationships") or []
@@ -211,6 +218,7 @@ class ExplorationResultAdapter:
             termination_reason=termination_reason,
             explored_files=explored_files,
             explored_symbols=explored_symbols,
+            engine_loop_steps=max(0, int(engine_loop_steps)),
             source_summary=source_summary_from_items(items),
         )
         band = project_discrete_confidence(
@@ -220,6 +228,7 @@ class ExplorationResultAdapter:
         )
         trace = ExplorationAdapterTrace(llm_used=False, synthesis_success=False, adapter_version=ADAPTER_VERSION)
         key_insights = list(summary.key_findings)[:4]
+        qi_mirror = read_query_intent_from_agent_state(state) if state is not None else None
 
         return FinalExplorationSchema(
             exploration_id=exploration_id,
@@ -233,6 +242,7 @@ class ExplorationResultAdapter:
             objective_coverage=None,
             confidence=band,
             trace=trace,
+            query_intent=qi_mirror,
         )
 
 

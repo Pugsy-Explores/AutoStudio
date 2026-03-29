@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import logging
+
 from agent_v2.schemas.exploration import InspectionSignals, LineRangeSignal, ReadPacket
+
+_LOG = logging.getLogger(__name__)
 
 
 class Inspector:
     """Extraction-only inspector that proposes useful line ranges and signals."""
 
     def inspect(self, packets: list[ReadPacket], *, max_ranges: int = 6) -> InspectionSignals:
+        _LOG.debug("[Inspector.inspect]")
         if not packets:
             return InspectionSignals()
         ranges: list[LineRangeSignal] = []

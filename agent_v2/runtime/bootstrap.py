@@ -24,7 +24,8 @@ from agent_v2.planner.planner_v2 import PlannerV2
 from agent_v2.runtime.plan_argument_generator import PlanArgumentGenerator
 from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.policies import ExecutionPolicy
-from agent_v2.schemas.replan import PlannerInput
+from agent_v2.schemas.planner_plan_context import PlannerPlanContext
+from agent_v2.schemas.replan import ReplanContext
 
 from agent_v2.runtime.replanner import Replanner
 from agent_v2.runtime.runtime import AgentRuntime
@@ -50,8 +51,11 @@ _DEFAULT_V2_POLICY = get_execution_policy()
 validate_config(get_config())
 
 
-def _planner_v2_generate(prompt: str) -> str:
-    return call_reasoning_model(prompt, task_name="PLANNER_V2")
+def _planner_v2_generate(prompt: str, system_prompt: str | None = None) -> str:
+    from agent_v2.planner.planner_model_call_context import get_active_planner_model_task
+
+    task = get_active_planner_model_task() or "PLANNER_DECISION_ACT"
+    return call_reasoning_model(prompt, system_prompt=system_prompt, task_name=task)
 
 
 class V2PlannerAdapter:
@@ -69,22 +73,30 @@ class V2PlannerAdapter:
         deep: bool = False,
         exploration_runner=None,
         exploration: FinalExplorationSchema | None = None,
-        planner_input: PlannerInput | None = None,
+        planner_input: ReplanContext | PlannerPlanContext | FinalExplorationSchema | None = None,
+        planner_context: PlannerPlanContext | ReplanContext | FinalExplorationSchema | None = None,
         langfuse_trace: Any = None,
         obs: Any = None,
         **kwargs,
     ):
         plan_state = kwargs.get("plan_state")
+        prior_plan_document = kwargs.get("prior_plan_document")
         require_controller_json = bool(kwargs.get("require_controller_json", False))
-        if planner_input is not None:
+        validation_task_mode = kwargs.get("validation_task_mode")
+        ctx = planner_context
+        if ctx is None:
+            ctx = planner_input
+        if ctx is not None:
             return self._inner.plan(
                 instruction,
-                planner_input,
+                ctx,
                 deep=deep,
                 langfuse_trace=langfuse_trace,
                 obs=obs,
                 plan_state=plan_state,
+                prior_plan_document=prior_plan_document,
                 require_controller_json=require_controller_json,
+                validation_task_mode=validation_task_mode,
             )
         if exploration is not None:
             ex = exploration
@@ -92,8 +104,8 @@ class V2PlannerAdapter:
             ex = exploration_runner.run(instruction)
         else:
             raise ValueError(
-                "Planner v2 requires exploration_runner, a precomputed ExplorationResult, "
-                "or planner_input (e.g. ReplanContext)."
+                "Planner v2 requires exploration_runner, a precomputed exploration payload, "
+                "or planner_context / planner_input (e.g. ReplanContext, PlannerPlanContext)."
             )
         return self._inner.plan(
             instruction,
@@ -102,7 +114,9 @@ class V2PlannerAdapter:
             langfuse_trace=langfuse_trace,
             obs=obs,
             plan_state=plan_state,
+            prior_plan_document=prior_plan_document,
             require_controller_json=require_controller_json,
+            validation_task_mode=validation_task_mode,
         )
 
 

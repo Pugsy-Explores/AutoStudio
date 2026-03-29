@@ -124,7 +124,11 @@ class AgentRuntime:
         state = AgentState(instruction=instruction)
         state.metadata["runtime"] = "agent_v2"
         state.metadata["mode"] = mode
-        state.context.setdefault("react_mode", mode in ("act", "plan_execute"))
+        state.context["react_mode"] = mode in ("act", "plan_execute")
+        if mode in ("plan", "deep_plan"):
+            state.context["plan_safe_execute"] = True
+        else:
+            state.context.pop("plan_safe_execute", None)
         lf_trace = create_agent_trace(instruction=instruction, mode=mode)
         state.metadata["langfuse_trace"] = lf_trace
         state.metadata["obs"] = ObservabilityContext(langfuse_trace=lf_trace, owns_root=False)
@@ -144,7 +148,9 @@ class AgentRuntime:
             return out
         finally:
             if run_status == "unknown":
-                run_status = "plan_ready" if mode in ("plan", "deep_plan") else "unknown"
+                # Legacy plan-only modes used plan_ready when no executor trace; iterative plan/deep_plan
+                # return ACT-style status from normalize_run_result like act.
+                run_status = "plan_ready" if mode == "plan_legacy" else "unknown"
             lf_fin = state.metadata.get("langfuse_trace")
             if lf_fin is None and state.metadata.get("obs") is not None:
                 lf_fin = getattr(state.metadata["obs"], "langfuse_trace", None)

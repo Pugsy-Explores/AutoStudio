@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from agent_v2.schemas.exploration import ContextBlock, InspectionSignals, ReadPacket
+
+_LOG = logging.getLogger(__name__)
 
 
 class Fetcher:
@@ -14,6 +18,7 @@ class Fetcher:
         top_k_ranges: int = 6,
         max_total_lines: int = 300,
     ) -> list[ContextBlock]:
+        _LOG.debug("[Fetcher.fetch]")
         if not packets:
             return []
         base = packets[0]

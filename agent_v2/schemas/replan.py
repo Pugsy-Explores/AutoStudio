@@ -17,6 +17,7 @@ except ImportError:
     from typing_extensions import TypeAlias
 
 from .execution import ErrorType
+from .exploration import QueryIntent
 from .final_exploration import FinalExplorationSchema
 
 
@@ -55,6 +56,7 @@ class ReplanContext(BaseModel):
     completed_steps: list[ReplanCompletedStep]
     exploration_summary: Optional[ReplanExplorationSummary] = None
     trigger: Literal["failure", "insufficiency"] = "failure"
+    query_intent: Optional[QueryIntent] = None
 
 
 PlannerInput: TypeAlias = Union[FinalExplorationSchema, ReplanContext]
@@ -106,6 +108,7 @@ class ReplanRequest(BaseModel):
     exploration_context: ReplanExplorationContext
     constraints: ReplanConstraints
     metadata: ReplanMetadata
+    query_intent: Optional[QueryIntent] = None
 
 
 class ReplanNewPlan(BaseModel):

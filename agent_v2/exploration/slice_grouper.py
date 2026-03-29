@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 
 from agent_v2.schemas.exploration import ReadPacket
+
+_LOG = logging.getLogger(__name__)
 
 
 class SliceGrouper:
     """Group and prioritize read packets before inspection."""
 
     def group(self, packets: list[ReadPacket]) -> list[list[ReadPacket]]:
+        _LOG.debug("[SliceGrouper.group]")
         if not packets:
             return []
         buckets: dict[tuple[str, str, str], list[ReadPacket]] = defaultdict(list)
