@@ -25,6 +25,19 @@ dependencies = [
 test = [
     "pytest>=7.0",
 ]
+# Vector index (Chroma 1.x + sentence-transformers); pin major to avoid 0.4/1.x store mismatch.
+retrieval_vector = [
+    "chromadb>=1.5.0,<2",
+    "sentence-transformers>=2.2.0",
+]
+# MiniLM ONNX install (scripts/prepare_reranker_models.py); default --source hub needs only hub + ORT
+reranker_onnx_prepare = [
+    "huggingface_hub>=0.20",
+    "onnxruntime>=1.16",
+    "onnx>=1.14",
+    "torch>=2.0",
+    "transformers>=4.36",
+]
 
 [project.scripts]
 autostudio = "agent.cli.entrypoint:main"

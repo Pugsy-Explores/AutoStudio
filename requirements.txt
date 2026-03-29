@@ -9,8 +9,10 @@ numpy>=1.24
 tree-sitter>=0.20.0
 tree-sitter-python>=0.20.0
 
-# Optional: embedding-based search and task index
-# chromadb>=0.4.0
+# Optional: embedding-based search (install when using vector retrieval / indexer embeddings)
+# Chroma 1.x only — do not open a 0.4-era store; remove .symbol_graph/embeddings and re-index if upgrading.
+# pip install -e ".[retrieval_vector]"  OR:
+# chromadb>=1.5.0,<2
 # sentence-transformers>=2.2.0
 
 # BM25 lexical retrieval (Phase 18)
