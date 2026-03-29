@@ -30,8 +30,16 @@ instructions: |
 
   Output Format (STRICT JSON):
   {{
-    "selected_indices": [number]
+    "selected_indices": [number],
+    "selected_symbols": {{
+      "0": ["SymbolName"],
+      "1": ["ClassA", "method_b"]
+    }}
   }}
+  Rules for selected_symbols:
+  - Keys are candidate indices as strings ("0" .. "n-1") matching the batch list order.
+  - For each selected index, include 1–3 symbol names from that row's outline_for_prompt only.
+  - Omit selected_symbols if no outline_for_prompt is present for a row.
 
   USER PROMPT:
   Instruction:

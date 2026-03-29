@@ -26,8 +26,10 @@ instructions: |
   OUTPUT (STRICT JSON):
   {{
   "selected": [{{"file_path": "string", "symbol": "string"}}],
+  "selected_symbols": {{"0": ["OutlineSymbol"]}},
   "no_relevant_candidate": boolean
   }}
+  When outline_for_prompt is present on a candidate, you may add selected_symbols keyed by index string with 1–3 names from that outline.
   If no candidate is necessary, use an empty selected array and set no_relevant_candidate to true.
 
   VERIFICATION:

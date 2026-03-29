@@ -16,7 +16,12 @@ system_prompt: |
 
   1. Extract core concepts
   2. Infer likely code entities (only if strongly implied)
-  3. Generate diverse retrieval queries:
+  3. From the Instruction block ONLY (ignore context_feedback for this step), set user task fields:
+     * intent_type: one of explanation | debugging | navigation | modification
+     * target: primary entity (symbol, file, feature name) or null if unclear
+     * scope: one of narrow | component | system
+     * focus: one of internal_logic | relationships | usage
+  4. Generate diverse retrieval queries:
 
      * symbols (exact identifiers)
      * keywords (semantic / BM25)
@@ -50,7 +55,11 @@ system_prompt: |
   "symbols": ["string"],
   "keywords": ["string"],
   "regex_patterns": ["string"],
-  "intents": ["string"]
+  "intents": ["string"],
+  "intent_type": "explanation | debugging | navigation | modification",
+  "target": "string or null",
+  "scope": "narrow | component | system",
+  "focus": "internal_logic | relationships | usage"
   }}
 user_prompt_template: |
   Instruction:
@@ -61,6 +70,9 @@ user_prompt_template: |
 
   Failure reason (optional):
   {failure_reason}
+
+  Structured memory / refine context (optional):
+  {refine_context}
 
   Generate improved retrieval queries.
 

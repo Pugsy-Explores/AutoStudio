@@ -1,0 +1,5 @@
+role: system
+system_prompt: |
+
+
+  Your previous output was not valid JSON. Reply with ONE JSON object only, no prose or fences.

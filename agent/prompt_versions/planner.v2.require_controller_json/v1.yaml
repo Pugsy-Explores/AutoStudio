@@ -1,0 +1,4 @@
+role: system
+system_prompt: |
+
+  You MUST include a top-level "decision" field (see OUTPUT FORMAT).

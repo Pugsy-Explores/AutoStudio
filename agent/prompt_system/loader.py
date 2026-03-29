@@ -1,6 +1,7 @@
 """Central loader: loads YAML from prompt_versions or legacy prompts/, applies template variables."""
 
 import re
+from collections import defaultdict
 from pathlib import Path
 
 import yaml
@@ -10,6 +11,37 @@ from agent.prompt_system.prompt_template import PromptTemplate
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 # agent/prompt_versions/{name}/{version}.yaml (parent.parent = agent/)
 _PROMPT_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "prompt_versions"
+
+# Model-specific prompts use v1.yaml, v2.yaml, ... — always load the highest N.
+_V_NUM_PROMPT_RE = re.compile(r"^v(\d+)\.yaml$", re.IGNORECASE)
+
+
+def discover_highest_v_prompt_yaml(model_dir: Path) -> tuple[str, Path]:
+    """
+    Pick the highest ``vN.yaml`` under ``model_dir``.
+
+    Returns ``("vN", path)`` for the largest N. Raises ``FileNotFoundError`` if the
+    directory is missing or contains no matching files.
+    """
+    if not model_dir.is_dir():
+        raise FileNotFoundError(f"Model prompt directory does not exist: {model_dir}")
+    best_n: int | None = None
+    best_path: Path | None = None
+    for p in model_dir.iterdir():
+        if not p.is_file():
+            continue
+        m = _V_NUM_PROMPT_RE.match(p.name)
+        if not m:
+            continue
+        n = int(m.group(1))
+        if best_n is None or n > best_n:
+            best_n = n
+            best_path = p
+    if best_n is None or best_path is None:
+        raise FileNotFoundError(
+            f"No v<number>.yaml prompts in {model_dir} (expected files like v1.yaml, v2.yaml)"
+        )
+    return (f"v{best_n}", best_path)
 
 
 def normalize_model_name_for_path(model_name: str | None) -> str | None:
@@ -37,11 +69,42 @@ def _load_yaml(path: Path) -> dict:
     return data
 
 
+def _is_flat_versioned_registry_name(name: str) -> bool:
+    """True for packaged stem names like ``planner.decision.v1`` (directory + model path)."""
+    if not name or "/" in name or "\\" in name:
+        return False
+    return bool(re.search(r"\.v\d+$", str(name)))
+
+
+def load_from_flat_packaged(
+    name: str,
+    model_name: str | None = None,
+) -> PromptTemplate | None:
+    """
+    Load model-specific packaged prompts (same layout as exploration).
+
+    Resolves **highest** ``agent/prompt_versions/{name}/models/{normalized_model}/vN.yaml``.
+
+    Example: if both ``v1.yaml`` and ``v2.yaml`` exist, ``v2.yaml`` is loaded.
+    """
+    if not _is_flat_versioned_registry_name(name):
+        return None
+    norm = normalize_model_name_for_path(model_name)
+    if not norm:
+        return None
+    model_dir = _PROMPT_VERSIONS_DIR / name / "models" / norm
+    if not model_dir.is_dir():
+        return None
+    ver, model_path = discover_highest_v_prompt_yaml(model_dir)
+    raw = _load_yaml(model_path)
+    return _raw_to_template(name, ver, raw)
+
+
 def _raw_to_template(name: str, version: str, raw: dict) -> PromptTemplate:
     """Convert raw YAML dict to PromptTemplate."""
     # Preferred format: separate system/user; fallback to legacy single-field instructions.
     system_prompt = raw.get("system_prompt") or ""
-    user_prompt_template = raw.get("user_prompt_template") or ""
+    user_prompt_template = raw.get("user_prompt_template") or raw.get("user_prompt") or ""
     instructions = raw.get("instructions") or raw.get("prompt") or ""
     if not instructions and system_prompt:
         instructions = system_prompt
@@ -90,16 +153,17 @@ def load_from_versioned(
     """
     Load from agent/prompt_versions/{name}/{version}.yaml.
 
-    When model_name is set, tries first:
-    prompt_versions/{name}/models/{normalized_model}/{version}.yaml
-    then falls back to the path above.
+    When ``models/{normalized_model}/`` exists, loads the **highest** ``vN.yaml`` there
+    (ignores the ``version`` argument for that branch). Otherwise uses ``{version}.yaml``
+    under ``{name}/``.
     """
     norm = normalize_model_name_for_path(model_name)
     if norm:
-        model_path = _PROMPT_VERSIONS_DIR / name / "models" / norm / f"{version}.yaml"
-        if model_path.exists():
+        model_dir = _PROMPT_VERSIONS_DIR / name / "models" / norm
+        if model_dir.is_dir():
+            ver, model_path = discover_highest_v_prompt_yaml(model_dir)
             raw = _load_yaml(model_path)
-            return _raw_to_template(name, version, raw)
+            return _raw_to_template(name, ver, raw)
     path = _PROMPT_VERSIONS_DIR / name / f"{version}.yaml"
     if not path.exists():
         return None
@@ -148,6 +212,38 @@ def load_from_legacy(file_stem: str, name: str, version: str = "v1") -> PromptTe
     )
 
 
+def _format_map_with_defaults(s: str, variables: dict) -> str:
+    """Like str.format_map, but missing keys become empty string (optional YAML fields)."""
+    d: defaultdict[str, str] = defaultdict(str)
+    d.update({k: ("" if v is None else str(v)) for k, v in variables.items()})
+    return s.format_map(d)
+
+
+def _apply_prompt_variables(template: PromptTemplate, variables: dict | None) -> PromptTemplate:
+    if not variables:
+        return template
+    try:
+        return PromptTemplate(
+            name=template.name,
+            version=template.version,
+            role=template.role,
+            instructions=_format_map_with_defaults(template.instructions, variables),
+            constraints=template.constraints,
+            output_schema=template.output_schema,
+            system_prompt=_format_map_with_defaults(template.system_prompt, variables)
+            if template.system_prompt
+            else "",
+            user_prompt_template=_format_map_with_defaults(
+                template.user_prompt_template, variables
+            )
+            if template.user_prompt_template
+            else "",
+            extra=template.extra,
+        )
+    except (KeyError, ValueError):
+        return template
+
+
 def load_prompt(
     name: str,
     version: str = "latest",
@@ -158,42 +254,30 @@ def load_prompt(
     Load prompt by name and version.
     Tries prompt_versions first (optional model-specific file); falls back to legacy agent/prompts/.
     Applies template variable substitution to instructions.
+
+    For flat registry names (``*.vN``) and for ``prompt_versions/.../models/<model>/``, the
+    **highest** ``vK.yaml`` under the model directory is always used; the ``version``
+    parameter does not pin the file in those cases.
     """
-    if version == "latest":
-        version = "v1"
-
-    template = load_from_versioned(name, version, model_name=model_name)
-    if template is None:
-        # Fall back to legacy mapping (no model-specific legacy path)
-        template = _load_legacy_by_name(name, version)
-
-    if variables:
-        try:
-            template = PromptTemplate(
-                name=template.name,
-                version=template.version,
-                role=template.role,
-                instructions=template.instructions.format_map(
-                    {k: (v if v is not None else "") for k, v in variables.items()}
-                ),
-                constraints=template.constraints,
-                output_schema=template.output_schema,
-                system_prompt=template.system_prompt.format_map(
-                    {k: (v if v is not None else "") for k, v in variables.items()}
-                )
-                if template.system_prompt
-                else "",
-                user_prompt_template=template.user_prompt_template.format_map(
-                    {k: (v if v is not None else "") for k, v in variables.items()}
-                )
-                if template.user_prompt_template
-                else "",
-                extra=template.extra,
+    template: PromptTemplate | None = None
+    if _is_flat_versioned_registry_name(name):
+        template = load_from_flat_packaged(name, model_name=model_name)
+        if template is None:
+            norm = normalize_model_name_for_path(model_name)
+            base = _PROMPT_VERSIONS_DIR / name / "models" / (norm or "<model>")
+            raise FileNotFoundError(
+                f"Packaged prompt not found for {name!r}: need directory {base} with at least one "
+                f"v<number>.yaml (e.g. v1.yaml)"
             )
-        except KeyError:
-            pass  # Leave unformatted if variable missing
+    else:
+        if version == "latest":
+            version = "v1"
+        template = load_from_versioned(name, version, model_name=model_name)
+        if template is None:
+            # Fall back to legacy mapping (no model-specific legacy path)
+            template = _load_legacy_by_name(name, version)
 
-    return template
+    return _apply_prompt_variables(template, variables)
 
 
 # Mapping: registry name -> legacy file stem (for fallback when versioned file missing)

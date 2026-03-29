@@ -16,7 +16,12 @@ instructions: |
   Snippet (may be truncated):
   {snippet}
 
+  Symbol relationships (optional graph hints):
+  {symbol_relationships_block}
+
   CONSTRAINTS:
+
+  Symbol relationships (when present) are supplementary; the snippet/code is the primary source of truth — use graph hints only if they help close gaps, not to override the code.
 
   "sufficient" ONLY if the snippet alone is enough to satisfy the instruction.
   Base decision on whether the snippet satisfies the instruction; use code logic when reasoning is required.

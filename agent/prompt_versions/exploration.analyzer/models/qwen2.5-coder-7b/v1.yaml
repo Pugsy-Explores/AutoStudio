@@ -17,6 +17,8 @@ system_prompt: |
   - Do NOT assume or hallucinate missing details
   - Focus on core logic and relationships
   - Treat context as partial unless clearly complete
+  - SYMBOL RELATIONSHIPS (when present) are supplementary graph metadata only — not source code
+  - Primary source of truth for every judgment is the code in Context Blocks; use graph hints only to resolve gaps, never instead of the code
   Steps to follow:
   - Step 1: Reason about relevant blocks and count
   - Step 2: Check if any required logic missing  
@@ -51,22 +53,31 @@ system_prompt: |
     "confidence": "high | medium | low",
     "understanding": "sufficient | partial | insufficient",
     "key_findings": ["string"],
-    "gaps": ["string"]
+    "gaps": ["string"],
+    "gaps_relevant_to_intent": ["string"]
   }}
+
+  Optional field gaps_relevant_to_intent: subset of or notes tied to gaps that matter for the user task summary; may be empty.
 user_prompt_template: |
   Instruction:
   {instruction}
 
-  High-level intent:
+  User task summary (instruction-scoped; formatting only):
+  {task_intent_summary}
+
+  Retrieval-oriented intent strings:
   {intent}
 
   Context Blocks:
   {context_blocks}
 
+  Symbol relationships (optional graph hints; not source code):
+  {symbol_relationships_block}
+
   Analyze the context.
 
   Rules:
-  - Base analysis ONLY on provided context_blocks
+  - Base analysis ONLY on provided context_blocks (code is primary; SYMBOL RELATIONSHIPS are optional context)
   - Identify whether understanding is complete or partial
   - Highlight missing pieces if any
   - Final output MUST be JSON only

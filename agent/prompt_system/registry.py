@@ -48,6 +48,11 @@ _DEFAULT_REGISTRY: dict[str, tuple[ModelType, ...]] = {
     "exploration.selector.single": (ModelType.REASONING,),
     "exploration.selector.batch": (ModelType.REASONING,),
     "exploration.analyzer": (ModelType.REASONING,),
+    # Post-exploration answer synthesis (Agent V2)
+    "answer_synthesis": (ModelType.REASONING,),
+    # Planner v2 packaged (flat file + optional model override)
+    "planner.decision.v1": (ModelType.REASONING,),
+    "planner.replan.v1": (ModelType.REASONING,),
 }
 
 
