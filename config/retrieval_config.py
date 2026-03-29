@@ -1,27 +1,6 @@
 """Retrieval pipeline configuration."""
 
-import json
 import os
-from pathlib import Path
-
-
-def _reranker_from_models_config(key: str) -> str:
-    """Reranker model paths from models_config.json; env vars override."""
-    defaults = {
-        "gpu_model": "Qwen/Qwen3-Reranker-0.6B",
-        "cpu_model": "models/reranker/model.onnx",
-        "cpu_tokenizer": "models/reranker",
-    }
-    config_path = Path(__file__).resolve().parent.parent / "agent" / "models" / "models_config.json"
-    if config_path.is_file():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                data = json.load(f)
-            r = data.get("reranker") or {}
-            return str(r.get(key, defaults[key])).strip() or defaults[key]
-        except (json.JSONDecodeError, OSError):
-            pass
-    return defaults[key]
 
 
 def _bool_env(name: str, default: str) -> bool:
@@ -38,7 +17,6 @@ MAX_SYMBOL_EXPANSION = int(os.getenv("MAX_SYMBOL_EXPANSION", "10"))
 GRAPH_EXPANSION_DEPTH = int(os.getenv("GRAPH_EXPANSION_DEPTH", "2"))
 
 ENABLE_HYBRID_RETRIEVAL = _bool_env("ENABLE_HYBRID_RETRIEVAL", "1")
-ENABLE_VECTOR_SEARCH = _bool_env("ENABLE_VECTOR_SEARCH", "1")
 ENABLE_CONTEXT_RANKING = _bool_env("ENABLE_CONTEXT_RANKING", "1")
 
 ENABLE_ANSWER_EVAL = _bool_env("ENABLE_ANSWER_EVAL", "1")
@@ -69,35 +47,26 @@ MAX_DEPENDENCY_NODES = int(os.getenv("MAX_DEPENDENCY_NODES", "100"))
 MAX_EXECUTION_PATHS = int(os.getenv("MAX_EXECUTION_PATHS", "10"))
 ENABLE_LOCALIZATION_ENGINE = _bool_env("ENABLE_LOCALIZATION_ENGINE", "1")
 
-# --- Reranker core ---
+# --- Reranker core (canonical: MiniLM ONNX CPU FP32 — no model env overrides) ---
 RERANKER_ENABLED = _bool_env("RERANKER_ENABLED", "1")
 RERANKER_STARTUP = _bool_env("RERANKER_STARTUP", "1")  # Auto-init reranker at service startup (default ON)
-RERANKER_DEVICE = os.getenv("RERANKER_DEVICE", "auto")  # auto | cpu | gpu
-RERANKER_USE_INT8 = _bool_env("RERANKER_USE_INT8", "1")  # Use ONNX INT8 for both CPU and GPU (default ON)
-RERANKER_DAEMON_PORT = int(os.getenv("RERANKER_DAEMON_PORT", "9004"))  # Reranker daemon HTTP port
-RETRIEVAL_DAEMON_PORT = int(os.getenv("RETRIEVAL_DAEMON_PORT", "9004"))  # Unified retrieval daemon (reranker + embedding)
-RERANKER_USE_DAEMON = _bool_env("RERANKER_USE_DAEMON", "1")  # Prefer daemon when reachable (default ON)
+RETRIEVAL_DAEMON_PORT = int(os.getenv("RETRIEVAL_DAEMON_PORT", "9004"))  # Unified retrieval daemon (embedding + retrieval)
 EMBEDDING_USE_DAEMON = _bool_env("EMBEDDING_USE_DAEMON", "1")  # Prefer daemon /embed when reachable (default ON)
 # When 1, try retrieval daemon HTTP for vector/BM25/repo_map before in-process (fallback if daemon down).
 RETRIEVAL_REMOTE_FIRST = _bool_env("RETRIEVAL_REMOTE_FIRST", "1")
+# When 1, cross-encoder reranking uses POST /rerank/batch on the retrieval daemon (ONNX on server). Default off: local MiniLM.
+RETRIEVAL_REMOTE_RERANK_FIRST = _bool_env("RETRIEVAL_REMOTE_RERANK_FIRST", "0")
 RETRIEVAL_DAEMON_AUTO_START = _bool_env("RETRIEVAL_DAEMON_AUTO_START", "1")  # Start daemon if not running (default ON)
 RETRIEVAL_DAEMON_START_TIMEOUT_SECONDS = int(os.getenv("RETRIEVAL_DAEMON_START_TIMEOUT_SECONDS", "90"))
+# Max queries per POST /retrieve/vector/batch (client chunks longer lists; must match daemon).
+RETRIEVAL_DAEMON_VECTOR_BATCH_MAX = int(os.getenv("RETRIEVAL_DAEMON_VECTOR_BATCH_MAX", "8"))
+# Max (query, docs) slots per POST /rerank/batch; client chunks longer ``rerank_batch`` calls.
+RETRIEVAL_DAEMON_RERANK_BATCH_MAX_SLOTS = int(os.getenv("RETRIEVAL_DAEMON_RERANK_BATCH_MAX_SLOTS", "32"))
 RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "10"))
-RERANKER_BATCH_SIZE = int(os.getenv("RERANKER_BATCH_SIZE", "16"))
-RERANKER_GPU_MODEL = os.getenv("RERANKER_GPU_MODEL") or _reranker_from_models_config("gpu_model")
-RERANKER_CPU_MODEL = os.getenv("RERANKER_CPU_MODEL") or _reranker_from_models_config("cpu_model")
-RERANKER_CPU_TOKENIZER = os.getenv("RERANKER_CPU_TOKENIZER") or _reranker_from_models_config("cpu_tokenizer")
 
-# --- Alternate models (registry) ---
-RERANKER_ALTERNATE_MODELS = [
-    "BAAI/bge-reranker-v2-gemma",
-    "jinaai/jina-reranker-v3",
-    "Qwen/Qwen3-Reranker-0.6B",  # default
-]
-
-# --- Preprocessing ---
-MAX_RERANK_SNIPPET_TOKENS = int(os.getenv("MAX_RERANK_SNIPPET_TOKENS", "256"))
-MAX_RERANK_PAIR_TOKENS = int(os.getenv("MAX_RERANK_PAIR_TOKENS", "512"))
+# --- Preprocessing (aligned with agent.retrieval.reranker.constants tokenizer limits) ---
+MAX_RERANK_SNIPPET_TOKENS = 256
+MAX_RERANK_PAIR_TOKENS = 512
 
 # --- Adaptive gating ---
 RERANK_MIN_CANDIDATES = int(os.getenv("RERANK_MIN_CANDIDATES", "6"))
@@ -116,8 +85,14 @@ RETRIEVER_FUSION_WEIGHT = float(os.getenv("RETRIEVER_FUSION_WEIGHT", "0.2"))
 RERANK_SCORE_THRESHOLD = float(os.getenv("RERANK_SCORE_THRESHOLD", "0.15"))
 RERANK_MIN_RESULTS_AFTER_THRESHOLD = int(os.getenv("RERANK_MIN_RESULTS_AFTER_THRESHOLD", "3"))
 
-# --- BM25 ---
+# --- Retrieval sources (BM25, vector, graph lookup, grep) ---
+# Toggle each backend from one place; defaults ON for parity with historical behavior.
 ENABLE_BM25_SEARCH = _bool_env("ENABLE_BM25_SEARCH", "1")
+ENABLE_VECTOR_SEARCH = _bool_env("ENABLE_VECTOR_SEARCH", "1")
+ENABLE_GRAPH_LOOKUP = _bool_env("ENABLE_GRAPH_LOOKUP", "1")
+ENABLE_GREP_SEARCH = _bool_env("ENABLE_GREP_SEARCH", "1")
+
+# --- BM25 ---
 BM25_TOP_K = int(os.getenv("BM25_TOP_K", "30"))
 
 # --- Rank fusion (RRF) ---
@@ -176,3 +151,31 @@ V2_MAX_CHARS = int(os.getenv("V2_MAX_CHARS", "20000"))
 # Default ON when RERANKER_ENABLED=1; set V2_RERANKER_ENABLED=0 to disable just v2.
 V2_RERANKER_ENABLED = _bool_env("V2_RERANKER_ENABLED", "1")
 V2_RERANK_TOP_N = int(os.getenv("V2_RERANK_TOP_N", "30"))   # candidates passed to reranker
+
+# Comma-separated extra indexed roots (each with .symbol_graph). Merged with v2 multi-root fetch.
+# See also AGENT_V2_APPEND_EXPLORATION_TEST_REPOS_TO_RETRIEVAL in agent_v2.config.
+
+
+def _parse_extra_project_roots_env() -> tuple[str, ...]:
+    raw = os.getenv("RETRIEVAL_EXTRA_PROJECT_ROOTS", "").strip()
+    if not raw:
+        return ()
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+def get_retrieval_extra_roots() -> tuple[str, ...]:
+    """Extra Chroma/graph roots for multi-repo retrieval. Env + optional agent_v2 test repos."""
+    env_roots = _parse_extra_project_roots_env()
+    if env_roots:
+        return env_roots
+    if not _bool_env("AGENT_V2_APPEND_EXPLORATION_TEST_REPOS_TO_RETRIEVAL", "0"):
+        return ()
+    try:
+        from pathlib import Path
+
+        from agent_v2.exploration_test_repos import extra_retrieval_roots  # noqa: PLC0415
+
+        anchor = Path(os.environ.get("SERENA_PROJECT_DIR", os.getcwd())).resolve()
+        return extra_retrieval_roots(anchor)
+    except Exception:
+        return ()

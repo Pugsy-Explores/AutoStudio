@@ -193,8 +193,8 @@ def _ensure_reranker_ready() -> None:
     r = create_reranker()
     if r is None:
         logger.warning(
-            "Reranker init failed (model missing or disabled). Pipeline will use LLM ranker fallback (~100× slower). "
-            "Fix: pip install onnxruntime, python scripts/download_reranker.py --device cpu"
+            "Reranker init failed (model missing or disabled). "
+            "Fix: pip install onnxruntime transformers torch, then python scripts/prepare_reranker_models.py"
         )
     else:
         logger.info("Reranker initialized and ready.")
