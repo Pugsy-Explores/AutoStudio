@@ -1,57 +1,43 @@
-"""Model warm-start: preload embedding, reranker when not using daemon.
+"""Model warm-start: preload MiniLM reranker (in-process) and optionally local embeddings."""
 
-When retrieval daemon is reachable (RERANKER_USE_DAEMON / EMBEDDING_USE_DAEMON),
-skips in-process load to avoid cold-start. Daemon holds warm models.
-"""
-
-import json
 import logging
-import urllib.request
 
 logger = logging.getLogger(__name__)
 
 
-def _daemon_reachable() -> bool:
-    """Return True if retrieval daemon /health returns 200."""
-    try:
-        from config.retrieval_config import RETRIEVAL_DAEMON_PORT
-
-        req = urllib.request.Request(f"http://127.0.0.1:{RETRIEVAL_DAEMON_PORT}/health", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            data = json.loads(resp.read().decode())
-        return data.get("reranker_loaded", False) or data.get("embedding_loaded", False)
-    except Exception:
-        return False
-
-
 def initialize_models() -> None:
     """
-    Load embedding model, reranker at startup when daemon is not used.
-    When retrieval daemon is reachable, skips in-process load (daemon holds warm models).
+    Load reranker (ONNX CPU) when enabled. Load SentenceTransformer locally only when
+    the retrieval daemon is not used for embeddings.
     """
-    from config.retrieval_config import EMBEDDING_USE_DAEMON, RERANKER_USE_DAEMON
+    from config.retrieval_config import EMBEDDING_USE_DAEMON, RERANKER_ENABLED
 
-    use_daemon = (RERANKER_USE_DAEMON or EMBEDDING_USE_DAEMON) and _daemon_reachable()
+    if RERANKER_ENABLED:
+        try:
+            from agent.retrieval.reranker.reranker_factory import create_reranker, init_reranker
 
-    if use_daemon:
-        logger.info("[model_bootstrap] using retrieval daemon; skipping in-process model load")
+            init_reranker()
+            r = create_reranker()
+            if r:
+                logger.info("[model_bootstrap] reranker ready")
+            else:
+                logger.debug("[model_bootstrap] reranker disabled (RERANKER_ENABLED=0)")
+        except Exception as e:
+            logger.warning("[model_bootstrap] reranker init failed: %s", e)
+
+    def _daemon_embed_ok() -> bool:
+        try:
+            from agent.retrieval.daemon_client import daemon_embed_available
+
+            return daemon_embed_available()
+        except Exception:
+            return False
+
+    if EMBEDDING_USE_DAEMON and _daemon_embed_ok():
+        logger.info("[model_bootstrap] embedding via daemon; skipping local SentenceTransformer load")
         logger.info("[model_bootstrap] warm-start complete")
         return
 
-    # Reranker (in-process)
-    try:
-        from agent.retrieval.reranker.reranker_factory import create_reranker, init_reranker
-
-        init_reranker()
-        r = create_reranker()
-        if r:
-            logger.info("[model_bootstrap] reranker ready")
-        else:
-            logger.debug("[model_bootstrap] reranker disabled or unavailable")
-    except Exception as e:
-        logger.debug("[model_bootstrap] reranker init skipped: %s", e)
-
-    # Embedding model (used by vector_retriever)
     try:
         from sentence_transformers import SentenceTransformer
 

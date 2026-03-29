@@ -276,6 +276,14 @@ def _dump_replanner_prompt_files(system_prompt: str | None, user_prompt: str) ->
     logger.info("[DEBUG] replanner prompts written to %s and %s", last_path, ts_path)
 
 
+# Task names that use replanner-style prompts (debug_replanner dump).
+_REPLANNER_LLM_DEBUG_TASK_NAMES = frozenset({
+    "PLANNER_REPLAN_PLAN",
+    "PLANNER_REPLAN_ACT",
+    "PLANNER_REPLAN_ORCHESTRATOR",
+})
+
+
 def _truncate_for_log(text: str, max_chars: int = _MAX_CONTEXT_CHARS) -> str:
     clean = " ".join((text or "").split())
     if len(clean) <= max_chars:
@@ -826,7 +834,7 @@ def call_small_model(
         messages = [{"role": "user", "content": prompt}]
         _sys_for_dump = ""
         _user_for_dump = prompt
-    if task_name == "replanner" and debug_replanner:
+    if task_name in _REPLANNER_LLM_DEBUG_TASK_NAMES and debug_replanner:
         _dump_replanner_prompt_files(_sys_for_dump or None, _user_for_dump or "")
     # Stage 28: record real model call (stubs never reach here)
     model_name = get_model_name(model_key)
@@ -913,7 +921,7 @@ def call_reasoning_model(
     model_key = model_type or get_model_for_task(task_name or "")
     endpoint = get_endpoint_for_model(model_key)
     _sys = None if system_prompt is None else (system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt)
-    logger.info(
+    logger.debug(
         "call_reasoning_model: endpoint=%s model=%s task=%r prompt=%r system_prompt=%s max_tokens=%s",
         endpoint,
         model_key,
@@ -933,7 +941,7 @@ def call_reasoning_model(
         messages = [{"role": "user", "content": prompt}]
         _sys_for_dump = ""
         _user_for_dump = prompt
-    if task_name == "replanner" and debug_replanner:
+    if task_name in _REPLANNER_LLM_DEBUG_TASK_NAMES and debug_replanner:
         _dump_replanner_prompt_files(_sys_for_dump or None, _user_for_dump or "")
     # Stage 28: record real model call (stubs never reach here)
     model_name = get_model_name(model_key)

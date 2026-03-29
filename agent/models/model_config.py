@@ -27,6 +27,13 @@ _DEFAULT_TASK_MODELS = {
     "EXPLAIN": "REASONING",
     "routing": "SMALL",
     "planner": "REASONING",
+    "PLANNER_DECISION_PLAN": "REASONING",
+    "PLANNER_DECISION_ACT": "REASONING",
+    "PLANNER_REPLAN_PLAN": "REASONING",
+    "PLANNER_REPLAN_ACT": "REASONING",
+    "PLANNER_REPLAN_ORCHESTRATOR": "REASONING",
+    "PLANNER_TOOL_ARGS_PLAN": "REASONING",
+    "PLANNER_TOOL_ARGS_ACT": "REASONING",
     "context_ranking": "REASONING",
     "bundle_selector": "SMALL",
     # Exploration stages (phase-level + per-stage LLM calls)
@@ -44,9 +51,8 @@ _DEFAULT_REQUEST_TIMEOUT = 120
 _DEFAULT_TEMPERATURE = 0.0
 
 _DEFAULT_RERANKER = {
-    "gpu_model": "Qwen/Qwen3-Reranker-0.6B",
-    "cpu_model": "models/reranker/model.onnx",
-    "cpu_tokenizer": "models/reranker",
+    "model_name": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "onnx_relative_path": "models/reranker/ms_marco_minilm_l6_v2_fp32/model.onnx",
 }
 
 
@@ -170,15 +176,8 @@ def _load_config() -> dict:
             defaults["task_params"] = out_params
         else:
             defaults["task_params"] = {}
-        if "reranker" in data and isinstance(data["reranker"], dict):
-            r = data["reranker"]
-            defaults["reranker"] = {
-                "gpu_model": str(r.get("gpu_model", _DEFAULT_RERANKER["gpu_model"])).strip() or _DEFAULT_RERANKER["gpu_model"],
-                "cpu_model": str(r.get("cpu_model", _DEFAULT_RERANKER["cpu_model"])).strip() or _DEFAULT_RERANKER["cpu_model"],
-                "cpu_tokenizer": str(r.get("cpu_tokenizer", _DEFAULT_RERANKER["cpu_tokenizer"])).strip() or _DEFAULT_RERANKER["cpu_tokenizer"],
-            }
-        else:
-            defaults["reranker"] = dict(_DEFAULT_RERANKER)
+        # Reranker is fixed (MiniLM ONNX CPU); JSON overrides ignored.
+        defaults["reranker"] = dict(_DEFAULT_RERANKER)
         return defaults
     except (json.JSONDecodeError, OSError):
         return defaults
@@ -243,24 +242,8 @@ def get_model_name(model_key: str) -> str:
 
 
 def get_reranker_config() -> dict:
-    """Return reranker model config from models_config.json.
-
-    Returns dict with keys: gpu_model, cpu_model, cpu_tokenizer.
-    Env vars RERANKER_GPU_MODEL, RERANKER_CPU_MODEL override when set.
-    """
-    r = _loaded.get("reranker", _DEFAULT_RERANKER)
-    out = {
-        "gpu_model": r.get("gpu_model", _DEFAULT_RERANKER["gpu_model"]),
-        "cpu_model": r.get("cpu_model", _DEFAULT_RERANKER["cpu_model"]),
-        "cpu_tokenizer": r.get("cpu_tokenizer", _DEFAULT_RERANKER["cpu_tokenizer"]),
-    }
-    if os.environ.get("RERANKER_GPU_MODEL"):
-        out["gpu_model"] = os.environ["RERANKER_GPU_MODEL"]
-    if os.environ.get("RERANKER_CPU_MODEL"):
-        out["cpu_model"] = os.environ["RERANKER_CPU_MODEL"]
-    if os.environ.get("RERANKER_CPU_TOKENIZER"):
-        out["cpu_tokenizer"] = os.environ["RERANKER_CPU_TOKENIZER"]
-    return out
+    """Canonical MiniLM ONNX reranker (no env or JSON overrides)."""
+    return dict(_DEFAULT_RERANKER)
 
 
 # Endpoints: from config, overridable by env (backward compat)
