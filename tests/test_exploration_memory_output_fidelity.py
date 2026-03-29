@@ -20,7 +20,13 @@ import pytest
 from agent_v2.config import EXPLORATION_MAX_ITEMS
 from agent_v2.exploration.exploration_engine_v2 import ExplorationEngineV2
 from agent_v2.exploration.exploration_working_memory import ExplorationWorkingMemory, _is_generic_gap
-from agent_v2.schemas.exploration import ExplorationTarget, QueryIntent, ReadPacket, UnderstandingResult
+from agent_v2.schemas.exploration import (
+    ExplorationTarget,
+    QueryIntent,
+    ReadPacket,
+    UnderstandingResult,
+)
+from tests.exploration_selector_batch_mocks import mock_selector_batch_first_n
 from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.execution import ExecutionResult
 from agent_v2.schemas.tool import ToolResult
@@ -181,7 +187,6 @@ def test_build_result_source_has_no_legacy_tuple_reads():
 
 def test_rebuild_from_memory_idempotent_with_explore(monkeypatch, repo_root):
     """Same memory + metadata → same normalized result (deterministic transform)."""
-    monkeypatch.setattr("agent_v2.exploration.exploration_engine_v2.ENABLE_UTILITY_STOP", False)
     wm_path = os.path.join(repo_root, "agent_v2", "exploration", "exploration_working_memory.py")
 
     class _Parser:
@@ -211,8 +216,10 @@ def test_rebuild_from_memory_idempotent_with_explore(monkeypatch, repo_root):
             ]
 
     class _Selector:
-        def select_batch(self, instruction, intent_text, scoped, seen_files, *, limit, **kwargs):
-            return scoped[:limit]
+        def select_batch(self, instruction, intent_text, scoped, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                scoped, limit, selection_confidence="medium", coverage_signal="good"
+            )
 
     class _Reader:
         def inspect_packet(self, selected, *, symbol, line, window, state):
@@ -243,7 +250,8 @@ def test_rebuild_from_memory_idempotent_with_explore(monkeypatch, repo_root):
         analyzer=_Analyzer(),
         graph_expander=type("_G", (), {"expand": lambda *a, **k: ([], _ok("graph_query", data={}))})(),
     )
-    r1 = engine.explore("x", state=SimpleNamespace(context={"project_root": repo_root}))
+    state = SimpleNamespace(context={"project_root": repo_root})
+    r1 = engine.explore("x", state=state)
     mem = engine.last_working_memory
     assert mem is not None
     r2 = engine._build_result_from_memory(
@@ -253,6 +261,8 @@ def test_rebuild_from_memory_idempotent_with_explore(monkeypatch, repo_root):
         termination_reason=r1.metadata.termination_reason,
         explored_files=r1.metadata.explored_files,
         explored_symbols=r1.metadata.explored_symbols,
+        state=state,
+        engine_loop_steps=r1.metadata.engine_loop_steps,
     )
     assert _normalize_result(r1) == _normalize_result(r2)
 
@@ -263,7 +273,6 @@ def repo_root():
 
 
 def test_fidelity_simple_symbol_vs_memory(repo_root, monkeypatch):
-    monkeypatch.setattr("agent_v2.exploration.exploration_engine_v2.ENABLE_UTILITY_STOP", False)
     wm_path = os.path.join(repo_root, "agent_v2", "exploration", "exploration_working_memory.py")
 
     class _Parser:
@@ -293,8 +302,10 @@ def test_fidelity_simple_symbol_vs_memory(repo_root, monkeypatch):
             ]
 
     class _Selector:
-        def select_batch(self, instruction, intent_text, scoped, seen_files, *, limit, **kwargs):
-            return scoped[:limit]
+        def select_batch(self, instruction, intent_text, scoped, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                scoped, limit, selection_confidence="medium", coverage_signal="good"
+            )
 
     class _Reader:
         def inspect_packet(self, selected, *, symbol, line, window, state):
@@ -341,7 +352,6 @@ def test_fidelity_simple_symbol_vs_memory(repo_root, monkeypatch):
 
 
 def test_fidelity_multihop_relationships_and_gaps(repo_root, monkeypatch):
-    monkeypatch.setattr("agent_v2.exploration.exploration_engine_v2.ENABLE_UTILITY_STOP", False)
     monkeypatch.setattr("agent_v2.exploration.exploration_engine_v2.EXPLORATION_MAX_STEPS", 6)
     anchor = os.path.join(repo_root, "agent_v2", "exploration", "exploration_engine_v2.py")
     caller_fp = os.path.join(repo_root, "agent_v2", "config.py")
@@ -349,7 +359,12 @@ def test_fidelity_multihop_relationships_and_gaps(repo_root, monkeypatch):
 
     class _Parser:
         def parse(self, instruction: str, **kwargs):
-            return QueryIntent(symbols=["_explore_inner"], keywords=[], intents=["debug"])
+            return QueryIntent(
+                symbols=["_explore_inner"],
+                keywords=[],
+                intents=["debug"],
+                relationship_hint="callers",
+            )
 
     class _Dispatcher:
         def execute(self, step, state):
@@ -374,8 +389,10 @@ def test_fidelity_multihop_relationships_and_gaps(repo_root, monkeypatch):
             ]
 
     class _Selector:
-        def select_batch(self, instruction, intent_text, scoped, seen_files, *, limit, **kwargs):
-            return scoped[:limit]
+        def select_batch(self, instruction, intent_text, scoped, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                scoped, limit, selection_confidence="medium", coverage_signal="good"
+            )
 
     class _Reader:
         def inspect_packet(self, selected, *, symbol, line, window, state):
@@ -440,7 +457,6 @@ def test_rebuild_from_rehydrated_memory_matches_live_explore(monkeypatch, repo_r
     Rehydrate a fresh WorkingMemory from get_summary() rows and rebuild — normalized result must match
     explore() (proves output is a pure function of memory snapshot, not side tables).
     """
-    monkeypatch.setattr("agent_v2.exploration.exploration_engine_v2.ENABLE_UTILITY_STOP", False)
     wm_path = os.path.join(repo_root, "agent_v2", "exploration", "exploration_working_memory.py")
 
     class _Parser:
@@ -465,8 +481,10 @@ def test_rebuild_from_rehydrated_memory_matches_live_explore(monkeypatch, repo_r
             ]
 
     class _Selector:
-        def select_batch(self, instruction, intent_text, scoped, seen_files, *, limit, **kwargs):
-            return scoped[:limit]
+        def select_batch(self, instruction, intent_text, scoped, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                scoped, limit, selection_confidence="medium", coverage_signal="good"
+            )
 
     class _Reader:
         def inspect_packet(self, selected, *, symbol, line, window, state):
@@ -497,7 +515,8 @@ def test_rebuild_from_rehydrated_memory_matches_live_explore(monkeypatch, repo_r
         analyzer=_Analyzer(),
         graph_expander=type("_G", (), {"expand": lambda *a, **k: ([], _ok("graph_query", data={}))})(),
     )
-    r0 = engine.explore("z", state=SimpleNamespace(context={"project_root": repo_root}))
+    state = SimpleNamespace(context={"project_root": repo_root})
+    r0 = engine.explore("z", state=state)
     m0 = engine.last_working_memory
     assert m0 is not None
     snap = copy.deepcopy(m0.get_summary())
@@ -546,5 +565,7 @@ def test_rebuild_from_rehydrated_memory_matches_live_explore(monkeypatch, repo_r
         termination_reason=r0.metadata.termination_reason,
         explored_files=r0.metadata.explored_files,
         explored_symbols=r0.metadata.explored_symbols,
+        state=state,
+        engine_loop_steps=r0.metadata.engine_loop_steps,
     )
     assert _normalize_result(r0) == _normalize_result(r_clone)

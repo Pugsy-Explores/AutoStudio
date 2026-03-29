@@ -1,7 +1,8 @@
 """Phase 5 — PlanExecutor: plan-driven steps, mock dispatcher + argument generator."""
 
+import json
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from agent_v2.schemas.execution import (
     ErrorType,
@@ -234,6 +235,198 @@ class TestPlanExecutor(unittest.TestCase):
         mock_dispatch.execute.assert_called_once()
         self.assertEqual(plan.steps[0].execution.status, "completed")
         self.assertEqual(plan.steps[1].execution.status, "pending")
+
+
+class TestToolExecutionLogging(unittest.TestCase):
+    @patch("agent_v2.runtime.plan_executor._emit_tool_execution_log")
+    def test_one_tool_execution_log_per_execute_step(self, mock_emit):
+        mock_dispatch = MagicMock()
+        mock_dispatch.execute.return_value = _ok_result("s1", "found")
+        arg_gen = MagicMock()
+        arg_gen.generate.return_value = {"query": "AgentLoop"}
+
+        ex = PlanExecutor(mock_dispatch, arg_gen)
+        state = AgentState(instruction="find loop")
+        plan = _minimal_plan()
+        _attach_plan(state, plan)
+        ex.run(plan, state)
+
+        # One dispatch for search; finish does not call _execute_step.
+        self.assertEqual(mock_emit.call_count, 1)
+        kwargs = mock_emit.call_args.kwargs
+        self.assertTrue(kwargs["success"])
+        self.assertIsNone(kwargs["error"])
+        self.assertGreaterEqual(kwargs["latency_ms"], 0)
+        step = kwargs["step"]
+        self.assertEqual(step.step_id, "s1")
+        self.assertEqual(step.action, "search")
+        self.assertIn("input_summary", kwargs)
+        self.assertIn("AgentLoop", kwargs["input_summary"])
+
+    @patch("agent_v2.runtime.plan_executor._emit_tool_execution_log")
+    def test_tool_execution_log_includes_required_fields_on_failure(self, mock_emit):
+        plan = _minimal_plan()
+        plan.steps[0].execution = PlanStepExecution(max_attempts=1)
+        bad = ExecutionResult(
+            step_id="s1",
+            success=False,
+            status="failure",
+            output=ExecutionOutput(summary="failed", data={}),
+            error=ExecutionError(type=ErrorType.tool_error, message="boom"),
+            metadata=ExecutionMetadata(tool_name="t", duration_ms=0, timestamp=""),
+        )
+        mock_dispatch = MagicMock()
+        mock_dispatch.execute.return_value = bad
+        arg_gen = MagicMock()
+        arg_gen.generate.return_value = {"query": "q"}
+
+        ex = PlanExecutor(mock_dispatch, arg_gen)
+        state = AgentState(instruction="x")
+        _attach_plan(state, plan)
+        ex.run(plan, state)
+
+        self.assertEqual(mock_emit.call_count, 1)
+        kwargs = mock_emit.call_args.kwargs
+        self.assertFalse(kwargs["success"])
+        self.assertIsNotNone(kwargs["error"])
+        self.assertIn("boom", kwargs["error"])
+
+    @patch("agent_v2.runtime.plan_executor._LOG")
+    def test_tool_execution_json_shape_on_logger(self, mock_log):
+        mock_dispatch = MagicMock()
+        mock_dispatch.execute.return_value = _ok_result("s1", "found")
+        arg_gen = MagicMock()
+        arg_gen.generate.return_value = {"query": "q"}
+
+        ex = PlanExecutor(mock_dispatch, arg_gen)
+        state = AgentState(instruction="x")
+        plan = _minimal_plan()
+        _attach_plan(state, plan)
+        ex.run(plan, state)
+
+        found = False
+        for call in mock_log.info.call_args_list:
+            args, _ = call
+            if len(args) >= 2 and args[0] == "tool_execution %s":
+                payload = json.loads(args[1])
+                self.assertEqual(payload["component"], "tool_execution")
+                self.assertEqual(payload["tool"], "search_code")
+                self.assertEqual(payload["action"], "search")
+                self.assertEqual(payload["step_id"], "s1")
+                self.assertIn("success", payload)
+                self.assertIn("latency_ms", payload)
+                self.assertIn("error", payload)
+                self.assertIn("input_summary", payload)
+                self.assertIn("query", payload["input_summary"])
+                found = True
+                break
+        self.assertTrue(found, "expected tool_execution log line")
+
+    @patch("agent_v2.runtime.plan_executor._LOG")
+    def test_tool_execution_includes_mode_from_state_metadata(self, mock_log):
+        mock_dispatch = MagicMock()
+        mock_dispatch.execute.return_value = _ok_result("s1", "found")
+        arg_gen = MagicMock()
+        arg_gen.generate.return_value = {"query": "q"}
+
+        ex = PlanExecutor(mock_dispatch, arg_gen)
+        state = AgentState(instruction="x")
+        state.metadata["tool_policy_mode"] = "plan"
+        plan = _minimal_plan()
+        _attach_plan(state, plan)
+        ex.run(plan, state)
+
+        for call in mock_log.info.call_args_list:
+            args, _ = call
+            if len(args) >= 2 and args[0] == "tool_execution %s":
+                payload = json.loads(args[1])
+                self.assertEqual(payload.get("mode"), "plan")
+                return
+        self.fail("expected tool_execution log with mode")
+
+    def test_plan_safe_guard_blocks_edit_without_dispatching(self):
+        plan = PlanDocument(
+            plan_id="psafe",
+            instruction="i",
+            understanding="u",
+            sources=[PlanSource(type="other", ref="r", summary="s")],
+            steps=[
+                PlanStep(
+                    step_id="e1",
+                    index=1,
+                    type="modify",
+                    goal="edit",
+                    action="edit",
+                    inputs={"path": "a.py", "instruction": "x"},
+                    dependencies=[],
+                    execution=PlanStepExecution(max_attempts=1),
+                ),
+                PlanStep(
+                    step_id="f1",
+                    index=2,
+                    type="finish",
+                    goal="done",
+                    action="finish",
+                    dependencies=["e1"],
+                    execution=PlanStepExecution(),
+                ),
+            ],
+            risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
+            completion_criteria=["c"],
+            metadata=PlanMetadata(created_at="2026-01-01T00:00:00Z", version=1),
+        )
+        mock_dispatch = MagicMock()
+        arg_gen = MagicMock()
+        arg_gen.generate.return_value = {}
+        ex = PlanExecutor(mock_dispatch, arg_gen)
+        state = AgentState(instruction="x")
+        state.context["plan_safe_execute"] = True
+        _attach_plan(state, plan)
+        out = ex.run_one_step(plan, state)
+        self.assertEqual(out["status"], "failed_step")
+        mock_dispatch.execute.assert_not_called()
+
+    def test_plan_safe_guard_blocks_disallowed_shell_without_dispatching(self):
+        plan = PlanDocument(
+            plan_id="psh",
+            instruction="i",
+            understanding="u",
+            sources=[PlanSource(type="other", ref="r", summary="s")],
+            steps=[
+                PlanStep(
+                    step_id="sh1",
+                    index=1,
+                    type="analyze",
+                    goal="run",
+                    action="shell",
+                    inputs={"command": "rm -rf /tmp/x"},
+                    dependencies=[],
+                    execution=PlanStepExecution(max_attempts=1),
+                ),
+                PlanStep(
+                    step_id="f1",
+                    index=2,
+                    type="finish",
+                    goal="done",
+                    action="finish",
+                    dependencies=["sh1"],
+                    execution=PlanStepExecution(),
+                ),
+            ],
+            risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
+            completion_criteria=["c"],
+            metadata=PlanMetadata(created_at="2026-01-01T00:00:00Z", version=1),
+        )
+        mock_dispatch = MagicMock()
+        arg_gen = MagicMock()
+        arg_gen.generate.return_value = {"command": "rm -rf /tmp/x"}
+        ex = PlanExecutor(mock_dispatch, arg_gen)
+        state = AgentState(instruction="x")
+        state.context["plan_safe_execute"] = True
+        _attach_plan(state, plan)
+        out = ex.run_one_step(plan, state)
+        self.assertEqual(out["status"], "failed_step")
+        mock_dispatch.execute.assert_not_called()
 
 
 if __name__ == "__main__":

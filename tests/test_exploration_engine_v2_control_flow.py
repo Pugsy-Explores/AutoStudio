@@ -15,6 +15,7 @@ from agent_v2.schemas.exploration import (
 )
 from agent_v2.schemas.tool import ToolResult
 from agent_v2.runtime.tool_mapper import map_tool_result_to_execution_result
+from tests.exploration_selector_batch_mocks import mock_selector_batch_first_n
 
 
 def _ok(tool_name: str, data: dict | None = None, summary: str = "ok") -> ExecutionResult:
@@ -34,8 +35,14 @@ def test_no_relevant_candidate_terminates_without_inspection(caplog):
             return QueryIntent(symbols=["X"], keywords=["X"], intents=["debug"])
 
     class _Selector:
-        def select_batch(self, instruction, intent, candidates, seen_files, *, limit, **kwargs):
-            return None
+        def select_batch(self, instruction, intent, candidates, *, limit, **kwargs):
+            from agent_v2.schemas.exploration import SelectorBatchResult
+
+            return SelectorBatchResult(
+                selected_candidates=[],
+                selection_confidence="low",
+                coverage_signal="weak",
+            )
 
     class _Reader:
         def inspect(self, selected, *, symbol, line, window, state):
@@ -111,8 +118,10 @@ def test_enqueue_ranked_skips_scoper_when_capped_len_at_or_below_skip_below(monk
             raise AssertionError("scoper should not run when len(capped) <= skip_below")
 
     class _Sel:
-        def select_batch(self, instruction, intent, candidates, seen_files, *, limit, **kwargs):
-            return candidates[:1]
+        def select_batch(self, instruction, intent, candidates, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                candidates, 1, selection_confidence="high", coverage_signal="good"
+            )
 
     engine = ExplorationEngineV2(
         dispatcher=object(),
@@ -151,8 +160,13 @@ def test_enqueue_ranked_calls_scoper_when_capped_len_above_skip_below(monkeypatc
             return candidates[:2]
 
     class _Sel:
-        def select_batch(self, instruction, intent, candidates, seen_files, *, limit, **kwargs):
-            return candidates
+        def select_batch(self, instruction, intent, candidates, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                candidates,
+                len(candidates),
+                selection_confidence="medium",
+                coverage_signal="good",
+            )
 
     scoper = _Scoper()
     engine = ExplorationEngineV2(
@@ -189,7 +203,7 @@ def test_enqueue_ranked_skips_all_when_already_explored(monkeypatch):
             raise AssertionError("scoper must not run when all candidates are explored")
 
     class _Sel:
-        def select_batch(self, instruction, intent, candidates, seen_files, *, limit, **kwargs):
+        def select_batch(self, instruction, intent, candidates, *, limit, **kwargs):
             raise AssertionError("selector must not run when queue is empty")
 
     engine = ExplorationEngineV2(
@@ -215,7 +229,7 @@ def test_enqueue_ranked_skips_all_when_already_explored(monkeypatch):
         ex_state,
         limit=5,
     )
-    assert out is True
+    assert out[0] is True
 
 
 def test_enqueue_targets_skips_already_explored_expansion_path():
@@ -241,86 +255,6 @@ def test_enqueue_targets_skips_already_explored_expansion_path():
     assert ex_state.pending_targets == []
 
 
-def test_gap_filter_rejects_generic_and_attempted():
-    engine = ExplorationEngineV2(
-        dispatcher=object(),
-        intent_parser=object(),
-        selector=object(),
-        inspection_reader=object(),
-        analyzer=object(),
-        graph_expander=object(),
-    )
-    ex_state = ExplorationState(instruction="x")
-    ex_state.attempted_gaps.add("missing caller path")
-    decision = ExplorationDecision(status="partial", needs=["more_code"], reason="r", next_action="stop")
-    understanding = UnderstandingResult(
-        relevance="medium",
-        sufficient=False,
-        evidence_sufficiency="partial",
-        knowledge_gaps=["missing caller path", "need more context", "missing callee chain"],
-        summary="s",
-    )
-    out = engine._apply_gap_driven_decision(decision, understanding, ex_state)
-    assert out.next_action == "expand"
-    assert "callees" in out.needs
-    assert "missing callee chain" in ex_state.attempted_gaps
-    assert "missing caller path" in ex_state.attempted_gaps
-
-
-def test_refine_cooldown_forces_expand_when_eligible():
-    engine = ExplorationEngineV2(
-        dispatcher=object(),
-        intent_parser=object(),
-        selector=object(),
-        inspection_reader=object(),
-        analyzer=object(),
-        graph_expander=object(),
-    )
-    ex_state = ExplorationState(instruction="x", refine_used_last_step=True)
-    decision = ExplorationDecision(
-        status="partial",
-        needs=["callers"],
-        reason="r",
-        next_action="refine",
-    )
-    target = ExplorationTarget(file_path="/tmp/a.py", symbol="Foo", source="discovery")
-    action = engine._apply_refine_cooldown("refine", decision, target, ex_state)
-    assert action == "expand"
-
-
-def test_utility_signal_binary_improvement_and_stop():
-    engine = ExplorationEngineV2(
-        dispatcher=object(),
-        intent_parser=object(),
-        selector=object(),
-        inspection_reader=object(),
-        analyzer=object(),
-        graph_expander=object(),
-    )
-    ex_state = ExplorationState(instruction="x")
-    u1 = UnderstandingResult(
-        relevance="low",
-        sufficient=False,
-        evidence_sufficiency="partial",
-        knowledge_gaps=["gap_a", "gap_b"],
-        summary="s1",
-    )
-    stop1, _ = engine._update_utility_and_should_stop(u1, ex_state)
-    assert stop1 is False
-    u2 = UnderstandingResult(
-        relevance="low",
-        sufficient=False,
-        evidence_sufficiency="partial",
-        knowledge_gaps=["gap_a", "gap_b"],
-        summary="s2",
-    )
-    stop2, _ = engine._update_utility_and_should_stop(u2, ex_state)
-    assert stop2 is False
-    stop3, reason3 = engine._update_utility_and_should_stop(u2, ex_state)
-    assert stop3 is True
-    assert reason3 == "no_improvement_streak"
-
-
 def test_enqueue_targets_prioritizes_and_dedupes_edges():
     engine = ExplorationEngineV2(
         dispatcher=object(),
@@ -340,67 +274,6 @@ def test_enqueue_targets_prioritizes_and_dedupes_edges():
     engine._enqueue_targets(ex_state, [t1, t2, t2])
     assert len(ex_state.pending_targets) == 2
     assert ex_state.pending_targets[0].symbol == "New"
-
-
-def test_gap_mapping_caller_direction_and_callee():
-    engine = ExplorationEngineV2(
-        dispatcher=object(),
-        intent_parser=object(),
-        selector=object(),
-        inspection_reader=object(),
-        analyzer=object(),
-        graph_expander=object(),
-    )
-    ex_state = ExplorationState(instruction="x")
-    decision = ExplorationDecision(status="partial", needs=["more_code"], reason="r", next_action="stop")
-    u = UnderstandingResult(
-        relevance="medium",
-        sufficient=False,
-        evidence_sufficiency="partial",
-        knowledge_gaps=["missing caller path for Foo"],
-        summary="s",
-    )
-    out = engine._apply_gap_driven_decision(decision, u, ex_state)
-    assert out.next_action == "expand"
-    assert "callers" in out.needs
-    assert ex_state.expand_direction_hint == "callers"
-
-    ex_state2 = ExplorationState(instruction="x")
-    u2 = UnderstandingResult(
-        relevance="medium",
-        sufficient=False,
-        evidence_sufficiency="partial",
-        knowledge_gaps=["missing callee chain"],
-        summary="s",
-    )
-    out2 = engine._apply_gap_driven_decision(decision, u2, ex_state2)
-    assert out2.next_action == "expand"
-    assert "callees" in out2.needs
-    assert ex_state2.expand_direction_hint == "callees"
-
-
-def test_gap_mapping_definition_triggers_refine_with_keyword_inject():
-    engine = ExplorationEngineV2(
-        dispatcher=object(),
-        intent_parser=object(),
-        selector=object(),
-        inspection_reader=object(),
-        analyzer=object(),
-        graph_expander=object(),
-    )
-    ex_state = ExplorationState(instruction="x")
-    decision = ExplorationDecision(status="partial", needs=["more_code"], reason="r", next_action="stop")
-    u = UnderstandingResult(
-        relevance="medium",
-        sufficient=False,
-        evidence_sufficiency="partial",
-        knowledge_gaps=["missing definition of Bar"],
-        summary="s",
-    )
-    out = engine._apply_gap_driven_decision(decision, u, ex_state)
-    assert out.next_action == "refine"
-    assert ex_state.discovery_keyword_inject
-    assert "definition" in ex_state.discovery_keyword_inject
 
 
 def test_should_expand_respects_depth_cap(monkeypatch):
@@ -534,7 +407,7 @@ def test_discovery_merges_keyword_inject():
         ]
 
     engine._dispatcher = SimpleNamespace(search_batch=fake_search_batch)
-    engine._discovery(intent, SimpleNamespace(), ex_state)
+    engine._discovery(intent, SimpleNamespace(), ex_state, refine_phase=True)
     assert ex_state.discovery_keyword_inject == []
     text_modes = [c for c in calls if c[0] == "text"]
     assert text_modes
@@ -549,7 +422,6 @@ def test_e2e_expand_three_targets_increments_depth_once_and_clears_direction_hin
     import agent_v2.exploration.exploration_engine_v2 as emod
 
     monkeypatch.setattr(emod, "EXPLORATION_MAX_STEPS", 2)
-    monkeypatch.setattr(emod, "ENABLE_UTILITY_STOP", False)
 
     captured_state: list = []
 
@@ -565,7 +437,12 @@ def test_e2e_expand_three_targets_increments_depth_once_and_clears_direction_hin
 
     class _Parser:
         def parse(self, instruction: str, **kwargs):
-            return QueryIntent(symbols=["RootSym"], keywords=[], intents=["debug"])
+            return QueryIntent(
+                symbols=["RootSym"],
+                keywords=[],
+                intents=["debug"],
+                relationship_hint="callers",
+            )
 
     class _Dispatcher:
         def execute(self, step, state):
@@ -593,8 +470,10 @@ def test_e2e_expand_three_targets_increments_depth_once_and_clears_direction_hin
             ]
 
     class _Selector:
-        def select_batch(self, instruction, intent_text, scoped, seen_files, *, limit, **kwargs):
-            return scoped[:limit]
+        def select_batch(self, instruction, intent_text, scoped, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                scoped, limit, selection_confidence="medium", coverage_signal="good"
+            )
 
     class _Reader:
         def inspect_packet(self, selected, *, symbol, line, window, state):

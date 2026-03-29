@@ -60,6 +60,14 @@ def pytest_configure(config):
         "retrieval: mid-pipeline retrieval quality tests (require real repo tools; "
         "deselect with '-m \"not retrieval\"')",
     )
+    config.addinivalue_line(
+        "markers",
+        "external_repo: optional multi-clone retrieval tests (set AGENT_V2_RUN_EXTERNAL_REPO_RETRIEVAL_TESTS=1)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "agent_v2_integration_live: full-stack agent_v2 live validation (set AGENT_V2_LIVE=1; real LLM + tools)",
+    )
 
 
 @pytest.fixture(autouse=True)

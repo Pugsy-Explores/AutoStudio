@@ -17,6 +17,7 @@ from agent_v2.planner.planner_v2 import PlannerV2
 from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.plan import PlanDocument, PlanStep
+from agent_v2.runtime.phase1_tool_exposure import ALLOWED_PLAN_STEP_ACTIONS
 from agent_v2.validation.plan_validator import PlanValidator
 
 from tests.fixtures.planner_repo_exploration_fixtures import (
@@ -26,7 +27,7 @@ from tests.fixtures.planner_repo_exploration_fixtures import (
     exploration_with_relationships,
 )
 
-_ALLOWED_ACTIONS = frozenset({"search", "open_file", "edit", "run_tests", "shell", "finish"})
+_ALLOWED_ACTIONS = ALLOWED_PLAN_STEP_ACTIONS
 _VAGUE_SUBSTRINGS = (
     "understand the module",
     "understand module",

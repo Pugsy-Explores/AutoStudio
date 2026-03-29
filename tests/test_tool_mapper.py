@@ -89,6 +89,18 @@ def test_summarize_unknown_tool_success():
 # map_tool_result_to_execution_result — success path (Step 5 mandatory)
 # ---------------------------------------------------------------------------
 
+def test_map_success_includes_full_output_for_shell():
+    tr = ToolResult(
+        tool_name="shell",
+        success=True,
+        data={"stdout": "line1\nline2\n", "stderr": ""},
+        duration_ms=1,
+    )
+    result = map_tool_result_to_execution_result(tr, step_id="s_shell")
+    assert result.output.full_output is not None
+    assert "line1" in result.output.full_output
+
+
 def test_map_success_open_file():
     """Step 5 mandatory: success=True, status='success', output.summary non-empty."""
     tr = ToolResult(

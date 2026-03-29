@@ -1,0 +1,101 @@
+{
+  "schema_version": 3,
+  "repos": [
+    {
+      "name": "concurrency_repo",
+      "git": "https://github.com/kevinknights29/Concurrent-and-Parallel-Programming-in-Python.git"
+    },
+    {
+      "name": "mini_projects",
+      "git": "https://github.com/Python-World/python-mini-projects.git"
+    }
+  ],
+  "required_pattern_buckets": [
+    "concurrency",
+    "class_lookup",
+    "function_trace",
+    "database",
+    "utility",
+    "entrypoint",
+    "config_constants",
+    "cross_reference",
+    "vague_query"
+  ],
+  "cases": [
+    {
+      "id": "conc_pipeline_executor",
+      "repo": "concurrency_repo",
+      "relative_file": "src/pipeline/executor.py",
+      "expected_symbol": "PipelineExecutor",
+      "kind": "class",
+      "pattern": "concurrency"
+    },
+    {
+      "id": "conc_main_entry",
+      "repo": "concurrency_repo",
+      "relative_file": "main.py",
+      "expected_symbol": "main",
+      "kind": "function",
+      "pattern": "entrypoint"
+    },
+    {
+      "id": "todo_app_todo_model",
+      "repo": "mini_projects",
+      "relative_file": "projects/Todo_app/app.py",
+      "expected_symbol": "Todo",
+      "kind": "class",
+      "pattern": "class_lookup"
+    },
+    {
+      "id": "todo_app_index_route",
+      "repo": "mini_projects",
+      "relative_file": "projects/Todo_app/app.py",
+      "expected_symbol": "index",
+      "kind": "function",
+      "pattern": "function_trace"
+    },
+    {
+      "id": "mysql_sql_fn",
+      "repo": "mini_projects",
+      "relative_file": "projects/export_mysql_to_csv_send_to_wocom/export_mysql_data_to_csv.py",
+      "expected_symbol": "sql",
+      "kind": "function",
+      "pattern": "database"
+    },
+    {
+      "id": "cli_todo_add_cmd",
+      "repo": "mini_projects",
+      "relative_file": "projects/Cli_todo/todo.py",
+      "expected_symbol": "add",
+      "kind": "function",
+      "pattern": "utility",
+      "instruction": "Locate the Click CLI subcommand that adds a new task to the todo list."
+    },
+    {
+      "id": "constants_config_file",
+      "repo": "concurrency_repo",
+      "relative_file": "src/utils/constants.py",
+      "expected_symbol": "CONFIG_FILE",
+      "kind": "constant",
+      "pattern": "config_constants"
+    },
+    {
+      "id": "wiki_worker_cross_module",
+      "repo": "concurrency_repo",
+      "relative_file": "src/wikipedia.py",
+      "expected_symbol": "WikiWorker",
+      "kind": "class",
+      "pattern": "cross_reference",
+      "instruction": "Where is the worker class that scrapes Wikipedia for stock tickers implemented?"
+    },
+    {
+      "id": "mysql_export_vague",
+      "repo": "mini_projects",
+      "relative_file": "projects/export_mysql_to_csv_send_to_wocom/export_mysql_data_to_csv.py",
+      "expected_symbol": "read_mysql_to_csv",
+      "kind": "function",
+      "pattern": "vague_query",
+      "instruction": "Where is the logic that runs the configured SQL query and writes each result row into a CSV file?"
+    }
+  ]
+}

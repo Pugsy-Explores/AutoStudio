@@ -69,8 +69,8 @@ def test_ingest_discovery_candidates():
         file_path="/z.py",
         snippet="hit",
         source="graph",
+        discovery_max_score=0.9,
     )
-    object.__setattr__(c, "_discovery_max_score", 0.9)
     m.ingest_discovery_candidates([c], limit=6)
     snap = m.get_summary()
     assert len(snap["evidence"]) == 1

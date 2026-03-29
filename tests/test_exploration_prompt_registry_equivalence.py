@@ -151,8 +151,10 @@ Do NOT select based on keyword similarity alone
 OUTPUT (STRICT JSON):
 {{
 "selected": [{{"file_path": "string", "symbol": "string"}}],
+"selected_symbols": {{"0": ["OutlineSymbol"]}},
 "no_relevant_candidate": boolean
 }}
+When outline_for_prompt is present on a candidate, you may add selected_symbols keyed by index string with 1–3 names from that outline.
 If no candidate is necessary, use an empty selected array and set no_relevant_candidate to true.
 
 VERIFICATION:
@@ -164,7 +166,13 @@ Return ONLY JSON.
 """
 
 
-def _legacy_analyzer(instruction: str, file_path: str, snippet: str) -> str:
+def _legacy_analyzer(
+    instruction: str,
+    file_path: str,
+    snippet: str,
+    *,
+    symbol_relationships_block: str = "(not provided)",
+) -> str:
     return f"""ROLE:
 You are a senior engineer determining whether this code is necessary to answer the instruction.
 
@@ -181,7 +189,12 @@ File:
 Snippet (may be truncated):
 {snippet[:6000]}
 
+Symbol relationships (optional graph hints):
+{symbol_relationships_block}
+
 CONSTRAINTS:
+
+Symbol relationships (when present) are supplementary; the snippet/code is the primary source of truth — use graph hints only if they help close gaps, not to override the code.
 
 "sufficient" ONLY if the snippet alone is enough to satisfy the instruction.
 Base decision on whether the snippet satisfies the instruction; use code logic when reasoning is required.
@@ -279,13 +292,40 @@ def test_selector_batch_matches_legacy(reg):
     assert built == _legacy_selector_batch(instruction, explored_block, pl, limit)
 
 
-def test_analyzer_matches_legacy(reg):
+def test_analyzer_template_formats_with_all_placeholders(reg):
+    """Qwen model path uses user_prompt_template with task_intent_summary + intent + context_blocks."""
     instruction = "instr"
     fp = "p/q/r.py"
-    snippet = "code " * 400
-    tmpl = reg.get_instructions("exploration.analyzer")
-    built = tmpl.format(instruction=instruction, file_path=fp, snippet=snippet[:6000]) + "\n"
-    assert built == _legacy_analyzer(instruction, fp, snippet)
+    snippet = ("code " * 400)[:6000]
+    _sys, user_t = reg.render_prompt_parts(
+        "exploration.analyzer",
+        model_name="qwen2.5-coder-7b",
+    )
+    user_rendered = user_t.format(
+        instruction=instruction,
+        task_intent_summary="type=explanation; scope=narrow",
+        intent="retrieval_kw",
+        context_blocks="[]",
+        symbol_relationships_block="(not provided)",
+    )
+    assert instruction in user_rendered
+    assert "retrieval_kw" in user_rendered
+    assert "type=explanation" in user_rendered
+    assert "{instruction}" not in user_rendered
+
+    default_tmpl = reg.get_instructions("exploration.analyzer")
+    legacy = (
+        default_tmpl.format(
+            instruction=instruction,
+            file_path=fp,
+            snippet=snippet,
+            symbol_relationships_block="(not provided)",
+        )
+        + "\n"
+    )
+    assert legacy == _legacy_analyzer(instruction, fp, snippet, symbol_relationships_block="(not provided)")
+    assert fp in legacy
+    assert instruction in legacy
 
 
 def test_model_specific_path_falls_back_to_default(reg):

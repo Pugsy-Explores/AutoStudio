@@ -74,7 +74,7 @@ def llm_reachable() -> bool:
         out = call_reasoning_model(
             'Reply with exactly the two letters OK and nothing else.',
             max_tokens=16,
-            task_name="PLANNER_V2",
+            task_name="PLANNER_DECISION_ACT",
         )
         return bool(out and str(out).strip())
     except Exception as exc:  # noqa: BLE001 — surface as skip reason

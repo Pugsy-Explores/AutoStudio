@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from agent_v2.exploration.exploration_engine_v2 import ExplorationEngineV2
 from agent_v2.schemas.exploration import QueryIntent, ReadPacket, UnderstandingResult
+from tests.exploration_selector_batch_mocks import mock_selector_batch_first_n
 from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.execution import ExecutionResult
 from agent_v2.schemas.tool import ToolResult
@@ -74,10 +75,6 @@ def _print_case(title: str, result: FinalExplorationSchema) -> None:
 
 def test_no_discovery_candidates_early_exit(monkeypatch):
     """Discovery yields no candidates → pending queue empty; no inspection."""
-    import agent_v2.exploration.exploration_engine_v2 as emod
-
-    monkeypatch.setattr(emod, "ENABLE_UTILITY_STOP", False)
-
     class _Parser:
         def parse(self, instruction: str, **kwargs):
             return QueryIntent(symbols=[], keywords=[], intents=["debug"])
@@ -101,15 +98,11 @@ def test_no_discovery_candidates_early_exit(monkeypatch):
     _print_case("no candidates (empty discovery)", result)
     _assert_exploration_result_valid(result)
     assert result.evidence == []
-    assert result.metadata.termination_reason == "pending_exhausted"
+    assert result.metadata.termination_reason == "no_relevant_candidate"
 
 
 def test_single_step_sufficient(monkeypatch):
-    """One inspect + sufficient analyzer → primary_symbol_sufficient."""
-    import agent_v2.exploration.exploration_engine_v2 as emod
-
-    monkeypatch.setattr(emod, "ENABLE_UTILITY_STOP", False)
-
+    """One inspect + sufficient analyzer → analyzer_sufficient (mapper authority)."""
     class _Parser:
         def parse(self, instruction: str, **kwargs):
             return QueryIntent(symbols=["SufSym"], keywords=[], intents=["find_definition"])
@@ -137,8 +130,10 @@ def test_single_step_sufficient(monkeypatch):
             ]
 
     class _Selector:
-        def select_batch(self, instruction, intent_text, scoped, seen_files, *, limit, **kwargs):
-            return scoped[:limit]
+        def select_batch(self, instruction, intent_text, scoped, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                scoped, limit, selection_confidence="high", coverage_signal="good"
+            )
 
     class _Reader:
         def inspect_packet(self, selected, *, symbol, line, window, state):
@@ -173,29 +168,28 @@ def test_single_step_sufficient(monkeypatch):
     _print_case("single-step sufficient", result)
     _assert_exploration_result_valid(result)
     assert len(result.evidence) >= 1
-    assert result.metadata.termination_reason == "primary_symbol_sufficient"
+    assert result.metadata.termination_reason == "analyzer_sufficient"
 
 
-def test_utility_stop_no_improvement(monkeypatch):
-    """Repeated identical utility signature → no_improvement_streak after streak threshold."""
+def test_mapper_default_stop_partial_good_coverage(monkeypatch):
+    """§1.1: not sufficient + selector coverage_signal=good + relationship_hint=none → mapper STOP."""
     import agent_v2.exploration.exploration_engine_v2 as emod
 
-    monkeypatch.setattr(emod, "ENABLE_UTILITY_STOP", True)
-    monkeypatch.setattr(emod, "EXPLORATION_UTILITY_NO_IMPROVEMENT_STREAK", 2)
-    monkeypatch.setattr(emod, "EXPLORATION_MAX_STEPS", 12)
+    monkeypatch.setattr(emod, "EXPLORATION_MAX_STEPS", 8)
 
     u = UnderstandingResult(
         relevance="high",
         confidence=0.5,
         sufficient=False,
+        is_sufficient=False,
         evidence_sufficiency="partial",
-        knowledge_gaps=["stable gap for utility probe"],
-        summary="same each time",
+        knowledge_gaps=["still missing detail"],
+        summary="partial understanding",
     )
 
     class _Parser:
         def parse(self, instruction: str, **kwargs):
-            return QueryIntent(symbols=["A"], keywords=[], intents=["debug"])
+            return QueryIntent(symbols=["A"], keywords=[], intents=["debug"], relationship_hint="none")
 
     class _Dispatcher:
         def execute(self, step, state):
@@ -216,8 +210,10 @@ def test_utility_stop_no_improvement(monkeypatch):
             ]
 
     class _Selector:
-        def select_batch(self, instruction, intent_text, scoped, seen_files, *, limit, **kwargs):
-            return scoped[:limit]
+        def select_batch(self, instruction, intent_text, scoped, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                scoped, limit, selection_confidence="medium", coverage_signal="good"
+            )
 
     class _Reader:
         def inspect_packet(self, selected, *, symbol, line, window, state):
@@ -245,17 +241,16 @@ def test_utility_stop_no_improvement(monkeypatch):
         analyzer=_Analyzer(),
         graph_expander=_Graph(),
     )
-    result = engine.explore("utility plateau", state=SimpleNamespace(context={}))
-    _print_case("utility stop (no improvement streak)", result)
+    result = engine.explore("mapper default stop probe", state=SimpleNamespace(context={}))
+    _print_case("mapper_default_stop (partial + good coverage)", result)
     _assert_exploration_result_valid(result)
-    assert result.metadata.termination_reason == "no_improvement_streak"
+    assert result.metadata.termination_reason == "mapper_default_stop"
 
 
 def test_max_steps_reached(monkeypatch):
     """steps_taken hits EXPLORATION_MAX_STEPS before finishing worklist."""
     import agent_v2.exploration.exploration_engine_v2 as emod
 
-    monkeypatch.setattr(emod, "ENABLE_UTILITY_STOP", False)
     monkeypatch.setattr(emod, "EXPLORATION_MAX_STEPS", 1)
 
     class _Parser:
@@ -281,8 +276,10 @@ def test_max_steps_reached(monkeypatch):
             ]
 
     class _Selector:
-        def select_batch(self, instruction, intent_text, scoped, seen_files, *, limit, **kwargs):
-            return scoped[:limit]
+        def select_batch(self, instruction, intent_text, scoped, *, limit, **kwargs):
+            return mock_selector_batch_first_n(
+                scoped, limit, selection_confidence="medium", coverage_signal="good"
+            )
 
     class _Reader:
         def inspect_packet(self, selected, *, symbol, line, window, state):

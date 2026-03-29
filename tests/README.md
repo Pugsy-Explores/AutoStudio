@@ -20,6 +20,45 @@ This is the **compatibility layer** for tests and scripts that historically impo
 | `test_agent_v2_loop_retry.py` | `AgentLoop` retry/stop behavior |
 | `integration/` | E2E wiring — see `integration/README.md` |
 | `evals/` | Benchmark harnesses |
+| `retrieval/` | Retrieval pipeline eval helpers + optional multi-repo **pattern coverage** (see below) |
+
+## Retrieval evaluation (`tests/retrieval/`)
+
+These modules support **`scripts/eval_retrieval_pipeline.py`** and pytest checks around **`run_retrieval_pipeline`** (mid-pipeline retrieval only — not full exploration).
+
+| File | Role |
+|------|------|
+| `case_generation.py` | Builds `RetrievalEvalCase` rows from real `agent_v2/` symbols and from cloned exploration repos (`build_default_local_cases`, `build_multi_repo_eval_cases`, …). |
+| `pattern_sources.json` | **Config-driven manifest**: tiny GitHub repos (`EXPLORATION_TEST_REPOS` names) + one row per **pattern bucket** (concurrency, class lookup, DB, utilities, entrypoints, vague queries, constants, cross-reference, etc.). Paths and symbols are real; updates here are the intended way to extend coverage. |
+| `pattern_coverage.py` | Loads the manifest, clones repos via `agent_v2.exploration_test_repos`, sets env for multi-root retrieval (`AGENT_V2_EXPLORATION_TEST_REPOS_JSON`, `RETRIEVAL_EXTRA_PROJECT_ROOTS`), builds cases, optional `index_repo` for `.symbol_graph`. |
+| `test_retrieval_pipeline_behavior.py` | Default local / multi-repo harness behavior. |
+| `test_pattern_coverage_retrieval.py` | **Optional** pytest: pattern dimensions (off unless enabled). |
+| `test_retrieval_external_repos.py` | External repo wiring checks. |
+
+### Pattern coverage pytest (optional)
+
+First-time use needs network to clone; indexing writes under `artifacts/exploration_test_repos/`. Pre-index: `python3 scripts/index_pattern_coverage_repos.py`.
+
+```bash
+# Fast check: manifest buckets vs built cases (no engine)
+RUN_PATTERN_COVERAGE=1 pytest tests/retrieval/test_pattern_coverage_retrieval.py::test_pattern_coverage_category_tags -v
+
+# Heavier smoke: runs retrieval for every manifest case (rerank off by default in fixture)
+RUN_PATTERN_COVERAGE=1 pytest tests/retrieval/test_pattern_coverage_retrieval.py -v
+```
+
+- **`test_pattern_coverage_category_tags`** asserts every `required_pattern_buckets` entry in `pattern_sources.json` appears in at least one case — keeps the taxonomy complete.
+- **`test_pattern_coverage_pipeline_runs_and_reports`** asserts shape only (top-N paths/scores/slots); **misses outside top-k are not test failures** — they are signals for improving retrieval/rerank.
+
+Marked with **`@pytest.mark.retrieval`** (see root `pyproject.toml` / markers).
+
+### CLI eval (human-readable)
+
+```bash
+python3 scripts/eval_retrieval_pipeline.py --patterns --no-rerank --fail-threshold 99
+```
+
+`--patterns` reads `pattern_sources.json`. Use `--fail-threshold` when you want a non-zero exit only after many misses. Omit `--no-rerank` for cross-encoder rerank (slower).
 
 ## Fixtures
 

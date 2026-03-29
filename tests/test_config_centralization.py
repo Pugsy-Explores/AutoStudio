@@ -26,7 +26,13 @@ from agent_v2.state.agent_state import AgentState
 
 def test_validate_config_rejects_write_actions_in_read_only_policy():
     bad_cfg = AgentV2Config(
-        planner=PlannerConfig(allowed_actions_read_only=frozenset({"search", "edit"})),
+        planner=PlannerConfig(
+            allowed_actions_read_only=frozenset({"search", "edit"}),
+            allowed_actions_plan_safe=frozenset(
+                {"search", "open_file", "run_tests", "shell", "finish"}
+            ),
+            strict_tool=False,
+        ),
         exploration=ExplorationConfig(max_steps=5, allow_partial_for_plan_mode=False),
         pytest=PytestConfig(ignore_dirs=("artifacts",)),
         planner_loop=PlannerLoopConfig(
@@ -84,6 +90,7 @@ def test_plan_mode_allows_partial_exploration_when_config_enabled():
         mock_planner.plan.return_value = mock_plan
 
         mock_exp = MagicMock()
+        mock_exp.query_intent = None  # avoid MagicMock auto-attr → invalid PlannerPlanContext
         mock_exp.summary.overall = "partial but useful"
         mock_exp.model_dump.return_value = {"exploration_id": "e1"}
         mock_exp.metadata = {"completion_status": "incomplete", "termination_reason": "max_steps"}
@@ -92,7 +99,7 @@ def test_plan_mode_allows_partial_exploration_when_config_enabled():
 
         manager = ModeManager(mock_er, mock_planner, plan_executor=MagicMock())
         state = AgentState(instruction="plan only")
-        manager.run(state, mode="plan")
+        manager.run(state, mode="plan_legacy")
         assert mock_planner.plan.called
     finally:
         cfg_mod._CONFIG = original_cfg

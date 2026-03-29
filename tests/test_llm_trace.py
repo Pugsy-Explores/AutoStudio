@@ -59,7 +59,7 @@ class TestLlmTraceEmitter(unittest.TestCase):
     def test_record_llm_then_tool_order_preserved(self) -> None:
         em = TraceEmitter()
         em.record_llm(
-            task_name="PLANNER_V2",
+            task_name="PLANNER_DECISION_ACT",
             prompt="hello " * 100,
             output_text='{"ok": true}',
             latency_ms=12,
@@ -80,7 +80,7 @@ class TestLlmTraceEmitter(unittest.TestCase):
         tr = em.build_trace("instr", plan.plan_id)
         self.assertEqual(len(tr.steps), 2)
         self.assertEqual(tr.steps[0].kind, "llm")
-        self.assertEqual(tr.steps[0].action, "PLANNER_V2")
+        self.assertEqual(tr.steps[0].action, "PLANNER_DECISION_ACT")
         self.assertEqual(tr.steps[1].kind, "tool")
         self.assertEqual(tr.steps[1].action, "search")
         self.assertLessEqual(len(tr.steps[0].input.get("prompt", "")), 9000)
@@ -134,7 +134,7 @@ class TestLlmTraceEmitter(unittest.TestCase):
             TraceStep(
                 step_id="llm-1",
                 plan_step_index=0,
-                action="PLAN_ARG_GEN",
+                action="PLANNER_TOOL_ARGS_ACT",
                 target="m",
                 success=True,
                 error=None,
@@ -142,7 +142,7 @@ class TestLlmTraceEmitter(unittest.TestCase):
                 kind="llm",
                 input={"prompt": "p"},
                 output={"text": "t"},
-                metadata={"task_name": "PLAN_ARG_GEN", "model": "m", "latency_ms": 3},
+                metadata={"task_name": "PLANNER_TOOL_ARGS_ACT", "model": "m", "latency_ms": 3},
             ),
             TraceStep(
                 step_id="s1",

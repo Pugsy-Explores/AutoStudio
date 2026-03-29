@@ -20,9 +20,14 @@ from agent_v2.schemas.plan import (
     PlanStepLastResult,
 )
 from agent_v2.schemas.policies import ExecutionPolicy
+from agent_v2.schemas.planner_plan_context import PlannerPlanContext
 from agent_v2.schemas.replan import ReplanContext, ReplanNewPlan, ReplanResult
 from agent_v2.runtime.plan_executor import PlanExecutor
-from agent_v2.runtime.replanner import Replanner, merge_preserved_completed_steps
+from agent_v2.runtime.replanner import (
+    Replanner,
+    merge_preserved_completed_steps,
+    validate_completed_steps_immutable,
+)
 from agent_v2.state.agent_state import AgentState
 from agent_v2.validation.plan_validator import PlanValidationError
 from agent_v2.validation.replan_result_validator import ReplanResultValidator
@@ -154,6 +159,74 @@ class TestMergePreserved(unittest.TestCase):
         self.assertEqual(merged.steps[0].execution.status, "completed")
         self.assertEqual(merged.steps[0].execution.last_result.output_summary, "done")
 
+    def test_prepends_completed_steps_missing_from_new_tail(self):
+        """Controller re-plan often emits only the next synthetic steps (s3/s4), not completed s1."""
+        old = _plan("p1", "s1", "s2")
+        old.steps[0].execution = PlanStepExecution(
+            status="completed",
+            attempts=1,
+            max_attempts=2,
+            last_result=PlanStepLastResult(success=True, output_summary="done"),
+        )
+        new = PlanDocument(
+            plan_id="p2",
+            instruction="test",
+            understanding="u",
+            sources=[PlanSource(type="other", ref="r", summary="s")],
+            steps=[
+                PlanStep(
+                    step_id="s3",
+                    index=3,
+                    type="explore",
+                    goal="shell",
+                    action="shell",
+                    inputs={"command": "ls"},
+                    execution=PlanStepExecution(max_attempts=2),
+                ),
+                PlanStep(
+                    step_id="s4",
+                    index=4,
+                    type="finish",
+                    goal="done",
+                    action="finish",
+                    dependencies=["s3"],
+                    execution=PlanStepExecution(max_attempts=2),
+                ),
+            ],
+            risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
+            completion_criteria=["c"],
+            metadata=PlanMetadata(created_at="2026-01-01T00:00:00Z", version=1),
+        )
+        merged = merge_preserved_completed_steps(old, new)
+        self.assertEqual([s.step_id for s in merged.steps], ["s1", "s3", "s4"])
+        self.assertEqual(merged.steps[0].execution.status, "completed")
+        self.assertEqual(merged.steps[1].action, "shell")
+
+    def test_restores_goal_action_inputs_when_replan_rewrites_completed_step_id(self):
+        """Replan JSON often reuses s1 with a new action; merge must freeze completed work."""
+        old = _plan("p1", "s1", "s2")
+        old.steps[0].execution = PlanStepExecution(
+            status="completed",
+            attempts=1,
+            max_attempts=2,
+            last_result=PlanStepLastResult(success=True, output_summary="done"),
+        )
+        new = _plan("p2", "s1", "s2")
+        new.steps[0] = PlanStep(
+            step_id="s1",
+            index=1,
+            type="finish",
+            goal="done early",
+            action="finish",
+            inputs={},
+            execution=PlanStepExecution(max_attempts=2),
+        )
+        merged = merge_preserved_completed_steps(old, new)
+        self.assertEqual(merged.steps[0].action, "search")
+        self.assertEqual(merged.steps[0].goal, "search")
+        self.assertEqual(merged.steps[0].inputs, {"query": "q"})
+        validate_completed_steps_immutable(old, merged)
+
 
 class TestReplannerBuild(unittest.TestCase):
     def test_build_replan_request_and_context(self):
@@ -215,9 +288,15 @@ class TestPlanExecutorReplanLoop(unittest.TestCase):
         ex.run(initial, state)
 
         mock_planner.plan.assert_called_once()
-        kw = mock_planner.plan.call_args.kwargs
+        ca = mock_planner.plan.call_args
+        kw = ca.kwargs
         self.assertTrue(kw.get("deep"))
-        self.assertIsInstance(kw.get("planner_input"), ReplanContext)
+        pctx = kw.get("planner_context")
+        if pctx is None and len(ca.args) >= 2:
+            pctx = ca.args[1]
+        self.assertIsInstance(pctx, PlannerPlanContext)
+        self.assertIsInstance(pctx.replan, ReplanContext)
+        self.assertIsNotNone(pctx.session, "Replanner must receive SessionMemory from PlanExecutor")
         self.assertEqual(mock_dispatch.execute.call_count, 2)
         self.assertEqual(state.metadata.get("replan_attempt"), 1)
         self.assertEqual(state.context.get("active_plan_document").plan_id, "p_rec")

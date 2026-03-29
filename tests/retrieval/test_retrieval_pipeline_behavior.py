@@ -20,12 +20,10 @@ Run:
 
 from __future__ import annotations
 
-import ast
 import logging
 import os
 import sys
 import warnings
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -43,95 +41,13 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 # ---------------------------------------------------------------------------
-# Dynamic repo scanning — no hardcoded symbol names
+# Dynamic repo scanning — no hardcoded symbol names (see case_generation.py)
 # ---------------------------------------------------------------------------
 
+from tests.retrieval.case_generation import RetrievalEvalCase, build_default_local_cases
 
-def _parse_top_level(path: Path) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
-    """Return (classes, functions) as (name, lineno) tuples from top-level AST nodes."""
-    try:
-        src = path.read_text(encoding="utf-8", errors="ignore")
-        tree = ast.parse(src, filename=str(path))
-    except (OSError, SyntaxError):
-        return [], []
-    classes: list[tuple[str, int]] = []
-    funcs: list[tuple[str, int]] = []
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
-            classes.append((node.name, node.lineno))
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
-            funcs.append((node.name, node.lineno))
-    return classes, funcs
-
-
-@dataclass
-class _TestCase:
-    case_id: str
-    instruction: str
-    expected_symbol: str
-    expected_file_hint: str
-    keywords: list[str] = field(default_factory=list)
-    alt_file_hints: list[str] = field(default_factory=list)
-
-
-def _build_test_cases(root: Path, *, max_cases: int = 14) -> list[_TestCase]:
-    agent = root / "agent_v2"
-    if not agent.is_dir():
-        raise RuntimeError(f"agent_v2/ not found under {root}")
-
-    _TARGET_MODULES: list[tuple[str, str]] = [
-        ("exploration/exploration_engine_v2.py", "engine"),
-        ("exploration/candidate_selector.py", "selector"),
-        ("exploration/exploration_scoper.py", "scoper"),
-        ("exploration/query_intent_parser.py", "intent_parser"),
-        ("exploration/exploration_working_memory.py", "working_memory"),
-        ("exploration/graph_expander.py", "graph_expander"),
-        ("runtime/dispatcher.py", "dispatcher"),
-        ("runtime/exploration_runner.py", "runner"),
-        ("schemas/exploration.py", "schema"),
-        ("config.py", "config"),
-    ]
-
-    cases: list[_TestCase] = []
-    seen_symbols: set[str] = set()
-
-    for rel_path, tag in _TARGET_MODULES:
-        full = agent / rel_path
-        if not full.is_file():
-            continue
-        classes, funcs = _parse_top_level(full)
-        candidates_sym = [(n, ln, "class") for n, ln in classes] + [(n, ln, "fn") for n, ln in funcs]
-        for sym_name, _, sym_kind in candidates_sym:
-            if sym_name in seen_symbols:
-                continue
-            seen_symbols.add(sym_name)
-            hint = str(full.relative_to(root))
-            kws = [sym_name, tag]
-            if sym_kind == "class":
-                instruction = f"Find the {sym_name} class definition and its public interface"
-            else:
-                instruction = f"Locate the {sym_name} function implementation"
-            cases.append(
-                _TestCase(
-                    case_id=f"{tag}_{sym_name}",
-                    instruction=instruction,
-                    expected_symbol=sym_name,
-                    expected_file_hint=hint,
-                    keywords=kws,
-                )
-            )
-            if len(cases) >= max_cases:
-                break
-        if len(cases) >= max_cases:
-            break
-
-    if not cases:
-        raise RuntimeError("Could not generate any test cases — is agent_v2/ populated?")
-
-    return cases
-
-
-_CASES: list[_TestCase] = _build_test_cases(_REPO_ROOT)
+_TestCase = RetrievalEvalCase
+_CASES: list[_TestCase] = build_default_local_cases(_REPO_ROOT)
 
 
 # ---------------------------------------------------------------------------
