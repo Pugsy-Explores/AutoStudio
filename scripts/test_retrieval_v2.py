@@ -55,7 +55,7 @@ def _fmt_candidates(candidates: list[dict], *, max_rows: int = 8) -> str:
 
 def run_query(query: str, project_root: str) -> None:
     from agent.retrieval.candidate_schema import RetrievalInput
-    from agent.retrieval.retrieval_pipeline_v2 import retrieve_v2
+    from agent.retrieval.retrieval_pipeline_v2 import retrieve
 
     print()
     print("═" * 70)
@@ -72,7 +72,7 @@ def run_query(query: str, project_root: str) -> None:
         max_chars=20_000,
     )
 
-    out = retrieve_v2(inp)
+    out = retrieve([inp.query], project_root=inp.project_root)[0]
     stages = out.stages
 
     # ── pre-RRF: per-source ─────────────────────────────────────────────────

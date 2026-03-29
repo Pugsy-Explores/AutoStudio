@@ -58,19 +58,17 @@ def _check_vector_available() -> bool:
 def _get_client(project_root: str):
     """Get or create persistent ChromaDB client for this workspace's embeddings directory."""
     global _chroma_clients
-    try:
-        import chromadb
+    from agent.retrieval.chroma_utils import try_persistent_chroma_client  # noqa: PLC0415
 
-        root = Path(project_root or ".").resolve()
-        path = (root / EMBEDDINGS_DIR / EMBEDDINGS_SUBDIR).resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        key = str(path)
-        if key not in _chroma_clients:
-            _chroma_clients[key] = chromadb.PersistentClient(path=key)
-        return _chroma_clients[key]
-    except BaseException as e:  # noqa: BLE001 - rust panics may not subclass Exception
-        logger.warning("[vector_retriever] client init failed; vector disabled for this query: %s", e)
-        return None
+    root = Path(project_root or ".").resolve()
+    path = (root / EMBEDDINGS_DIR / EMBEDDINGS_SUBDIR).resolve()
+    key = str(path)
+    if key not in _chroma_clients:
+        client = try_persistent_chroma_client(path)
+        if client is None:
+            return None
+        _chroma_clients[key] = client
+    return _chroma_clients[key]
 
 
 def _get_model():
@@ -170,6 +168,12 @@ def search_by_embedding(
         remote = try_daemon_vector_search(query, project_root, top_k)
         if remote is not None:
             return remote
+        logger.warning(
+            "[vector_retriever] [CHROMA FALLBACK BLOCKED] "
+            "daemon returned None but RETRIEVAL_REMOTE_FIRST=1. "
+            "Returning empty results. Check daemon health."
+        )
+        return {"results": [], "query": query, "error": "retrieval daemon unavailable"}
 
     if not _check_vector_available():
         return None
@@ -200,10 +204,93 @@ def search_batch(
     project_root: str | None = None,
     top_k: int = DEFAULT_TOP_K,
 ) -> list[dict | None]:
+    """Batch semantic search. Returns list of {results, query} per query.
+
+    Prefers a single POST /retrieve/vector/batch when remote-first; falls back to
+    local Chroma + batched daemon embed, then sequential search_by_embedding.
     """
-    Batch semantic search. Returns list of {results, query} per query.
-    """
-    out = []
-    for q in queries:
-        out.append(search_by_embedding(q, project_root, top_k))
-    return out
+    if not queries:
+        return []
+
+    from agent.retrieval.daemon_retrieval_client import (
+        remote_retrieval_enabled,
+        try_daemon_vector_search_batch,
+    )
+
+    if remote_retrieval_enabled():
+        batch_results = try_daemon_vector_search_batch(queries, project_root, top_k)
+        if batch_results is not None:
+            if not isinstance(batch_results, list) or len(batch_results) != len(queries):
+                logger.warning(
+                    "[vector_retriever] search_batch: invalid batch response "
+                    "shape=%s expected=%s — falling back",
+                    type(batch_results).__name__
+                    if not isinstance(batch_results, list)
+                    else len(batch_results),
+                    len(queries),
+                )
+            else:
+                out: list[dict | None] = []
+                for item in batch_results:
+                    if isinstance(item, dict) and "results" in item:
+                        out.append(
+                            {"results": item["results"], "query": item.get("query", "")}
+                        )
+                    else:
+                        out.append(None)
+                return out
+
+    if _check_vector_available() and daemon_embed_available():
+        root = Path(project_root or os.environ.get("SERENA_PROJECT_DIR", os.getcwd())).resolve()
+        client = _get_client(str(root))
+        if client:
+            try:
+                coll = client.get_collection(COLLECTION_NAME)
+                valid_queries = [q.strip() for q in queries if q and q.strip()]
+                if valid_queries:
+                    embeddings = encode_via_daemon(valid_queries)
+                    if embeddings:
+                        raw = coll.query(
+                            query_embeddings=embeddings,
+                            n_results=min(top_k, 20),
+                        )
+                        out = []
+                        docs_list = raw.get("documents", [])
+                        metas_list = raw.get("metadatas", [])
+                        for i, q in enumerate(valid_queries):
+                            docs = docs_list[i] if i < len(docs_list) else []
+                            metas = metas_list[i] if i < len(metas_list) else []
+                            hits = []
+                            for doc, meta in zip(docs, metas or []):
+                                meta = meta or {}
+                                path = normalize_file_path(meta.get("path", ""))
+                                if path:
+                                    hits.append({
+                                        "file": path,
+                                        "symbol": meta.get("symbol", ""),
+                                        "line": meta.get("line", 0),
+                                        "snippet": (doc or "")[:500],
+                                    })
+                            out.append({"results": hits, "query": q})
+                        return out
+            except Exception as e:
+                logger.debug(
+                    "[vector_retriever] batch local path failed, falling back: %s",
+                    e,
+                )
+
+    logger.debug(
+        "[vector_retriever] search_batch using sequential fallback for %d queries",
+        len(queries),
+    )
+    if remote_retrieval_enabled():
+        # Batch HTTP already failed; do not issue N× POST /retrieve/vector (single-query mode).
+        logger.warning(
+            "[vector_retriever] search_batch: remote batch unavailable — returning empty per query "
+            "(no single-query daemon fallback)"
+        )
+        return [
+            {"results": [], "query": q, "error": "retrieval daemon unavailable"}
+            for q in queries
+        ]
+    return [search_by_embedding(q, project_root, top_k) for q in queries]

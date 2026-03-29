@@ -4,8 +4,8 @@ If the daemon is already running (per config: health check on RETRIEVAL_DAEMON_P
 use that instance only — do not start a second one. Only when the daemon is not
 reachable and RETRIEVAL_DAEMON_AUTO_START is on do we start it.
 
-Used at controller entry so the main agent loop uses the daemon (reranker + embedding)
-when configured. On failure or timeout, the agent falls back to in-process models.
+Used at controller entry so the main agent loop can use the daemon for embeddings
+and remote retrieval when configured. Reranking is always in-process (MiniLM ONNX).
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from config.retrieval_config import (
     RETRIEVAL_DAEMON_AUTO_START,
     RETRIEVAL_DAEMON_PORT,
     RETRIEVAL_DAEMON_START_TIMEOUT_SECONDS,
-    RERANKER_USE_DAEMON,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,13 +40,9 @@ def _check_daemon_health(port: int = RETRIEVAL_DAEMON_PORT) -> tuple[bool, dict]
             if resp.status != 200:
                 return False, {}
             data = json.loads(resp.read().decode())
-            reranker_loaded = data.get("reranker_loaded", False)
-            embedding_loaded = data.get("embedding_loaded", False)
-            need_reranker = RERANKER_USE_DAEMON
             need_embedding = EMBEDDING_USE_DAEMON
-            healthy = (not need_reranker or reranker_loaded) and (
-                not need_embedding or embedding_loaded
-            )
+            emb_ok = bool(data.get("embedding_routing_ok")) or bool(data.get("embedding_loaded", False))
+            healthy = not need_embedding or emb_ok
             return healthy, data
     except Exception as e:
         logger.debug("[daemon_ensure] health check failed: %s", e)
@@ -81,9 +76,9 @@ def ensure_retrieval_daemon(project_root: str | Path) -> bool:
 
     If the daemon is already running (per health check), use that only — do not start
     a second instance. Returns True if daemon is reachable (existing or after start),
-    False otherwise. When False, the agent will fall back to in-process reranker/embedding.
+    False otherwise.
     """
-    if not RERANKER_USE_DAEMON and not EMBEDDING_USE_DAEMON:
+    if not EMBEDDING_USE_DAEMON:
         return False
 
     healthy, data = _check_daemon_health(RETRIEVAL_DAEMON_PORT)
@@ -107,15 +102,14 @@ def ensure_retrieval_daemon(project_root: str | Path) -> bool:
         healthy, data = _check_daemon_health(RETRIEVAL_DAEMON_PORT)
         if healthy:
             logger.info(
-                "[daemon_ensure] retrieval daemon ready (reranker=%s, embedding=%s)",
-                data.get("reranker_loaded", False),
+                "[daemon_ensure] retrieval daemon ready (embedding=%s)",
                 data.get("embedding_loaded", False),
             )
             return True
 
     logger.warning(
         "[daemon_ensure] retrieval daemon did not become healthy within %s s; "
-        "agent will use in-process fallback",
+        "agent will use in-process embedding fallback",
         timeout,
     )
     return False

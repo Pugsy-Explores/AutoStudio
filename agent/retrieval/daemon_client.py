@@ -1,10 +1,7 @@
-"""Single source of truth for retrieval daemon availability and routing.
+"""Retrieval daemon availability for embedding-backed remote retrieval.
 
-The daemon hosts both the embedding model and the reranker. When the daemon is
-available, the application must route all retrieval through it: embedding
-generation (candidate retrieval) and reranking. This module explicitly detects
-daemon availability via GET /health and exposes predicates so callers use the
-daemon-backed inference path instead of falling back to local or partial logic.
+Reranking is always in-process (MiniLM ONNX CPU). The daemon may still host
+embeddings and vector/BM25 routes when configured.
 """
 
 from __future__ import annotations
@@ -16,7 +13,6 @@ import urllib.request
 from config.retrieval_config import (
     EMBEDDING_USE_DAEMON,
     RETRIEVAL_DAEMON_PORT,
-    RERANKER_USE_DAEMON,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,40 +45,32 @@ def retrieval_daemon_health() -> dict | None:
         return None
 
 
+def _embedding_satisfies_daemon_routing(data: dict) -> bool:
+    """True if daemon can handle embedding routes (loaded, or lazy-load enabled)."""
+    if data.get("embedding_routing_ok"):
+        return True
+    return bool(data.get("embedding_loaded", False))
+
+
 def retrieval_daemon_available() -> bool:
     """
-    True when the retrieval daemon is active and has both stages we need per config.
-    When True, application logic must route retrieval through the daemon: embedding
-    for candidate retrieval and reranker for refining results. No local fallback.
+    True when the retrieval daemon is active and satisfies embedding routing per config.
     """
     data = retrieval_daemon_health()
     if not data:
         return False
-    reranker_loaded = data.get("reranker_loaded", False)
-    embedding_loaded = data.get("embedding_loaded", False)
-    need_reranker = RERANKER_USE_DAEMON
     need_embedding = EMBEDDING_USE_DAEMON
-    if need_reranker and not reranker_loaded:
-        return False
-    if need_embedding and not embedding_loaded:
+    if need_embedding and not _embedding_satisfies_daemon_routing(data):
         return False
     return True
 
 
-def daemon_reranker_available() -> bool:
-    """True when daemon is reachable and has reranker loaded. Use for reranker routing."""
-    data = retrieval_daemon_health()
-    if not data:
-        return False
-    return data.get("reranker_loaded", False)
-
-
 def daemon_embed_available() -> bool:
-    """True when daemon is reachable and has embedding loaded. Use for embedding routing."""
+    """True when daemon is reachable and can serve embeddings (loaded or lazy)."""
     if not EMBEDDING_USE_DAEMON:
         return False
     data = retrieval_daemon_health()
-    return bool(data and data.get("embedding_loaded", False))
+    return bool(data and _embedding_satisfies_daemon_routing(data))
 
 
 def reset_health_cache() -> None:

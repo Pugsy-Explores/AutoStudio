@@ -40,10 +40,15 @@ from agent.retrieval.symbol_expander import expand_from_anchors
 from agent.tools import find_referencing_symbols, read_file, read_symbol_body
 from config.agent_config import MAX_RETRIEVAL_RESULTS
 from config.repo_graph_config import INDEX_SQLITE, SYMBOL_GRAPH_DIR
+from agent.retrieval.reranker.constants import MODEL_NAME as RERANKER_MODEL_NAME
 from config.retrieval_config import (
+    BM25_TOP_K,
     DEFAULT_MAX_CHARS,
+    ENABLE_BM25_SEARCH,
     ENABLE_CONTEXT_RANKING,
+    ENABLE_GREP_SEARCH,
     ENABLE_LOCALIZATION_ENGINE,
+    ENABLE_VECTOR_SEARCH,
     FALLBACK_TOP_N,
     MAX_CONTEXT_SNIPPETS,
     MAX_RERANK_CANDIDATES,
@@ -52,9 +57,7 @@ from config.retrieval_config import (
     MIN_SELECTOR_CANDIDATE_POOL,
     RERANK_FUSION_WEIGHT,
     RERANK_MIN_CANDIDATES,
-    RERANKER_CPU_MODEL,
     RERANKER_ENABLED,
-    RERANKER_GPU_MODEL,
     RERANKER_TOP_K,
     RETRIEVAL_AUTO_DETECT_SERVICE_DIRS,
     RETRIEVAL_SERVICE_DIRS,
@@ -198,7 +201,6 @@ def search_candidates(query: str, project_root: str | None = None, state: AgentS
         metrics.start("bm25")
         try:
             from agent.retrieval.bm25_retriever import search_bm25
-            from config.retrieval_config import BM25_TOP_K, ENABLE_BM25_SEARCH
 
             if not ENABLE_BM25_SEARCH:
                 return []
@@ -216,7 +218,6 @@ def search_candidates(query: str, project_root: str | None = None, state: AgentS
         metrics.start("vector")
         try:
             from agent.retrieval.vector_retriever import search_by_embedding
-            from config.retrieval_config import ENABLE_VECTOR_SEARCH
 
             if not ENABLE_VECTOR_SEARCH:
                 return []
@@ -235,6 +236,8 @@ def search_candidates(query: str, project_root: str | None = None, state: AgentS
     def _run_grep() -> list[dict]:
         metrics.start("grep")
         try:
+            if not ENABLE_GREP_SEARCH:
+                return []
             from agent.tools.serena_adapter import search_code
 
             out = search_code(query, tool_hint="search_for_pattern")
@@ -412,7 +415,7 @@ def _log_rerank_telemetry(
     metrics.update({
         "ranking_method": "reranker" if skipped_reason is None else "retriever_score",
         "rerank_latency_ms": rerank_ms,
-        "rerank_model": RERANKER_GPU_MODEL if device == "gpu" else RERANKER_CPU_MODEL,
+        "rerank_model": RERANKER_MODEL_NAME,
         "rerank_device": device,
         "candidates_in": candidates_in,
         "candidates_out": candidates_out,
@@ -420,7 +423,7 @@ def _log_rerank_telemetry(
         "rerank_cache_hits": stats["hits"],
         "rerank_cache_misses": stats["misses"],
         "rerank_tokens": total_tokens,
-        "rerank_batch_size": int(os.getenv("RERANKER_BATCH_SIZE", "16")),
+        "rerank_batch_size": 16,
         "rerank_skipped_reason": skipped_reason,
     })
     if impact:
@@ -709,6 +712,7 @@ def run_retrieval_pipeline(
     (daemon-backed inference path). Updates state.context (retrieved_*, context_snippets, ranked_context).
     Returns aggregated result for the SEARCH step.
     """
+    logger.debug("[run_retrieval_pipeline]")
     raw_results = (search_results or [])[:MAX_SEARCH_RESULTS]
     # Reset selector-derived compaction state for this retrieval pass.
     state.context["bundle_selector_used"] = False
@@ -1000,46 +1004,33 @@ def run_retrieval_pipeline(
 
     if _reranker and not _bypass and len(candidates) >= RERANK_MIN_CANDIDATES:
         candidates_in = len(candidates)
-        try:
-            pipe_metrics.start("rerank")
-            t0 = time.monotonic()
-            deduped = candidates  # already deduped above
-            snippets = [coerce_snippet_text(c.get("snippet")) for c in deduped]
-            scored = _reranker.rerank(rank_query, snippets)
-            rerank_ms = int((time.monotonic() - t0) * 1000)
-            pipe_metrics.end("rerank")
-            total_tokens = sum(len(s.split()) for s in snippets)
+        pipe_metrics.start("rerank")
+        t0 = time.monotonic()
+        deduped = candidates  # already deduped above
+        snippets = [coerce_snippet_text(c.get("snippet")) for c in deduped]
+        scored = _reranker.rerank_batch([(rank_query, snippets)])[0]
+        rerank_ms = int((time.monotonic() - t0) * 1000)
+        pipe_metrics.end("rerank")
+        total_tokens = sum(len(s.split()) for s in snippets)
+        device = "cpu"
 
-            from agent.retrieval.reranker.hardware import detect_hardware  # noqa: PLC0415
-            device = detect_hardware()
-
-            reranked = _apply_reranker_scores(deduped, scored, RERANKER_TOP_K)
-            impact = _compute_rerank_impact(deduped, reranked)
-            build_selector_candidate_pool(
-                state, reranked, intent_label,
-                max_size=MAX_SELECTOR_CANDIDATE_POOL,
-                min_size=MIN_SELECTOR_CANDIDATE_POOL,
-            )
-            pipe_metrics.start("context_prune")
-            final_context = prune_context(
-                reranked, max_snippets=MAX_CONTEXT_SNIPPETS, max_chars=DEFAULT_MAX_CHARS
-            )
-            pipe_metrics.end("context_prune")
-            _log_rerank_telemetry(
-                state, rerank_ms, device,
-                candidates_in, len(deduped), len(final_context),
-                total_tokens, skipped_reason=None, impact=impact,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[retrieval_pipeline] reranker inference failed — using retriever-score ordering: %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-            state.context["reranker_failed"] = True
-            state.context["reranker_failed_fallback_used"] = True
-            _skipped_reason = f"inference_error:{type(exc).__name__}"
-            _reranker = None  # trigger fallback below
+        reranked = _apply_reranker_scores(deduped, scored, RERANKER_TOP_K)
+        impact = _compute_rerank_impact(deduped, reranked)
+        build_selector_candidate_pool(
+            state, reranked, intent_label,
+            max_size=MAX_SELECTOR_CANDIDATE_POOL,
+            min_size=MIN_SELECTOR_CANDIDATE_POOL,
+        )
+        pipe_metrics.start("context_prune")
+        final_context = prune_context(
+            reranked, max_snippets=MAX_CONTEXT_SNIPPETS, max_chars=DEFAULT_MAX_CHARS
+        )
+        pipe_metrics.end("context_prune")
+        _log_rerank_telemetry(
+            state, rerank_ms, device,
+            candidates_in, len(deduped), len(final_context),
+            total_tokens, skipped_reason=None, impact=impact,
+        )
     elif _reranker is None and RERANKER_ENABLED:
         _skipped_reason = "disabled"
     elif _bypass:

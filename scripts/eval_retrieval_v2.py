@@ -106,13 +106,13 @@ EVAL_HARD_CASES = [
      "agent/retrieval/reranker/reranker_factory.py",
      "reranker factory singleton"),
 
-    ("HttpRerankerClient",
-     "agent/retrieval/reranker/http_reranker.py",
-     "HTTP daemon client class"),
+    ("MiniLMReranker",
+     "agent/retrieval/reranker/minilm_reranker.py",
+     "canonical ONNX CPU reranker"),
 
-    ("daemon_reranker_available",
+    ("retrieval_daemon_available",
      "agent/retrieval/daemon_client.py",
-     "daemon health probe fn"),
+     "daemon health for embedding routing"),
 
     ("prune_deterministic",
      "agent/retrieval/prune_deterministic.py",
@@ -200,7 +200,7 @@ class EvalResult:
 
 def run_eval(project_root: str, cases: list[tuple[str, str, str]]) -> list[EvalResult]:
     from agent.retrieval.candidate_schema import RetrievalInput
-    from agent.retrieval.retrieval_pipeline_v2 import retrieve_v2
+    from agent.retrieval.retrieval_pipeline_v2 import retrieve
 
     results = []
     for query, expected_frag, desc in cases:
@@ -210,7 +210,7 @@ def run_eval(project_root: str, cases: list[tuple[str, str, str]]) -> list[EvalR
             top_k_per_source=15,
             max_snippets=20,
         )
-        out = retrieve_v2(inp)
+        out = retrieve([inp.query], project_root=inp.project_root)[0]
 
         rank = None
         src_at_rank = ""

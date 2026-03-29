@@ -32,7 +32,7 @@ def main() -> None:
     em = TraceEmitter()
     em.reset()
     em.record_llm(
-        task_name="PLANNER_V2",
+        task_name="PLANNER_DECISION_ACT",
         prompt="Plan a fix for the auth module.",
         output_text='{"steps":[{"action":"search"}]}',
         latency_ms=120,

@@ -2,6 +2,10 @@
 
 search_by_embedding returns {results: [{file, symbol, line, snippet}], query} | None.
 Chroma distances are not surfaced in the current API; rank_in_source used instead.
+
+Multi-query / daemon batch: ``retrieve_v2`` calls this once per query. Batched
+daemon vector search is used by ``retrieve_v2_multi`` via ``vector_retriever.search_batch``
+(``POST /retrieve/vector/batch`` when remote-first).
 """
 
 from __future__ import annotations

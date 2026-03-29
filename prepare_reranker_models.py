@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-"""Prepare the canonical MiniLM ONNX reranker (delegates to prepare_reranker_models)."""
+"""Wrapper so `python prepare_reranker_models.py` works from repo root. Implementation: scripts/prepare_reranker_models.py"""
 
 from __future__ import annotations
 
 import pathlib
 import runpy
-import sys
 
-_root = pathlib.Path(__file__).resolve().parent.parent
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
-
+_root = pathlib.Path(__file__).resolve().parent
 _impl = _root / "scripts" / "prepare_reranker_models.py"
 if not _impl.is_file():
     raise SystemExit(f"Missing {_impl}")

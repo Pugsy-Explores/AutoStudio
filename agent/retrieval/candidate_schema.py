@@ -75,6 +75,8 @@ class RetrievalInput:
 
     query: str
     project_root: str | None = None
+    # Additional indexed repo roots (each with its own .symbol_graph). Merged in graph/bm25/vector.
+    extra_project_roots: tuple[str, ...] | None = None
     top_k_per_source: int = 15
     rrf_top_n: int = 50
     rrf_k: int = 60
