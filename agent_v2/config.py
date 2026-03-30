@@ -46,8 +46,8 @@ ENABLE_EXPLORATION_ENGINE_V2: bool = _int_env("AGENT_V2_ENABLE_EXPLORATION_ENGIN
 ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS: bool = (
     _int_env("AGENT_V2_ENABLE_EXPLORATION_RESULT_LLM_SYNTHESIS", 0) == 1
 )
-# V1 user-facing answer from exploration (post-exploration, pre-planner). Default off; see Docs/agent_v2_answer_synthesis_audit_and_spec.md
-ENABLE_ANSWER_SYNTHESIS: bool = _int_env("AGENT_V2_ENABLE_ANSWER_SYNTHESIS", 0) == 1
+# V1 user-facing answer from exploration (post-exploration, pre-planner). Default on; set AGENT_V2_ENABLE_ANSWER_SYNTHESIS=0 to disable; see Docs/agent_v2_answer_synthesis_audit_and_spec.md
+ENABLE_ANSWER_SYNTHESIS: bool = _int_env("AGENT_V2_ENABLE_ANSWER_SYNTHESIS", 1) == 1
 # Evidence rows passed to answer synthesizer prompt (7B: ideal 3–6; cap at 8).
 ANSWER_SYNTHESIS_MAX_EVIDENCE_ITEMS: int = max(
     1, min(8, _int_env("AGENT_V2_ANSWER_SYNTHESIS_MAX_EVIDENCE_ITEMS", 8))
@@ -207,8 +207,24 @@ MAX_REPLANS: int = _int_env("AGENT_V2_MAX_REPLANS", 2)
 PLANNER_CONTROLLER_LOOP: bool = _int_env("AGENT_V2_PLANNER_CONTROLLER_LOOP", 1) == 1
 MAX_SUB_EXPLORATIONS_PER_TASK: int = _int_env("AGENT_V2_MAX_SUB_EXPLORATIONS_PER_TASK", 2)
 MAX_PLANNER_CONTROLLER_CALLS: int = _int_env("AGENT_V2_MAX_PLANNER_CONTROLLER_CALLS", 16)
+# ACT controller inner loop (TaskPlanner decisions); bounds iterations before forced synthesize+stop.
+MAX_ACT_CONTROLLER_ITERATIONS: int = max(
+    1, _int_env("AGENT_V2_MAX_ACT_CONTROLLER_ITERATIONS", 256)
+)
+# TaskPlanner loop: shadow compare (TaskPlanner vs PlanDocument) and authoritative control (default off).
+TASK_PLANNER_SHADOW_LOOP: bool = _bool_env("AGENT_V2_TASK_PLANNER_SHADOW_LOOP")
+TASK_PLANNER_AUTHORITATIVE_LOOP: bool = _bool_env("AGENT_V2_TASK_PLANNER_AUTHORITATIVE_LOOP")
+# When authoritative + this flag: prefer steps-only planner JSON (require_controller_json=False on PlannerV2 calls).
+PLANNER_PLAN_BODY_ONLY_WHEN_TASK_PLANNER_AUTHORITATIVE: bool = _bool_env(
+    "AGENT_V2_PLANNER_PLAN_BODY_ONLY_WHEN_TASK_PLANNER_AUTHORITATIVE"
+)
 # Phase B: require explicit planner `tool` in JSON (no inference from step). Env: PLANNER_STRICT_TOOL=1 or AGENT_V2_PLANNER_STRICT_TOOL=1
 PLANNER_STRICT_TOOL: bool = _bool_env("PLANNER_STRICT_TOOL") or _bool_env("AGENT_V2_PLANNER_STRICT_TOOL")
+
+# Chat-aware planning (thin task planner, stop policy, synthesis skip)
+ENABLE_THIN_TASK_PLANNER: bool = _bool_env("AGENT_V2_ENABLE_THIN_TASK_PLANNER")
+ENABLE_EXPLORATION_STOP_POLICY: bool = _bool_env("AGENT_V2_ENABLE_EXPLORATION_STOP_POLICY")
+SKIP_ANSWER_SYNTHESIS_WHEN_SUFFICIENT: bool = _bool_env("AGENT_V2_SKIP_ANSWER_SYNTHESIS_WHEN_SUFFICIENT")
 
 # Executor guards (Phase 10 Step 8)
 MAX_EXECUTOR_DISPATCHES: int = _int_env("AGENT_V2_MAX_EXECUTOR_DISPATCHES", 20)
@@ -248,6 +264,19 @@ class PlannerLoopConfig:
     controller_loop_enabled: bool
     max_sub_explorations_per_task: int
     max_planner_controller_calls: int
+    max_act_controller_iterations: int
+    task_planner_shadow_loop: bool
+    task_planner_authoritative_loop: bool
+    planner_plan_body_only_when_task_planner_authoritative: bool
+
+
+@dataclass(frozen=True)
+class ChatPlanningConfig:
+    """Chat-aware planning flags (Docs/architecture_freeze/full-planner-arch-freeze-impl.md)."""
+
+    enable_thin_task_planner: bool
+    enable_exploration_stop_policy: bool
+    skip_answer_synthesis_when_sufficient: bool
 
 
 @dataclass(frozen=True)
@@ -256,6 +285,7 @@ class AgentV2Config:
     exploration: ExplorationConfig
     pytest: PytestConfig
     planner_loop: PlannerLoopConfig
+    chat_planning: ChatPlanningConfig
 
 
 def _build_config() -> AgentV2Config:
@@ -280,6 +310,17 @@ def _build_config() -> AgentV2Config:
             controller_loop_enabled=PLANNER_CONTROLLER_LOOP,
             max_sub_explorations_per_task=MAX_SUB_EXPLORATIONS_PER_TASK,
             max_planner_controller_calls=MAX_PLANNER_CONTROLLER_CALLS,
+            max_act_controller_iterations=MAX_ACT_CONTROLLER_ITERATIONS,
+            task_planner_shadow_loop=TASK_PLANNER_SHADOW_LOOP,
+            task_planner_authoritative_loop=TASK_PLANNER_AUTHORITATIVE_LOOP,
+            planner_plan_body_only_when_task_planner_authoritative=(
+                PLANNER_PLAN_BODY_ONLY_WHEN_TASK_PLANNER_AUTHORITATIVE
+            ),
+        ),
+        chat_planning=ChatPlanningConfig(
+            enable_thin_task_planner=ENABLE_THIN_TASK_PLANNER,
+            enable_exploration_stop_policy=ENABLE_EXPLORATION_STOP_POLICY,
+            skip_answer_synthesis_when_sufficient=SKIP_ANSWER_SYNTHESIS_WHEN_SUFFICIENT,
         ),
     )
 
@@ -309,6 +350,8 @@ def validate_config(config: AgentV2Config) -> None:
         raise ValueError("config.planner_loop.max_sub_explorations_per_task must be >= 0")
     if config.planner_loop.max_planner_controller_calls < 1:
         raise ValueError("config.planner_loop.max_planner_controller_calls must be >= 1")
+    if config.planner_loop.max_act_controller_iterations < 1:
+        raise ValueError("config.planner_loop.max_act_controller_iterations must be >= 1")
     if config.exploration.max_steps < 1:
         raise ValueError("config.exploration.max_steps must be >= 1")
     if not config.planner.allowed_actions_read_only:
