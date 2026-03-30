@@ -1,0 +1,129 @@
+# Edge: empty instruction, vague queries, irrelevant domain, replan loops, explore_blocked, contradictions.
+- id: edge_empty_instruction
+  instruction: ""
+  context:
+    current_findings: []
+    explored_locations: []
+    overall: "(none)"
+    gaps:
+      - "user did not provide a task"
+    confidence: low
+  expected:
+    must_decision: stop
+
+- id: edge_low_signal_vague
+  instruction: "stuff"
+  context:
+    current_findings: []
+    explored_locations: []
+    overall: "(none)"
+    gaps:
+      - "intent is ambiguous"
+    confidence: low
+  expected:
+    any_decision: [explore, stop, replan]
+    must_not_tool: [edit]
+
+- id: edge_irrelevant_domain
+  instruction: "What is the capital of France?"
+  context:
+    current_findings: []
+    explored_locations: []
+    overall: "Repository is a coding agent; no geography evidence."
+    gaps:
+      - "no repo sources for general knowledge questions"
+    confidence: low
+  expected:
+    any_decision: [stop, synthesize]
+    warn_if_decision: explore
+
+- id: edge_repeated_replan_loop
+  path: replan
+  instruction: "Continue"
+  replan:
+    trigger: failure
+    failure_context:
+      step_id: s2
+      error:
+        type: tool_error
+        message: "search returned 0 results"
+      attempts: 3
+      last_output_summary: "empty result set"
+    completed_steps: []
+    exploration_summary:
+      overall: "Search keeps yielding nothing."
+      key_findings: []
+      knowledge_gaps:
+        - "alternative query formulation"
+  expected:
+    any_decision: [replan, explore, act]
+    must_not_decision: stop
+
+- id: edge_explore_blocked_session
+  instruction: "Map every caller of call_reasoning_model"
+  context:
+    current_findings:
+      - "Definition in agent/models/model_client.py"
+    explored_locations:
+      - "agent/models/model_client.py"
+    overall: "Need exhaustive references; prior explore rounds did not finish mapping."
+    gaps:
+      - "full callsite list"
+    confidence: low
+  session:
+    explore_streak: 4
+    explore_decisions_total: 5
+    last_exploration_engine_steps: 40
+  exploration_budget: 3
+  expected:
+    must_not_decision: explore
+    warn_if_decision: explore
+
+- id: explore_blocked_should_not_repeat
+  instruction: "Find all usages of planner_model_task_scope in the codebase"
+  context:
+    current_findings:
+      - "Prior explore runs already listed planner_model_call_context.py"
+    explored_locations:
+      - "agent_v2/planner/planner_model_call_context.py"
+    overall: "Task planner blocked further explore; budget exhausted."
+    gaps:
+      - "whether any remaining files reference the symbol"
+    confidence: low
+  session:
+    explore_decisions_total: 5
+    explore_streak: 4
+  exploration_budget: 3
+  expected:
+    must_not_decision: explore
+
+- id: edge_contradictory_findings
+  instruction: "Does PlanValidator allow shell in plan mode?"
+  context:
+    current_findings:
+      - "Docs say shell is allowed with constraints"
+      - "Older comment says shell disabled in plan mode"
+    explored_locations:
+      - "agent_v2/runtime/tool_policy.py"
+    overall: "Conflicting notes; need reconciliation from policy code."
+    gaps:
+      - "authoritative rule from ToolPolicy source"
+    confidence: low
+  expected:
+    any_decision: [explore, act, synthesize]
+    must_not_decision: stop
+
+- id: edge_over_specified_micro_task
+  instruction: "Open agent_v2/planner/planner_v2.py and show only the class docstring for PlannerV2"
+  context:
+    current_findings:
+      - "File path is explicit in the instruction"
+    explored_locations: []
+    overall: "User gave exact file; remaining work is narrow read."
+    gaps: []
+    gaps_empty_reason: "Target file is fully specified by the user instruction."
+    confidence: high
+  expected:
+    must_decision: act
+    any_of_tool: [open_file, search_code]
+    warn_if_decision: explore

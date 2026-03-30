@@ -1,0 +1,73 @@
+# Medium: mixed signals (partial findings, replan, search_code vs explore).
+- id: medium_partial_explore_or_synthesize
+  instruction: "Explain how retrieval ranking interacts with context pruning"
+  context:
+    current_findings:
+      - "Context ranking runs after vector search in the retrieval pipeline"
+    explored_locations:
+      - "Docs mention ordering but not pruning specifics"
+    overall: "Partial picture: ordering exists; pruning interaction unclear."
+    gaps:
+      - "whether pruning drops ranked chunks before or after LLM"
+    confidence: medium
+  expected:
+    any_decision: [explore, synthesize]
+    must_not_decision: stop
+
+- id: medium_search_when_symbol_known
+  instruction: "List call sites of PlanValidator.validate_plan"
+  context:
+    current_findings:
+      - "PlanValidator is in agent_v2/validation/plan_validator.py"
+    explored_locations:
+      - "agent_v2/validation/plan_validator.py"
+    overall: "Definition file known; callers not listed."
+    gaps:
+      - "repository-wide references to validate_plan"
+    confidence: medium
+  expected:
+    must_decision: act
+    any_of_tool: [search_code, open_file]
+    warn_if_decision: explore
+
+- id: medium_replan_after_test_failure
+  path: replan
+  instruction: "Fix the flaky test in tests/test_plan_validator.py"
+  replan:
+    trigger: failure
+    failure_context:
+      step_id: s3
+      error:
+        type: tests_failed
+        message: "AssertionError: expected 3 steps"
+      attempts: 2
+      last_output_summary: "pytest: 1 failed, 12 passed"
+    completed_steps:
+      - step_id: s1
+        summary: "Opened test file"
+      - step_id: s2
+        summary: "Ran pytest on target file"
+    exploration_summary:
+      overall: "Tests fail; assertion counts do not match."
+      key_findings:
+        - "Failure is localized to test_expect_step_count"
+      knowledge_gaps:
+        - "whether production code or test expectation is wrong"
+  expected:
+    must_decision: replan
+    must_not_decision: stop
+
+- id: medium_read_only_prefers_act
+  instruction: "What does ToolPolicy enforce for shell commands?"
+  validation_task_mode: read_only
+  context:
+    current_findings:
+      - "ToolPolicy lives in agent_v2/runtime/tool_policy.py"
+    explored_locations: []
+    overall: "File located skimming headers only."
+    gaps:
+      - "exact shell restrictions and blocked substrings"
+    confidence: medium
+  expected:
+    any_decision: [act, explore]
+    must_not_tool: [edit]

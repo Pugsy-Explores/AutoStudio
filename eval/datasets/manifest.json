@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "datasets": [
+    {
+      "path": "sample_tasks.json",
+      "description": "Starter cases across modules T1–T4 with AutoStudio path hints."
+    }
+  ],
+  "schemas": [
+    { "path": "../schema/task_record.schema.json", "description": "Eval task JSON rows" },
+    { "path": "../schema/pipeline_capture.schema.json", "description": "PipelineCapture / loop_meta / state" }
+  ]
+}

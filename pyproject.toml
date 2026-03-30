@@ -41,10 +41,11 @@ reranker_onnx_prepare = [
 
 [project.scripts]
 autostudio = "agent.cli.entrypoint:main"
+tiered-eval = "eval.runner:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agent*", "config*", "editing*", "planner*", "repo_graph*", "repo_index*"]
+include = ["agent*", "config*", "editing*", "eval*", "planner*", "repo_graph*", "repo_index*"]
 
 [tool.pytest.ini_options]
 markers = [
@@ -57,6 +58,8 @@ markers = [
     "scoper_eval: live LLM eval for ExplorationScoper (set SCOPER_EVAL_LIVE=1)",
     "selector_batch_eval: live LLM eval for CandidateSelector.select_batch (set SELECTOR_BATCH_EVAL_LIVE=1)",
     "analyzer_eval: live LLM eval for UnderstandingAnalyzer (set ANALYZER_EVAL_LIVE=1)",
+    "planner_v2_eval: live LLM eval for PlannerV2 decisions (set PLANNER_V2_EVAL_LIVE=1)",
+    "tiered_eval_live: full-pipeline tiered eval via eval.live_executor (set TIERED_EVAL_LIVE=1 or pytest -m tiered_eval_live)",
 ]
 # Benchmark fixtures contain pytest files for manual validation; do not collect them as AutoStudio tests.
 norecursedirs = [

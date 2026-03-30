@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autostudio.local/eval/task_record.schema.json",
+  "title": "TieredEvalTask",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "tier", "module", "instruction"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable case id for regression tracking."
+    },
+    "tier": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4,
+      "description": "Global difficulty tier (see eval.tier_definitions.GLOBAL_TIERS)."
+    },
+    "module": {
+      "type": "string",
+      "enum": ["planner", "decision", "exploration", "synthesizer", "validator"],
+      "description": "Which subsystem this case primarily grades."
+    },
+    "instruction": {
+      "type": "string",
+      "description": "User or system instruction passed into the pipeline."
+    },
+    "expected_behavior": {
+      "type": "string",
+      "description": "Human-readable success criteria for authors and LLM judges."
+    },
+    "expected_signals": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Substrings or path hints that should appear in the relevant stage output."
+    },
+    "ground_truth": {
+      "type": "object",
+      "description": "Optional structured labels for automated scoring (tool, paths, validation flags).",
+      "properties": {
+        "expect_validation_gain": {
+          "type": "boolean",
+          "description": "If true, completeness should not decrease without string-level gains (see runner)."
+        },
+        "expect_state_progress": {
+          "type": "boolean",
+          "description": "Hints executor to fill state_progress for Tier 4 loop scoring."
+        },
+        "post_loop_must_contain": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Markers that should appear in answer_after but not answer_before (validation_gain)."
+        },
+        "misleading_signals": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Distractor paths or claims for Tier 4 failure-driven cases (documentation / eval)."
+        }
+      }
+    },
+    "workspace_root": {
+      "type": "string",
+      "description": "Optional repo-relative workspace root for pinned-repo cases."
+    }
+  }
+}

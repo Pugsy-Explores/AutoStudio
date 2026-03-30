@@ -1,0 +1,75 @@
+# Hard: ambiguous / conflicting context; multiple valid tools; budget pressure.
+- id: hard_empty_gaps_but_low_confidence
+  instruction: "Is the planner allowed to emit shell steps in plan-safe mode?"
+  context:
+    current_findings:
+      - "Plan-safe mode is mentioned in planner prompts"
+    explored_locations:
+      - "agent_v2/planner/planner_v2.py (task_mode plan_safe)"
+    overall: "Heuristic read_only vs plan_safe is subtle; answer not verified against policy tests."
+    gaps: []
+    gaps_empty_reason: "No explicit gap list — confidence still low on edge case behavior."
+    confidence: low
+  expected:
+    any_decision: [explore, act, synthesize]
+    must_not_decision: stop
+
+- id: hard_trace_debug_combined
+  instruction: "Trace why planner JSON repair triggers twice and whether that hides bugs"
+  context:
+    current_findings:
+      - "planner_v2.py retries JSON parse once with invalid_json_retry suffix"
+      - "Tool repair suffix may run after validation errors"
+    explored_locations:
+      - "agent_v2/planner/planner_v2.py"
+    overall: "Multiple mechanisms; causal order for a given failure mode is unclear."
+    gaps:
+      - "which error strings route to JSON retry vs tool_repair"
+    confidence: medium
+  expected:
+    must_not_decision: stop
+    warn_if_decision: synthesize
+
+- id: hard_repeated_replan_pressure
+  path: replan
+  instruction: "Implement the feature"
+  replan:
+    trigger: insufficiency
+    failure_context:
+      step_id: s4
+      error:
+        type: validation_error
+        message: "PlanStep inputs missing required key"
+      attempts: 3
+      last_output_summary: "validator rejected plan document"
+    completed_steps:
+      - step_id: s1
+        summary: "Prior plan drafted"
+    exploration_summary:
+      overall: "Still missing structured inputs for edit step."
+      key_findings:
+        - "Prior attempt failed validation"
+      knowledge_gaps:
+        - "correct schema for edit inputs"
+  expected:
+    any_decision: [replan, explore, act]
+    must_not_decision: stop
+
+- id: hard_budget_pressure_favor_act
+  instruction: "Narrow down the exact function that builds exploration context blocks"
+  context:
+    current_findings:
+      - "_compose_exploration_context_block formats KEY FINDINGS and GAPS"
+    explored_locations:
+      - "agent_v2/planner/planner_v2.py"
+    overall: "Function name known; need line-accurate citation."
+    gaps:
+      - "whether helper delegates to another formatter"
+    confidence: medium
+  session:
+    explore_streak: 2
+    explore_decisions_total: 3
+  exploration_budget: 3
+  expected:
+    must_not_decision: explore
+    warn_if_decision: explore

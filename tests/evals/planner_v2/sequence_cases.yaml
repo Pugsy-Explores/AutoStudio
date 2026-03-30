@@ -1,0 +1,48 @@
+# Dynamic progression: each step runs PlannerV2 with merged context; session updates between steps
+# from the prior decision (explore streak / totals) unless a step pins session explicitly.
+- id: seq_explore_then_synthesize
+  instruction: "How does the exploration scope layer limit retrieval breadth?"
+  tool_policy: act
+  steps:
+    - context:
+        gaps:
+          - "missing implementation detail for scope limiting"
+        confidence: low
+        current_findings: []
+        explored_locations: []
+        overall: "(none)"
+      expect:
+        must_decision: explore
+    - context:
+        gaps: []
+        gaps_empty_reason: "Scope layer is documented in exploration.py and key functions identified."
+        confidence: high
+        current_findings:
+          - "effective_exploration_budget and QueryIntent drive advisory caps"
+        explored_locations:
+          - "agent_v2/schemas/exploration.py"
+        overall: "User question is answered from cited modules."
+      expect:
+        must_decision: synthesize
+        must_not_decision: explore
+
+- id: seq_double_explore_is_suspicious
+  instruction: "Trace PlanValidator.validate_plan call chain"
+  steps:
+    - context:
+        gaps:
+          - "callers of validate_plan not yet listed"
+        confidence: low
+        overall: "Starting from file mention only."
+      expect:
+        must_decision: explore
+    - context:
+        gaps:
+          - "still missing secondary callers in tests/"
+        confidence: medium
+        current_findings:
+          - "Partial grep output; tests may call validate_plan indirectly"
+        overall: "Incomplete trace."
+      expect:
+        any_decision: [explore, act]
+        warn_if_decision: explore

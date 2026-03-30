@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autostudio.local/eval/pipeline_capture.schema.json",
+  "title": "PipelineCapture",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "loop_meta": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "description": "Per outer-loop iteration: decision, validation, state_summary strings.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "iteration": { "type": "integer" },
+              "decision": { "type": "string" },
+              "validation": { "type": "string" },
+              "state_summary": { "type": "string" }
+            }
+          }
+        },
+        "total_iterations": { "type": "integer" },
+        "validation_failures": {
+          "type": "integer",
+          "description": "Count of iterations where validation did not pass."
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "properties": {
+        "final": {
+          "type": "object",
+          "description": "Compressed exploration + synthesis + validation after last iteration."
+        },
+        "progression": {
+          "type": "array",
+          "description": "Ordered phase snapshots (post_exploration, post_synthesis, post_validation, ...)."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,131 @@
+[
+  {
+    "id": "planner_t1_single_file_explain",
+    "tier": 1,
+    "module": "planner",
+    "instruction": "Summarize what validate_answer does in one paragraph.",
+    "expected_behavior": "A two-step plan: locate the validator module, then EXPLAIN.",
+    "expected_signals": ["EXPLAIN", "answer_validator"],
+    "workspace_root": ".",
+    "ground_truth": {
+      "expected_step_actions": ["SEARCH", "EXPLAIN"]
+    }
+  },
+  {
+    "id": "decision_t2_explore_vs_synthesize",
+    "tier": 2,
+    "module": "decision",
+    "instruction": "User asked where PlannerTaskRuntime calls validate_answer; exploration summary is empty.",
+    "expected_behavior": "Prefer explore (or act with explore) to fill context before synthesis.",
+    "expected_signals": ["explore", "validate_answer"],
+    "ground_truth": {
+      "decision_type": "explore"
+    }
+  },
+  {
+    "id": "exploration_t3_cross_file",
+    "tier": 3,
+    "module": "exploration",
+    "instruction": "Trace how answer validation feeds back into the next exploration query.",
+    "expected_behavior": "Retrieve planner_task_runtime, answer_validator, and session/planner glue.",
+    "expected_signals": [
+      "planner_task_runtime.py",
+      "validate_answer",
+      "build_explore_query_after_validation_failure"
+    ],
+    "ground_truth": {
+      "must_include_paths": [
+        "agent_v2/runtime/planner_task_runtime.py",
+        "agent_v2/validation/answer_validator.py"
+      ]
+    }
+  },
+  {
+    "id": "synth_t2_direct_plus_coverage",
+    "tier": 2,
+    "module": "synthesizer",
+    "instruction": "From the exploration chunk, state whether validation runs before or after synthesis in the outer loop.",
+    "expected_behavior": "Accurate ordering with citations to runtime code.",
+    "expected_signals": ["synthesis", "validate_answer"],
+    "ground_truth": {
+      "direct_answer_contains": ["validate", "synthesis"]
+    }
+  },
+  {
+    "id": "validator_t1_complete",
+    "tier": 1,
+    "module": "validator",
+    "instruction": "Synthetic: high-confidence exploration, successful synthesis, no gaps.",
+    "expected_behavior": "Validator marks complete.",
+    "expected_signals": ["is_complete"],
+    "ground_truth": {
+      "is_complete": true
+    }
+  },
+  {
+    "id": "validator_t4_gaps",
+    "tier": 4,
+    "module": "validator",
+    "instruction": "Synthetic: exploration reports knowledge gaps and weak synthesis coverage.",
+    "expected_behavior": "Validator flags gaps / weak coverage and should not mark complete.",
+    "expected_signals": ["knowledge_gaps", "synthesis_coverage_weak"],
+    "ground_truth": {
+      "is_complete": false,
+      "must_detect_issues": ["exploration_knowledge_gaps_present", "synthesis_coverage_weak"]
+    }
+  },
+  {
+    "id": "exploration_t4_misleading_top_hit",
+    "tier": 4,
+    "module": "exploration",
+    "instruction": "Initial retrieval ranks tests/test_tiered_eval_runner.py as the main implementation of answer validation; ignore that and find the real validator module.",
+    "expected_behavior": "Failure-driven: misleading high-similarity path; ground truth lists true files.",
+    "expected_signals": ["answer_validator.py", "validate_answer"],
+    "ground_truth": {
+      "must_include_paths": [
+        "agent_v2/validation/answer_validator.py"
+      ],
+      "misleading_signals": [
+        "tests/test_tiered_eval_runner.py"
+      ]
+    }
+  },
+  {
+    "id": "decision_t4_conflicting_context",
+    "tier": 4,
+    "module": "decision",
+    "instruction": "Summary A says 'synthesis always runs before exploration'; summary B lists open knowledge gaps. Choose the next action.",
+    "expected_behavior": "Ambiguous / conflicting summaries — prefer explore or replan over blind synthesize.",
+    "expected_signals": ["explore", "replan"],
+    "ground_truth": {
+      "decision_type": "explore",
+      "misleading_context_notes": "If the model trusts summary A alone, it may wrongly synthesize."
+    }
+  },
+  {
+    "id": "validator_t4_validation_gain_expectation",
+    "tier": 4,
+    "module": "validator",
+    "instruction": "Executor should supply validation_gain: weak first answer, stronger answer after follow-up exploration.",
+    "expected_behavior": "Grades validation_gain metric: completeness and/or markers improve after loop.",
+    "expected_signals": ["completeness_after"],
+    "ground_truth": {
+      "expect_validation_gain": true,
+      "post_loop_must_contain": [
+        "validate_answer",
+        "planner_task_runtime"
+      ]
+    }
+  },
+  {
+    "id": "loop_t4_state_progress_expectation",
+    "tier": 4,
+    "module": "synthesizer",
+    "instruction": "Synthetic loop: executor fills state_progress with improving counts across iterations.",
+    "expected_behavior": "state_progress_score rewards findings up, questions down, confidence up.",
+    "expected_signals": ["state_progress"],
+    "ground_truth": {
+      "expect_state_progress": true
+    }
+  }
+]

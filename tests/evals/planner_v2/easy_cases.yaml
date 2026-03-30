@@ -1,0 +1,63 @@
+# Easy: unambiguous signals (no findings → explore; complete → synthesize; empty instruction → stop).
+- id: easy_explore_no_findings
+  instruction: "How does the exploration scope layer work?"
+  context:
+    current_findings: []
+    explored_locations: []
+    overall: "(none)"
+    gaps:
+      - "missing implementation detail for scope limiting in agent_v2"
+    confidence: low
+  expected:
+    must_decision: explore
+    must_tool: explore
+    must_not_decision: stop
+    must_not_tool: [synthesize]
+
+- id: easy_synthesize_complete
+  instruction: "Where is PlannerV2.build_plan_prompt_parts defined?"
+  context:
+    current_findings:
+      - "PlannerV2._build_plan_prompt_parts is in agent_v2/planner/planner_v2.py"
+      - "It selects planner.decision.act vs planner.replan.act based on replan flag"
+    explored_locations:
+      - "agent_v2/planner/planner_v2.py"
+    overall: "The helper lives in planner_v2.py and routes to registry prompts."
+    gaps: []
+    gaps_empty_reason: "User asked for file location; evidence names the file and symbol."
+    confidence: high
+  expected:
+    must_decision: synthesize
+    must_not_decision: explore
+    must_not_tool: [explore]
+
+- id: easy_stop_empty_instruction
+  instruction: ""
+  context:
+    current_findings: []
+    explored_locations: []
+    overall: "(none)"
+    gaps:
+      - "cannot proceed without a user question"
+    confidence: low
+  expected:
+    must_decision: stop
+    must_not_decision: explore
+
+- id: easy_act_search_symbol
+  instruction: "Find all references to planner_model_task_scope"
+  context:
+    current_findings:
+      - "Mentioned in planner_model_call_context.py"
+    explored_locations:
+      - "agent_v2/planner/planner_model_call_context.py"
+    overall: "Symbol exists but call sites are not enumerated yet."
+    gaps:
+      - "need grep-style hits across the repo"
+    confidence: medium
+  expected:
+    must_decision: act
+    must_tool: search_code
+    must_not_decision: explore
+    query_must_have_domain_signal: true
+    query_must_not_echo_instruction: true
