@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import agent_v2.config as cfg_mod
 from agent_v2.config import (
     AgentV2Config,
+    ChatPlanningConfig,
     ExplorationConfig,
     PlannerConfig,
     PlannerLoopConfig,
@@ -39,6 +40,15 @@ def test_validate_config_rejects_write_actions_in_read_only_policy():
             controller_loop_enabled=False,
             max_sub_explorations_per_task=2,
             max_planner_controller_calls=16,
+            max_act_controller_iterations=256,
+            task_planner_shadow_loop=False,
+            task_planner_authoritative_loop=False,
+            planner_plan_body_only_when_task_planner_authoritative=False,
+        ),
+        chat_planning=ChatPlanningConfig(
+            enable_thin_task_planner=False,
+            enable_exploration_stop_policy=False,
+            skip_answer_synthesis_when_sufficient=False,
         ),
     )
     try:
@@ -64,6 +74,7 @@ def test_plan_mode_allows_partial_exploration_when_config_enabled():
         ),
         pytest=original_cfg.pytest,
         planner_loop=original_cfg.planner_loop,
+        chat_planning=original_cfg.chat_planning,
     )
     try:
         mock_planner = MagicMock()
@@ -91,15 +102,19 @@ def test_plan_mode_allows_partial_exploration_when_config_enabled():
 
         mock_exp = MagicMock()
         mock_exp.query_intent = None  # avoid MagicMock auto-attr → invalid PlannerPlanContext
-        mock_exp.summary.overall = "partial but useful"
+        mock_exp.exploration_summary.overall = "partial but useful"
         mock_exp.model_dump.return_value = {"exploration_id": "e1"}
-        mock_exp.metadata = {"completion_status": "incomplete", "termination_reason": "max_steps"}
+        mock_exp.metadata = MagicMock()
+        mock_exp.metadata.completion_status = "incomplete"
+        mock_exp.metadata.termination_reason = "max_steps"
+        mock_exp.metadata.engine_loop_steps = 0
         mock_er = MagicMock()
         mock_er.run.return_value = mock_exp
 
         manager = ModeManager(mock_er, mock_planner, plan_executor=MagicMock())
         state = AgentState(instruction="plan only")
-        manager.run(state, mode="plan_legacy")
+        with patch("agent_v2.runtime.planner_task_runtime.maybe_synthesize_to_state"):
+            manager.run(state, mode="plan_legacy")
         assert mock_planner.plan.called
     finally:
         cfg_mod._CONFIG = original_cfg

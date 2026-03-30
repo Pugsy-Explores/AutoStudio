@@ -1,0 +1,36 @@
+# Implicit mapping: conceptual phrasing, NL → code retrieval terms.
+- id: medium_scope_layer
+  instruction: "How does the exploration scope layer narrow candidates before selection?"
+  expected:
+    intent_type: explanation
+    scope: component
+    focus: internal_logic
+    symbol_quality: medium
+    notes: "May map to ExplorationScoper or scoper-related keywords."
+
+- id: medium_filter_candidates
+  instruction: "How are discovery candidates filtered and ranked before enqueue?"
+  expected:
+    intent_type: explanation
+    scope: component
+    focus: internal_logic
+    symbol_quality: medium
+    notes: "Engine discovery / enqueue concepts without exact method names."
+
+- id: medium_next_target
+  instruction: "How does the system decide what to explore next after an inspection step?"
+  expected:
+    intent_type: explanation
+    scope: component
+    focus: internal_logic
+    symbol_quality: medium
+    notes: "Control flow / pending targets — abstract wording."
+
+- id: medium_relationships_block
+  instruction: "Where does symbol relationship context get attached for the analyzer?"
+  expected:
+    intent_type: explanation
+    scope: component
+    focus: relationships
+    symbol_quality: medium
+    notes: "Should lean relationships focus or graph-related terms."

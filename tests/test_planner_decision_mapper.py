@@ -115,6 +115,33 @@ class TestPlannerDecisionMapper(unittest.TestCase):
         )
         self.assertEqual(d.type, "stop")
 
+    def test_engine_synthesize(self):
+        d = planner_decision_from_plan_document(
+            _doc(
+                None,
+                engine=PlannerEngineOutput(
+                    decision="synthesize",
+                    reason="user answer",
+                    query="",
+                ),
+            )
+        )
+        self.assertEqual(d.type, "synthesize")
+
+    def test_engine_plan(self):
+        d = planner_decision_from_plan_document(
+            _doc(
+                None,
+                engine=PlannerEngineOutput(
+                    decision="plan",
+                    reason="refresh",
+                    query="subhint",
+                ),
+            )
+        )
+        self.assertEqual(d.type, "plan")
+        self.assertEqual(d.query, "subhint")
+
 
 if __name__ == "__main__":
     unittest.main()

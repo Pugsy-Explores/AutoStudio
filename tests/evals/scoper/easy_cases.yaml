@@ -1,0 +1,66 @@
+# Explicit symbols / paths — expect core file inclusion after scoping.
+# Each case includes synthetic discovery rows (`candidates`) plus expected signals.
+- id: easy_scoper_class
+  instruction: "Narrow to the implementation of ExplorationScoper.scope and its JSON selection logic."
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "class ExplorationScoper: def scope(self, instruction, candidates)"
+      symbol: ExplorationScoper
+      source: graph
+    - file_path: agent/models/model_client.py
+      snippet: "def call_reasoning_model(prompt: str)"
+      symbol: call_reasoning_model
+      source: grep
+    - file_path: agent_v2/config.py
+      snippet: "DEFAULT_TIMEOUT = 30"
+      symbol: null
+      source: vector
+  expected:
+    must_include:
+      - exploration_scoper.py
+      - ExplorationScoper
+    should_include:
+      - scope
+
+- id: easy_query_intent_model
+  instruction: "Keep candidates that define the QueryIntent schema used by exploration."
+  candidates:
+    - file_path: agent_v2/schemas/exploration.py
+      snippet: "class QueryIntent(BaseModel): intent_type"
+      symbol: QueryIntent
+      source: graph
+    - file_path: agent_v2/exploration/query_intent_parser.py
+      snippet: "class QueryIntentParser"
+      symbol: QueryIntentParser
+      source: grep
+    - file_path: planner/planner.py
+      snippet: "def plan_task"
+      symbol: null
+      source: vector
+  expected:
+    must_include:
+      - exploration.py
+      - QueryIntent
+    should_include:
+      - query_intent_parser.py
+
+- id: easy_model_client_entry
+  instruction: "Focus on the single entry point for LLM calls in the agent models layer."
+  candidates:
+    - file_path: agent/models/model_client.py
+      snippet: "def call_reasoning_model(prompt: str, task_name: str | None"
+      symbol: call_reasoning_model
+      source: graph
+    - file_path: agent/models/models_config.json
+      snippet: "{}"
+      symbol: null
+      source: vector
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "ExplorationScoper"
+      symbol: ExplorationScoper
+      source: grep
+  expected:
+    must_include:
+      - model_client.py
+    should_include:
+      - call_reasoning_model

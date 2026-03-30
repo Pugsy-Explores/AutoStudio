@@ -1,0 +1,134 @@
+# use allow_empty_context for true empty snippet (synthetic empty block)
+- id: an_edge_empty_context
+  edge_category: empty_input
+  edge_handling: model_handled
+  trace_id: trace_empty_input_model_an
+  instruction: "Explain how ExplorationScoper validates JSON indices."
+  intent: explanation
+  allow_empty_context: true
+  context: []
+  expected:
+    understanding: insufficient
+    gap_quality: high
+
+- id: an_edge_whitespace_instruction
+  edge_category: empty_input
+  edge_handling: model_handled
+  trace_id: trace_empty_input_ws_an
+  instruction: "   "
+  intent: explanation
+  context:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      start: 1
+      end: 20
+      content: "class ExplorationScoper:"
+  expected:
+    understanding: partial
+    gap_quality: medium
+
+- id: an_edge_vague_question
+  edge_category: low_signal
+  instruction: "how does it work"
+  intent: explanation
+  context:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      start: 1
+      end: 60
+      content: |
+        class ExplorationScoper:
+            def scope(self, instruction, candidates):
+                return subset
+  expected:
+    understanding: partial
+    gap_quality: medium
+
+- id: an_edge_truncated
+  edge_category: partial_context
+  instruction: "Explain error handling when the model returns no valid JSON for scoping."
+  intent: explanation
+  context:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      start: 80
+      end: 95
+      content: "# truncated — mid function without branches shown"
+  expected:
+    understanding: partial
+    gap_quality: high
+
+- id: an_edge_wrong_module
+  edge_category: no_relevance
+  instruction: "How does sourdough autolyse timing affect gluten network in this codebase"
+  intent: explanation
+  context:
+    - file_path: repo_index/parser.py
+      start: 1
+      end: 40
+      content: |
+        def parse_file(path: str) -> None:
+            pass
+  expected:
+    understanding: insufficient
+    gap_quality: high
+
+- id: an_edge_trace_and_debug
+  edge_category: ambiguous
+  instruction: "trace and debug why the analyzer might mark evidence sufficient too early"
+  intent: debugging
+  context:
+    - file_path: agent_v2/exploration/understanding_analyzer.py
+      start: 1
+      end: 100
+      content: |
+        class UnderstandingAnalyzer:
+            def analyze(self, instruction, intent, context_blocks):
+                parsed = JSONExtractor.extract_final_json(raw)
+                return self._coerce_understanding(parsed)
+  expected:
+    understanding: partial
+    gap_quality: high
+
+- id: an_edge_contradictory_snippets
+  edge_category: conflicting
+  instruction: "Does ExplorationScoper run before or after CandidateSelector?"
+  intent: explanation
+  context:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      start: 1
+      end: 15
+      content: "Runs before CandidateSelector in the pipeline."
+    - file_path: agent_v2/exploration/candidate_selector.py
+      start: 1
+      end: 15
+      content: "Note: exploratory comment says scoper runs after selector (obsolete)."
+  expected:
+    understanding: partial
+    gap_quality: high
+
+- id: an_edge_overloaded_context
+  edge_category: over_specified
+  instruction: "Summarize only whether JSON extraction can fail closed."
+  intent: explanation
+  context:
+    - file_path: agent_v2/utils/json_extractor.py
+      start: 1
+      end: 120
+      content: |
+        class JSONExtractor:
+            @staticmethod
+            def extract_final_json(text: str, validate_fn=None) -> dict:
+                candidates = JSONExtractor.extract_all_json_candidates(text)
+                if validate_fn is None:
+                    if candidates:
+                        return candidates[-1]
+                raise ValueError("No valid JSON object found")
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      start: 1
+      end: 40
+      content: "class ExplorationScoper: ... scope ..."
+    - file_path: agent_v2/config.py
+      start: 130
+      end: 145
+      content: "EXPLORATION_SELECTOR_TOP_K = 10"
+  expected:
+    understanding: partial
+    gap_quality: medium

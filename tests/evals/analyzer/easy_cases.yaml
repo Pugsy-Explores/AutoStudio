@@ -1,0 +1,38 @@
+# Direct implementation in context — expect sufficient understanding, grounded gaps if any.
+- id: easy_scoper_scope
+  instruction: "Explain what ExplorationScoper.scope does with discovery candidates and JSON indices."
+  intent: explanation
+  context:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      start: 1
+      end: 120
+      content: |
+        class ExplorationScoper:
+            def scope(self, instruction: str, candidates: list[ExplorationCandidate]) -> list[ExplorationCandidate]:
+                """Return a subset of candidates by stable index order after an LLM selects dedupe indices."""
+                payload, dedupe_orig_indices = self._aggregate_payload_by_file_path(candidates)
+                prompt = self._build_prompt(instruction, payload)
+                # Model returns selected_indices into deduplicated rows; expanded back to original candidates.
+  expected:
+    understanding: sufficient
+    gap_quality: high
+
+- id: easy_json_extract
+  instruction: "How does JSONExtractor obtain the final JSON object from model output?"
+  intent: explanation
+  context:
+    - file_path: agent_v2/utils/json_extractor.py
+      start: 1
+      end: 80
+      content: |
+        class JSONExtractor:
+            @staticmethod
+            def extract_final_json(text: str, validate_fn=None) -> dict:
+                candidates = JSONExtractor.extract_all_json_candidates(text)
+                if validate_fn is None:
+                    if candidates:
+                        return candidates[-1]
+                raise ValueError("No valid JSON object found")
+  expected:
+    understanding: sufficient
+    gap_quality: medium

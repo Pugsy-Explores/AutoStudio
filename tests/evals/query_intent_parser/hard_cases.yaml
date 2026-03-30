@@ -1,0 +1,36 @@
+# Ambiguous or multi-intent: abstraction + classification.
+- id: hard_missing_files
+  instruction: "Why is exploration returning results but still missing files that clearly mention the feature?"
+  expected:
+    intent_type: debugging
+    scope: system
+    focus: usage
+    symbol_quality: low
+    notes: "Diagnostic tone; symbols may be sparse."
+
+- id: hard_trace_flow
+  instruction: "Trace how a user query becomes structured retrieval and final exploration output end to end."
+  expected:
+    intent_type: explanation
+    scope: system
+    focus: relationships
+    symbol_quality: low
+    notes: "System-level trace; broad keywords acceptable."
+
+- id: hard_selector_analyzer
+  instruction: "How does exploration interact with the candidate selector and the understanding analyzer?"
+  expected:
+    intent_type: explanation
+    scope: component
+    focus: relationships
+    symbol_quality: medium
+    notes: "Multiple components; may name CandidateSelector / UnderstandingAnalyzer."
+
+- id: hard_conservative_loop
+  instruction: "Is the exploration loop too conservative when the queue empties — should it refine more aggressively?"
+  expected:
+    intent_type: explanation
+    scope: system
+    focus: internal_logic
+    symbol_quality: low
+    notes: "Broad policy question; keywords may dominate symbols."

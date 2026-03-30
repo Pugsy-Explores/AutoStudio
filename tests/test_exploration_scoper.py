@@ -45,7 +45,7 @@ def test_scope_dedupe_same_file_path_expands_to_all_original_candidates():
 
     def _llm(p: str) -> str:
         calls.append(p)
-        assert "dup.py" in p and '"snippets"' in p and '"symbols"' in p
+        assert "dup.py" in p and "snippets_full" in p and "symbols:" in p
         return '{"selected_indices": [0]}'
 
     scoper = ExplorationScoper(llm_generate=_llm)

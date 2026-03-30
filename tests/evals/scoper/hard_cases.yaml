@@ -1,0 +1,80 @@
+# Multi-component / ambiguous — at least partial coverage of the right areas.
+- id: hard_scoper_selector_analyzer
+  instruction: "Trace how candidates move from scoping through selection into semantic understanding for exploration."
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "ExplorationScoper scope selected_indices"
+      symbol: ExplorationScoper
+      source: graph
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "CandidateSelector batch selection"
+      symbol: CandidateSelector
+      source: grep
+    - file_path: agent_v2/exploration/understanding_analyzer.py
+      snippet: "UnderstandingAnalyzer analyze"
+      symbol: null
+      source: grep
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      snippet: "orchestration engine loop"
+      symbol: null
+      source: vector
+    - file_path: agent/cli/entrypoint.py
+      snippet: "def main"
+      symbol: main
+      source: vector
+  expected:
+    must_include:
+      - exploration_scoper.py
+    should_include:
+      - candidate_selector.py
+      - understanding_analyzer.py
+
+- id: hard_exploration_stages
+  instruction: "Something is wrong between narrowing discovery hits and the analyzer — find the overlap modules."
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "breadth reduction"
+      symbol: ExplorationScoper
+      source: graph
+    - file_path: agent_v2/exploration/understanding_analyzer.py
+      snippet: "UnderstandingResult relevance"
+      symbol: null
+      source: grep
+    - file_path: agent_v2/observability/langfuse_helpers.py
+      snippet: "exploration_llm_call"
+      symbol: exploration_llm_call
+      source: grep
+    - file_path: tests/test_exploration_scoper.py
+      snippet: "def test_"
+      symbol: null
+      source: vector
+  expected:
+    must_include:
+      - exploration_scoper.py
+    should_include:
+      - understanding_analyzer.py
+
+- id: hard_vague_performance
+  instruction: "Performance feels off in the exploration stack; prioritize the highest-signal orchestration files."
+  candidates:
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      snippet: "ExplorationEngineV2 pipeline phases"
+      symbol: null
+      source: graph
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "scope LLM call"
+      symbol: ExplorationScoper
+      source: grep
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "select_batch"
+      symbol: CandidateSelector
+      source: grep
+    - file_path: agent_v2/config.py
+      snippet: "timeouts"
+      symbol: null
+      source: vector
+  expected:
+    must_include:
+      - exploration_engine_v2.py
+    should_include:
+      - exploration_scoper.py

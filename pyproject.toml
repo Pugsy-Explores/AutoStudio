@@ -53,6 +53,10 @@ markers = [
     "explain_inject: EXPLAIN code-lane injected retrieval contract matrix (dispatch + helpers)",
     "replanner_regression: replanner prompt regression suite (8 scenarios, live LLM calls); every prompt change must pass",
     "agent_v2_live: agent_v2 phased pipeline with real LLM (set AGENT_V2_LIVE=1); see tests/test_agent_v2_phases_live.py",
+    "query_intent_parser_eval: live LLM semantic eval for QueryIntentParser (set QUERY_INTENT_PARSER_EVAL_LIVE=1)",
+    "scoper_eval: live LLM eval for ExplorationScoper (set SCOPER_EVAL_LIVE=1)",
+    "selector_batch_eval: live LLM eval for CandidateSelector.select_batch (set SELECTOR_BATCH_EVAL_LIVE=1)",
+    "analyzer_eval: live LLM eval for UnderstandingAnalyzer (set ANALYZER_EVAL_LIVE=1)",
 ]
 # Benchmark fixtures contain pytest files for manual validation; do not collect them as AutoStudio tests.
 norecursedirs = [

@@ -20,11 +20,14 @@ def test_select_batch_returns_ranked_matches_from_llm():
         "rank candidates",
         "no intent",
         [_c("src/a.py", "A"), _c("src/b.py", "B"), _c("src/c.py", "C")],
-        seen_files=set(),
+        explored_location_keys=None,
         limit=2,
     )
     assert ranked is not None
-    assert [f"{x.file_path}:{x.symbol}" for x in ranked] == ["src/b.py:B", "src/a.py:A"]
+    assert [f"{x.file_path}:{x.symbol}" for x in ranked.selected_candidates] == [
+        "src/b.py:B",
+        "src/a.py:A",
+    ]
 
 
 def test_select_batch_supports_no_relevant_candidate_signal():
@@ -35,10 +38,11 @@ def test_select_batch_supports_no_relevant_candidate_signal():
         "rank candidates",
         "no intent",
         [_c("src/a.py", "A"), _c("src/b.py", "B")],
-        seen_files=set(),
+        explored_location_keys=None,
         limit=2,
     )
-    assert ranked is None
+    assert ranked is not None
+    assert ranked.selected_candidates == []
 
 
 def test_select_batch_langfuse_generation_includes_prompt_in_input():
@@ -64,7 +68,7 @@ def test_select_batch_langfuse_generation_includes_prompt_in_input():
         "unique select instruction",
         "no intent",
         [_c("src/a.py", "A"), _c("src/b.py", "B"), _c("src/c.py", "C")],
-        seen_files=set(),
+        explored_location_keys=None,
         limit=2,
         lf_select_span=Span(),
         lf_exploration_parent=None,
@@ -89,16 +93,16 @@ def test_select_batch_empty_selected_indices_still_uses_selected_array():
         "rank candidates",
         "no intent",
         [_c("src/a.py", "A"), _c("src/b.py", "B")],
-        seen_files=set(),
+        explored_location_keys=None,
         limit=2,
     )
     assert ranked is not None
-    assert len(ranked) >= 1
-    assert ranked[0].file_path == "src/a.py"
+    assert len(ranked.selected_candidates) >= 1
+    assert ranked.selected_candidates[0].file_path == "src/a.py"
 
 
-def test_select_batch_unmatchable_output_falls_back_to_discovery_order():
-    """When JSON parses but nothing matches candidates, use top-N discovery order (no hard fail)."""
+def test_select_batch_unmatchable_output_returns_empty_fragmented():
+    """When JSON parses but nothing matches candidates, emit fragmented empty selection (no silent remap)."""
     selector = CandidateSelector(
         llm_generate=lambda _: (
             '{"selected_indices":[],"selected":[{"file_path":"/wrong/path.py","symbol":"X"}],'
@@ -110,11 +114,12 @@ def test_select_batch_unmatchable_output_falls_back_to_discovery_order():
         "rank candidates",
         "no intent",
         cands,
-        seen_files=set(),
+        explored_location_keys=None,
         limit=2,
     )
     assert ranked is not None
-    assert [x.file_path for x in ranked] == ["src/a.py", "src/b.py"]
+    assert ranked.selected_candidates == []
+    assert ranked.coverage_signal == "fragmented"
 
 
 def test_select_batch_multi_index_uses_zero_based_by_default():
@@ -126,11 +131,11 @@ def test_select_batch_multi_index_uses_zero_based_by_default():
         "rank candidates",
         "no intent",
         [_c("a.py"), _c("b.py"), _c("c.py"), _c("d.py"), _c("e.py")],
-        seen_files=set(),
+        explored_location_keys=None,
         limit=4,
     )
     assert ranked is not None
-    assert [x.file_path for x in ranked[:2]] == ["c.py", "d.py"]
+    assert [x.file_path for x in ranked.selected_candidates[:2]] == ["c.py", "d.py"]
 
 
 def test_select_batch_one_based_index_maps_to_first_candidate():
@@ -141,11 +146,11 @@ def test_select_batch_one_based_index_maps_to_first_candidate():
         "rank candidates",
         "no intent",
         [_c("src/a.py", "A"), _c("src/b.py", "B")],
-        seen_files=set(),
+        explored_location_keys=None,
         limit=2,
     )
     assert ranked is not None
-    assert ranked[0].file_path == "src/a.py"
+    assert ranked.selected_candidates[0].file_path == "src/a.py"
 
 
 def test_select_batch_raises_when_llm_output_invalid_strict_mode():
@@ -155,6 +160,33 @@ def test_select_batch_raises_when_llm_output_invalid_strict_mode():
             "rank candidates",
             "no intent",
             [_c("src/a.py", "A"), _c("src/b.py", "B")],
-            seen_files=set(),
+            explored_location_keys=None,
             limit=1,
         )
+
+
+def test_select_batch_empty_json_object_normalizes_to_empty_selection():
+    selector = CandidateSelector(llm_generate=lambda _: "{}")
+    ranked = selector.select_batch(
+        "find nothing",
+        "no intent",
+        [_c("src/a.py", "A")],
+        explored_location_keys=None,
+        limit=2,
+    )
+    assert ranked.selected_candidates == []
+    assert ranked.selection_confidence == "low"
+
+
+def test_select_batch_explicit_empty_indices_without_selected_is_empty():
+    selector = CandidateSelector(
+        llm_generate=lambda _: '{"selected_indices":[],"selected_symbols":{}}'
+    )
+    ranked = selector.select_batch(
+        "irrelevant pool",
+        "no intent",
+        [_c("src/a.py", "A")],
+        explored_location_keys=None,
+        limit=2,
+    )
+    assert ranked.selected_candidates == []

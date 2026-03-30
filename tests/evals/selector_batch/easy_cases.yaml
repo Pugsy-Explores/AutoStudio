@@ -1,0 +1,48 @@
+# Clear best candidate — expect top selection to hit the definition / primary file.
+- id: easy_single_definition
+  instruction: "Select the best files to explain how ExplorationScoper.scope narrows discovery candidates before batch selection."
+  intent: explanation
+  limit: 2
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "class ExplorationScoper def scope selected_indices JSON"
+      symbol: ExplorationScoper
+      source: graph
+    - file_path: agent/models/model_client.py
+      snippet: "call_reasoning_model generic HTTP"
+      symbol: call_reasoning_model
+      source: grep
+    - file_path: agent_v2/config.py
+      snippet: "timeouts and limits"
+      symbol: null
+      source: vector
+  expected:
+    must_select:
+      - 0
+    should_select:
+      - exploration_scoper.py
+    must_select_first: 0
+
+- id: easy_symbol_query
+  instruction: "Rank candidates for understanding CandidateSelector.select_batch behavior."
+  intent: explanation
+  limit: 2
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "def select_batch(self, instruction, intent, candidates"
+      symbol: CandidateSelector
+      source: graph
+    - file_path: planner/planner.py
+      snippet: "plan steps"
+      symbol: null
+      source: vector
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      snippet: "orchestration"
+      symbol: null
+      source: grep
+  expected:
+    must_select:
+      - 0
+      - candidate_selector.py
+    should_select:
+      - select_batch

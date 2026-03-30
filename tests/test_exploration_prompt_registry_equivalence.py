@@ -12,6 +12,13 @@ import pytest
 from agent.prompt_system.loader import load_from_versioned, normalize_model_name_for_path
 from agent.prompt_system.registry import get_registry
 from agent.models.model_config import get_prompt_model_name_for_task
+from agent_v2.exploration.llm_input_normalize import (
+    format_explored_locations_for_prompt,
+    normalize_analyzer,
+    normalize_scoper,
+    normalize_selector_batch,
+    normalize_selector_single,
+)
 
 
 def _legacy_query_intent(instruction: str) -> str:
@@ -62,7 +69,8 @@ Return ONLY JSON.
 """
 
 
-def _legacy_scoper(instruction: str, candidates_json: str) -> str:
+def _legacy_scoper(instruction: str, payload: list) -> str:
+    candidates_json = normalize_scoper(instruction=instruction, rows=payload)
     return f"""ROLE:
 You are a senior software engineer performing codebase exploration with strict precision.
 
@@ -70,10 +78,7 @@ TASK:
 Select ONLY the candidate files that are causally necessary to answer the instruction.
 
 CONTEXT:
-Instruction:
-{instruction}
-
-Candidates (indexed):
+Normalized candidates (includes instruction under [Global]):
 {candidates_json}
 
 CONSTRAINTS:
@@ -111,11 +116,12 @@ Return ONLY JSON.
 
 
 def _legacy_selector_single(instruction: str, payload: list) -> str:
+    candidates_json = normalize_selector_single(items=payload)
     return (
         "You are selecting the most relevant code location.\n"
         "Return STRICT JSON only: {\"file_path\":\"...\",\"symbol\":\"...\"}.\n"
         "Prefer implementation files over tests and already explored files.\n\n"
-        f"Instruction:\n{instruction}\n\nCandidates:\n{json.dumps(payload)}"
+        f"Instruction:\n{instruction}\n\nCandidates:\n{candidates_json}"
     )
 
 
@@ -125,6 +131,13 @@ def _legacy_selector_batch(
     payload: list,
     limit: int,
 ) -> str:
+    candidates_json = normalize_selector_batch(
+        instruction=instruction,
+        intent="no intent",
+        limit=limit,
+        explored_block=explored_block,
+        items=payload,
+    )
     return f"""ROLE:
 You are a senior software engineer selecting the most causally necessary code locations.
 
@@ -132,17 +145,13 @@ TASK:
 Select the minimal set of candidates required to answer the instruction.
 
 CONTEXT:
-Instruction:
-{instruction}
-{explored_block}
-Candidates:
-{json.dumps(payload, ensure_ascii=False)}
-
-Limit (maximum selected items): {limit}
+Normalized batch (includes instruction, intent, limit, explored locations, and items):
+{candidates_json}
 
 CONSTRAINTS:
 
 Necessary = directly contributes to solving the instruction (not just related)
+Ensure coverage across different relevant components; avoid selecting multiple redundant candidates from the same narrow area unless necessary.
 Prefer implementation logic over wrappers/tests
 Select as few candidates as possible
 If none are necessary, return no_relevant_candidate=true
@@ -163,6 +172,7 @@ Each selected item must be required to answer the instruction
 Removing any item should reduce correctness
 
 Return ONLY JSON.
+The closing brace of the JSON object must be the last character of the response (no text after it).
 """
 
 
@@ -173,6 +183,25 @@ def _legacy_analyzer(
     *,
     symbol_relationships_block: str = "(not provided)",
 ) -> str:
+    exploration_llm_input = normalize_analyzer(
+        instruction=instruction,
+        intent="",
+        task_intent_summary="(not provided)",
+        file_path=file_path,
+        snippet=snippet[:6000],
+        symbol_relationships_block=symbol_relationships_block,
+        context_blocks=[
+            {
+                "file_path": file_path,
+                "start": 1,
+                "end": 1,
+                "content": snippet[:6000],
+                "origin_reason": "",
+                "symbol": None,
+                "relationship_refs": [],
+            }
+        ],
+    )
     return f"""ROLE:
 You are a senior engineer determining whether this code is necessary to answer the instruction.
 
@@ -180,19 +209,13 @@ TASK:
 Classify the snippet based on whether it directly contributes to solving the instruction.
 
 CONTEXT:
-Instruction:
-{instruction}
-
-File:
-{file_path}
-
-Snippet (may be truncated):
-{snippet[:6000]}
-
-Symbol relationships (optional graph hints):
-{symbol_relationships_block}
+Normalized exploration input (Global, Relationships, context blocks; lossless):
+{exploration_llm_input}
 
 CONSTRAINTS:
+
+Each stated gap in your reasoning MUST be specific and actionable: name an exact symbol, file, or missing relationship or dependency; avoid vague phrases like "missing context" or "need more information".
+If any required dependency, symbol, or flow is missing from the evidence, status MUST NOT be "sufficient"; prefer "partial" or "wrong_target" as appropriate.
 
 Symbol relationships (when present) are supplementary; the snippet/code is the primary source of truth — use graph hints only if they help close gaps, not to override the code.
 
@@ -256,36 +279,38 @@ def test_scoper_matches_legacy(reg):
     payload = [
         {"index": 0, "file_path": "a.py", "sources": ["sym"], "snippets": ["snip"], "symbols": [None]}
     ]
-    cj = json.dumps(payload, ensure_ascii=False)
+    cj = normalize_scoper(instruction=instruction, rows=payload)
     tmpl = reg.get_instructions("exploration.scoper")
-    built = tmpl.format(instruction=instruction, candidates_json=cj) + "\n"
-    assert built == _legacy_scoper(instruction, cj)
+    built = tmpl.format(candidates_json=cj) + "\n"
+    assert built == _legacy_scoper(instruction, payload)
 
 
 def test_selector_single_matches_legacy(reg):
     instruction = "do the thing"
     payload = [{"file_path": "f.py", "symbol": None, "source": "search"}]
     tmpl = reg.get_instructions("exploration.selector.single")
-    built = tmpl.format(instruction=instruction, candidates_json=json.dumps(payload))
+    built = tmpl.format(
+        instruction=instruction,
+        candidates_json=normalize_selector_single(items=payload),
+    )
     assert built == _legacy_selector_single(instruction, payload)
 
 
 def test_selector_batch_matches_legacy(reg):
     instruction = "ins"
-    explored_block = (
-        "\nLocations already inspected in this run (choose different file/symbol pairs "
-        "unless no alternative exists):\n"
-        f"{json.dumps([{'file_path': 'x', 'symbol': ''}], ensure_ascii=False)}\n"
-    )
+    explored_block = format_explored_locations_for_prompt({("x", "")}, max_rows=100)
     pl = [{"file_path": "f", "symbol": None, "source": "search"}]
     limit = 2
     tmpl = reg.get_instructions("exploration.selector.batch")
     built = (
         tmpl.format(
-            instruction=instruction,
-            explored_block=explored_block,
-            candidates_json=json.dumps(pl, ensure_ascii=False),
-            limit=limit,
+            candidates_json=normalize_selector_batch(
+                instruction=instruction,
+                intent="no intent",
+                limit=limit,
+                explored_block=explored_block,
+                items=pl,
+            ),
         )
         + "\n"
     )
@@ -293,7 +318,7 @@ def test_selector_batch_matches_legacy(reg):
 
 
 def test_analyzer_template_formats_with_all_placeholders(reg):
-    """Qwen model path uses user_prompt_template with task_intent_summary + intent + context_blocks."""
+    """Qwen model path uses user_prompt_template with exploration_llm_input."""
     instruction = "instr"
     fp = "p/q/r.py"
     snippet = ("code " * 400)[:6000]
@@ -301,13 +326,26 @@ def test_analyzer_template_formats_with_all_placeholders(reg):
         "exploration.analyzer",
         model_name="qwen2.5-coder-7b",
     )
-    user_rendered = user_t.format(
+    exploration_llm_input = normalize_analyzer(
         instruction=instruction,
-        task_intent_summary="type=explanation; scope=narrow",
         intent="retrieval_kw",
-        context_blocks="[]",
+        task_intent_summary="type=explanation; scope=narrow",
+        file_path=fp,
+        snippet=snippet,
         symbol_relationships_block="(not provided)",
+        context_blocks=[
+            {
+                "file_path": fp,
+                "start": 1,
+                "end": 2,
+                "content": snippet,
+                "origin_reason": "",
+                "symbol": None,
+                "relationship_refs": [],
+            }
+        ],
     )
+    user_rendered = user_t.format(exploration_llm_input=exploration_llm_input)
     assert instruction in user_rendered
     assert "retrieval_kw" in user_rendered
     assert "type=explanation" in user_rendered
@@ -316,10 +354,25 @@ def test_analyzer_template_formats_with_all_placeholders(reg):
     default_tmpl = reg.get_instructions("exploration.analyzer")
     legacy = (
         default_tmpl.format(
-            instruction=instruction,
-            file_path=fp,
-            snippet=snippet,
-            symbol_relationships_block="(not provided)",
+            exploration_llm_input=normalize_analyzer(
+                instruction=instruction,
+                intent="",
+                task_intent_summary="(not provided)",
+                file_path=fp,
+                snippet=snippet,
+                symbol_relationships_block="(not provided)",
+                context_blocks=[
+                    {
+                        "file_path": fp,
+                        "start": 1,
+                        "end": 1,
+                        "content": snippet,
+                        "origin_reason": "",
+                        "symbol": None,
+                        "relationship_refs": [],
+                    }
+                ],
+            ),
         )
         + "\n"
     )

@@ -1,0 +1,146 @@
+# Edge pools — additive flags: allow_empty_candidates, allow_empty_output (safe empty path).
+- id: scoper_edge_empty_pool
+  edge_category: empty_input
+  edge_handling: system_handled
+  trace_id: trace_empty_input_system
+  instruction: "Narrow to exploration scoper implementation."
+  allow_empty_candidates: true
+  candidates: []
+  expected:
+    must_include: []
+    should_include: []
+
+- id: scoper_edge_whitespace_instruction
+  edge_category: empty_input
+  edge_handling: model_handled
+  trace_id: trace_empty_input_model_scoper
+  instruction: "   "
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "class ExplorationScoper"
+      symbol: ExplorationScoper
+      source: graph
+  expected:
+    must_include:
+      - exploration_scoper.py
+
+- id: scoper_edge_ambiguous_instruction
+  edge_category: ambiguous
+  instruction: "trace and narrow files for exploration.select batch vs single select"
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "select_batch select single"
+      symbol: CandidateSelector
+      source: graph
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      snippet: "orchestration"
+      symbol: null
+      source: grep
+  expected:
+    must_include:
+      - candidate_selector.py
+
+- id: scoper_edge_vague_scope
+  edge_category: low_signal
+  instruction: "scope this"
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "ExplorationScoper scope candidates"
+      symbol: ExplorationScoper
+      source: graph
+    - file_path: agent_v2/config.py
+      snippet: "limits"
+      symbol: null
+      source: vector
+  expected:
+    must_include:
+      - exploration_scoper.py
+
+- id: scoper_edge_partial_snippet
+  edge_category: partial_context
+  instruction: "Find where batch selection happens after scoping."
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "def select_batch"
+      symbol: CandidateSelector
+      source: graph
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "aggregate_payload"
+      symbol: null
+      source: grep
+  expected:
+    must_include:
+      - candidate_selector.py
+
+- id: scoper_edge_irrelevant_pool
+  edge_category: no_relevance
+  instruction: "Locate the sourdough hydration calculator module."
+  candidates:
+    - file_path: repo_index/parser.py
+      snippet: "def parse_file"
+      symbol: null
+      source: vector
+    - file_path: editing/patch_executor.py
+      snippet: "apply_patch"
+      symbol: null
+      source: grep
+    - file_path: agent/cli/entrypoint.py
+      snippet: "main"
+      symbol: main
+      source: graph
+  expected:
+    must_include: []
+
+- id: scoper_edge_mixed_signal
+  edge_category: conflicting
+  instruction: "Keep exploration scoper but drop unrelated config noise."
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "ExplorationScoper"
+      symbol: ExplorationScoper
+      source: graph
+    - file_path: agent_v2/config.py
+      snippet: "EXPLORATION_SCOPER_K unrelated"
+      symbol: null
+      source: grep
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "select_batch"
+      symbol: CandidateSelector
+      source: grep
+  expected:
+    must_include:
+      - exploration_scoper.py
+
+- id: scoper_edge_noisy_many_files
+  edge_category: over_specified
+  instruction: "Focus only on ExplorationScoper JSON index selection."
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "selected_indices JSONExtractor"
+      symbol: ExplorationScoper
+      source: graph
+    - file_path: agent_v2/utils/json_extractor.py
+      snippet: "JSONExtractor"
+      symbol: JSONExtractor
+      source: grep
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "select_batch"
+      symbol: CandidateSelector
+      source: grep
+    - file_path: agent_v2/observability/langfuse_helpers.py
+      snippet: "exploration_llm_call"
+      symbol: exploration_llm_call
+      source: grep
+    - file_path: agent/prompt_system/registry.py
+      snippet: "get_registry"
+      symbol: null
+      source: vector
+    - file_path: planner/planner.py
+      snippet: "plan"
+      symbol: null
+      source: vector
+  expected:
+    must_include:
+      - exploration_scoper.py
+    should_include:
+      - json_extractor.py

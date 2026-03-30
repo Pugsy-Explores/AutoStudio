@@ -1,0 +1,80 @@
+# Edge / robustness — warning-first; use skip_null_guard when null dims are acceptable.
+- id: qip_edge_empty_instruction
+  edge_category: empty_input
+  edge_handling: model_handled
+  trace_id: trace_empty_input_model_qip
+  instruction: ""
+  expected: {}
+  skip_null_guard: true
+
+- id: qip_edge_whitespace_only
+  edge_category: empty_input
+  edge_handling: model_handled
+  trace_id: trace_empty_input_ws_qip
+  instruction: "   \t  "
+  expected: {}
+  skip_null_guard: true
+
+- id: qip_edge_vague_explain
+  edge_category: low_signal
+  instruction: "explain this"
+  expected:
+    intent_type: explanation
+    scope: component
+    focus: internal_logic
+
+- id: qip_edge_how_it_work
+  edge_category: low_signal
+  instruction: "how does it work"
+  expected:
+    intent_type: explanation
+    scope: component
+    focus: internal_logic
+
+- id: qip_edge_partial_symbol
+  edge_category: partial_context
+  instruction: "What does the thing in exploration do with the queue"
+  expected:
+    intent_type: explanation
+    scope: component
+    focus: internal_logic
+
+- id: qip_edge_no_code_in_query
+  edge_category: low_signal
+  instruction: "something seems off with behavior"
+  expected:
+    intent_type: debugging
+    scope: system
+    focus: usage
+
+- id: qip_edge_unrelated_domain
+  edge_category: no_relevance
+  instruction: "How do I bake sourdough starter at 80 percent hydration"
+  expected:
+    intent_type: explanation
+    scope: system
+    focus: usage
+
+- id: qip_edge_trace_and_debug
+  edge_category: ambiguous
+  instruction: "trace and debug why ExplorationScoper returns too few files"
+  expected:
+    intent_type: debugging
+    scope: component
+    focus: internal_logic
+
+- id: qip_edge_explain_and_fix
+  edge_category: conflicting
+  instruction: "explain and fix the selector batch JSON parsing"
+  expected:
+    intent_type: modification
+    scope: narrow
+    focus: internal_logic
+
+- id: qip_edge_many_symbols
+  edge_category: over_specified
+  instruction: "Compare ExplorationScoper.scope vs CandidateSelector.select_batch vs UnderstandingAnalyzer.analyze vs QueryIntentParser.parse vs JSONExtractor.extract_final_json"
+  expected:
+    intent_type: explanation
+    scope: system
+    focus: relationships
