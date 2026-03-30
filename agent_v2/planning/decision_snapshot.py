@@ -64,6 +64,16 @@ def build_planner_decision_snapshot(
         has_pending = plan_document_has_runnable_work(plan_doc)
         lph = plan_document_fingerprint(plan_doc)
 
+    v_hint = ""
+    ctx_obj = getattr(state, "context", None)
+    if isinstance(ctx_obj, dict):
+        vf = ctx_obj.get("validation_feedback")
+        if isinstance(vf, dict):
+            mc = vf.get("missing_context")
+            if isinstance(mc, list):
+                parts = [str(x).strip() for x in mc if str(x).strip()][:24]
+                v_hint = " | ".join(parts)[:2000]
+
     return PlannerDecisionSnapshot(
         instruction=str(getattr(state, "instruction", "") or ""),
         rolling_conversation_summary=rolling_conversation_summary,
@@ -78,4 +88,5 @@ def build_planner_decision_snapshot(
         act_controller_iteration_count=aci,
         explore_block_details=ebd_consume,
         last_plan_hash=lph,
+        validation_retrieval_hint=v_hint,
     )

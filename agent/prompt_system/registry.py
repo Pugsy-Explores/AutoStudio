@@ -51,9 +51,13 @@ _DEFAULT_REGISTRY: dict[str, tuple[ModelType, ...]] = {
     "exploration.analyzer": (ModelType.REASONING,),
     # Post-exploration answer synthesis (Agent V2)
     "answer_synthesis": (ModelType.REASONING,),
+    "answer_validation": (ModelType.REASONING,),
     # Planner v2 packaged (flat file + optional model override)
     "planner.decision.v1": (ModelType.REASONING,),
     "planner.replan.v1": (ModelType.REASONING,),
+    # Act-mode planner decision / replan (versioned YAML + optional models/<model>/vN.yaml)
+    "planner.decision.act": (ModelType.REASONING,),
+    "planner.replan.act": (ModelType.REASONING,),
 }
 
 

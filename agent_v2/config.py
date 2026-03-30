@@ -218,6 +218,13 @@ TASK_PLANNER_AUTHORITATIVE_LOOP: bool = _bool_env("AGENT_V2_TASK_PLANNER_AUTHORI
 PLANNER_PLAN_BODY_ONLY_WHEN_TASK_PLANNER_AUTHORITATIVE: bool = _bool_env(
     "AGENT_V2_PLANNER_PLAN_BODY_ONLY_WHEN_TASK_PLANNER_AUTHORITATIVE"
 )
+# Post-synthesis answer validation in ACT controller loop (default on).
+ENABLE_ANSWER_VALIDATION: bool = _int_env("AGENT_V2_ENABLE_ANSWER_VALIDATION", 1) == 1
+MAX_ANSWER_VALIDATION_ROUNDS_PER_TASK: int = max(
+    1, _int_env("AGENT_V2_MAX_ANSWER_VALIDATION_ROUNDS_PER_TASK", 8)
+)
+# Optional LLM second pass after rules validation (default off; set AGENT_V2_ENABLE_ANSWER_VALIDATION_LLM=1).
+ENABLE_ANSWER_VALIDATION_LLM: bool = _int_env("AGENT_V2_ENABLE_ANSWER_VALIDATION_LLM", 0) == 1
 # Phase B: require explicit planner `tool` in JSON (no inference from step). Env: PLANNER_STRICT_TOOL=1 or AGENT_V2_PLANNER_STRICT_TOOL=1
 PLANNER_STRICT_TOOL: bool = _bool_env("PLANNER_STRICT_TOOL") or _bool_env("AGENT_V2_PLANNER_STRICT_TOOL")
 
@@ -268,6 +275,9 @@ class PlannerLoopConfig:
     task_planner_shadow_loop: bool
     task_planner_authoritative_loop: bool
     planner_plan_body_only_when_task_planner_authoritative: bool
+    enable_answer_validation: bool
+    max_answer_validation_rounds_per_task: int
+    enable_answer_validation_llm: bool
 
 
 @dataclass(frozen=True)
@@ -316,6 +326,9 @@ def _build_config() -> AgentV2Config:
             planner_plan_body_only_when_task_planner_authoritative=(
                 PLANNER_PLAN_BODY_ONLY_WHEN_TASK_PLANNER_AUTHORITATIVE
             ),
+            enable_answer_validation=ENABLE_ANSWER_VALIDATION,
+            max_answer_validation_rounds_per_task=MAX_ANSWER_VALIDATION_ROUNDS_PER_TASK,
+            enable_answer_validation_llm=ENABLE_ANSWER_VALIDATION_LLM,
         ),
         chat_planning=ChatPlanningConfig(
             enable_thin_task_planner=ENABLE_THIN_TASK_PLANNER,
@@ -352,6 +365,8 @@ def validate_config(config: AgentV2Config) -> None:
         raise ValueError("config.planner_loop.max_planner_controller_calls must be >= 1")
     if config.planner_loop.max_act_controller_iterations < 1:
         raise ValueError("config.planner_loop.max_act_controller_iterations must be >= 1")
+    if config.planner_loop.max_answer_validation_rounds_per_task < 1:
+        raise ValueError("config.planner_loop.max_answer_validation_rounds_per_task must be >= 1")
     if config.exploration.max_steps < 1:
         raise ValueError("config.exploration.max_steps must be >= 1")
     if not config.planner.allowed_actions_read_only:

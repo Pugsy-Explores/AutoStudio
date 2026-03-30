@@ -42,6 +42,8 @@ class PlannerDecisionSnapshot(BaseModel):
     explore_block_details: Optional[dict[str, Any]] = None
     # Fingerprint of merged plan after last controller tick (for stagnation / telemetry).
     last_plan_hash: str = ""
+    # Bounded join of validation_feedback.missing_context for retrieval-oriented explore after validation failure.
+    validation_retrieval_hint: str = ""
 
     @field_validator(
         "instruction",
@@ -86,3 +88,9 @@ class PlannerDecisionSnapshot(BaseModel):
     def _cap_plan_hash(cls, v: object) -> str:
         s = str(v or "").strip()
         return s[:128]
+
+    @field_validator("validation_retrieval_hint", mode="before")
+    @classmethod
+    def _cap_validation_retrieval_hint(cls, v: object) -> str:
+        s = str(v or "").strip()
+        return s[:2000]

@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any, Optional
+
+_LOG = logging.getLogger(__name__)
 
 from agent_v2.config import get_config
 from agent_v2.exploration.answer_synthesizer import maybe_synthesize_to_state
@@ -53,7 +56,10 @@ from agent_v2.runtime.exploration_planning_input import (
     call_planner_with_context,
     exploration_to_planner_context,
 )
+from agent_v2.schemas.answer_synthesis import AnswerSynthesisResult
+from agent_v2.schemas.answer_validation import AnswerValidationResult
 from agent_v2.schemas.planner_plan_context import PlannerPlanContext
+from agent_v2.validation.answer_validator import validate_answer
 from agent_v2.runtime.planner_decision_mapper import planner_decision_from_plan_document
 from agent_v2.runtime.replanner import merge_preserved_completed_steps, validate_completed_steps_immutable
 from agent_v2.runtime.trace_context import clear_active_trace_emitter, set_active_trace_emitter
@@ -178,13 +184,75 @@ def _sync_session_after_exploration(mem: SessionMemory, exploration: Any) -> Non
     mem.record_last_exploration_engine_steps(steps)
 
 
-def _planner_context_for_replan(ctx: ReplanContext, mem: SessionMemory) -> PlannerPlanContext:
+def build_explore_query_after_validation_failure(
+    vf: Optional[AnswerValidationResult],
+    instruction: str,
+    *,
+    max_chars: int = 2000,
+) -> str:
+    """
+    Sub-exploration query when synthesize is coerced to explore after failed validation.
+    Public for unit tests.
+    """
+    parts: list[str] = []
+    if vf is not None:
+        parts.extend(str(x).strip() for x in (vf.missing_context or []) if str(x).strip())
+        for issue in vf.issues:
+            s = str(issue).strip()
+            if s and s not in parts:
+                parts.append(s)
+    joined = " | ".join(parts) if parts else ""
+    if len(joined) > max_chars:
+        joined = joined[: max_chars - 1] + "…"
+    if joined.strip():
+        return joined
+    hint = (instruction or "").strip()
+    if len(hint) > max_chars:
+        hint = hint[: max_chars - 1] + "…"
+    return hint or "retrieve more evidence for task"
+
+
+def _validation_feedback_from_state(state: Any) -> Optional[AnswerValidationResult]:
+    ctx = getattr(state, "context", None)
+    if not isinstance(ctx, dict):
+        return None
+    raw = ctx.get("validation_feedback")
+    if raw is None:
+        return None
+    if isinstance(raw, AnswerValidationResult):
+        return raw
+    if isinstance(raw, dict):
+        try:
+            return AnswerValidationResult.model_validate(raw)
+        except Exception:
+            return None
+    return None
+
+
+def _exploration_to_planner_ctx_with_validation(
+    state: Any,
+    exploration: FinalExplorationSchema,
+    mem: SessionMemory,
+) -> PlannerPlanContext:
+    vf = _validation_feedback_from_state(state)
+    return exploration_to_planner_context(
+        exploration, session=mem, state=state, validation_feedback=vf
+    )
+
+
+def _planner_context_for_replan(
+    ctx: ReplanContext,
+    mem: SessionMemory,
+    *,
+    validation_feedback: Optional[AnswerValidationResult] = None,
+) -> PlannerPlanContext:
     qi = ctx.query_intent
     return PlannerPlanContext(
         replan=ctx,
         session=mem,
         query_intent=qi,
         exploration_budget=effective_exploration_budget(qi),
+        validation_feedback=validation_feedback,
     )
 
 
@@ -477,7 +545,7 @@ class PlannerTaskRuntime:
                     validation_task_mode=None,
                 )
             else:
-                pctx = exploration_to_planner_context(exploration, session=mem, state=state)
+                pctx = _exploration_to_planner_ctx_with_validation(state, exploration, mem)
                 plan_doc = call_planner_with_context(
                     self.planner,
                     state.instruction,
@@ -579,7 +647,7 @@ class PlannerTaskRuntime:
                     validation_task_mode="plan_safe",
                 )
             else:
-                pctx = exploration_to_planner_context(exploration, session=mem, state=state)
+                pctx = _exploration_to_planner_ctx_with_validation(state, exploration, mem)
                 plan_doc = call_planner_with_context(
                     self.planner,
                     state.instruction,
@@ -654,7 +722,7 @@ class PlannerTaskRuntime:
                 _maybe_thin_planner_observability(state, exploration, self._task_planner)
             _sync_chat_planning_metadata(state)
 
-            pctx = exploration_to_planner_context(exploration, session=mem, state=state)
+            pctx = _exploration_to_planner_ctx_with_validation(state, exploration, mem)
             plan = call_planner_with_context(
                 self.planner,
                 state.instruction,
@@ -700,6 +768,8 @@ class PlannerTaskRuntime:
         md["planner_controller_calls"] = 0
         md["sub_explorations_used"] = 0
         md["act_controller_iteration_count"] = 0
+        md["post_validation_synthesize_blocked"] = False
+        md["answer_validation_rounds"] = 0
 
         def _budget_planner() -> bool:
             if md["planner_controller_calls"] >= cfg.max_planner_controller_calls:
@@ -772,7 +842,7 @@ class PlannerTaskRuntime:
             raise RuntimeError(
                 "planner_controller_calls budget misconfigured (max_planner_controller_calls < 1)"
             )
-        pctx0 = exploration_to_planner_context(exploration, session=mem, state=state)
+        pctx0 = _exploration_to_planner_ctx_with_validation(state, exploration, mem)
         plan_doc = _pcw(
             pctx0,
             deep_kw=deep,
@@ -793,7 +863,18 @@ class PlannerTaskRuntime:
 
         while True:
             md["act_controller_iteration_count"] = int(md.get("act_controller_iteration_count", 0)) + 1
+            md.pop("decision_coerced_from_synthesize", None)
             decision = _resolve_decision(plan_doc)
+
+            if md.get("post_validation_synthesize_blocked") and decision.type == "synthesize":
+                vf_blk = _validation_feedback_from_state(state)
+                q_coerce = build_explore_query_after_validation_failure(
+                    vf_blk, str(getattr(state, "instruction", "") or "")
+                )
+                decision = PlannerDecision(
+                    type="explore", step=None, query=q_coerce, tool="explore"
+                )
+                md["decision_coerced_from_synthesize"] = True
 
             if decision.type == "synthesize":
                 maybe_synthesize_to_state(state, exploration, langfuse_trace)
@@ -801,7 +882,47 @@ class PlannerTaskRuntime:
                 twm.record_completed(
                     CompletedStepRecord(kind="synthesize", summary="answer_synthesis")
                 )
-                md["task_planner_last_loop_outcome"] = "synthesize_completed"
+                loop_cfg = get_config().planner_loop
+                sctx = getattr(state, "context", None)
+                if loop_cfg.enable_answer_validation and isinstance(sctx, dict):
+                    rounds = int(md.get("answer_validation_rounds") or 0)
+                    if rounds >= loop_cfg.max_answer_validation_rounds_per_task:
+                        md["post_validation_synthesize_blocked"] = False
+                        md["answer_validation_bypass_max_rounds"] = True
+                        _LOG.warning(
+                            "answer_validation bypassed after %s rounds (max=%s)",
+                            rounds,
+                            loop_cfg.max_answer_validation_rounds_per_task,
+                        )
+                        md["task_planner_last_loop_outcome"] = "synthesize_completed"
+                    elif "answer_synthesis" in sctx:
+                        try:
+                            syn = AnswerSynthesisResult.model_validate(sctx["answer_synthesis"])
+                        except Exception:
+                            syn = AnswerSynthesisResult(
+                                synthesis_success=False,
+                                error="invalid_answer_synthesis_payload",
+                            )
+                        v = validate_answer(
+                            instruction=str(getattr(state, "instruction", "") or ""),
+                            exploration=exploration,
+                            synthesis=syn,
+                            langfuse_parent=langfuse_trace,
+                        )
+                        rounds += 1
+                        md["answer_validation_rounds"] = rounds
+                        sctx["answer_validation"] = v.model_dump(mode="json")
+                        sctx["validation_feedback"] = v.model_dump(mode="json")
+                        if v.is_complete:
+                            md["post_validation_synthesize_blocked"] = False
+                            md["task_planner_last_loop_outcome"] = "validation_complete"
+                        else:
+                            md["post_validation_synthesize_blocked"] = True
+                            md["task_planner_last_loop_outcome"] = "validation_incomplete"
+                    else:
+                        md["task_planner_last_loop_outcome"] = "synthesize_completed"
+                else:
+                    md["task_planner_last_loop_outcome"] = "synthesize_completed"
                 continue
 
             if decision.type == "plan":
@@ -814,7 +935,7 @@ class PlannerTaskRuntime:
                         plan_valid=plan_document_valid_for_v2_gate(plan_doc),
                     )
                 np = _pcw(
-                    exploration_to_planner_context(exploration, session=mem, state=state),
+                    _exploration_to_planner_ctx_with_validation(state, exploration, mem),
                     deep_kw=deep,
                     require_controller_json=True,
                 )
@@ -841,6 +962,7 @@ class PlannerTaskRuntime:
                         _planner_context_for_replan(
                             _insufficiency_replan_context(plan_doc, state.instruction, state),
                             mem,
+                            validation_feedback=_validation_feedback_from_state(state),
                         ),
                         deep_kw=True,
                         require_controller_json=True,
@@ -862,6 +984,7 @@ class PlannerTaskRuntime:
                         _planner_context_for_replan(
                             _insufficiency_replan_context(plan_doc, state.instruction, state),
                             mem,
+                            validation_feedback=_validation_feedback_from_state(state),
                         ),
                         deep_kw=True,
                         require_controller_json=True,
@@ -887,6 +1010,7 @@ class PlannerTaskRuntime:
                         _planner_context_for_replan(
                             _insufficiency_replan_context(plan_doc, state.instruction, state),
                             mem,
+                            validation_feedback=_validation_feedback_from_state(state),
                         ),
                         deep_kw=True,
                         require_controller_json=True,
@@ -898,6 +1022,7 @@ class PlannerTaskRuntime:
                     _attach_plan_view(state, plan_doc)
                     continue
                 old_pd = plan_doc
+                md["post_validation_synthesize_blocked"] = False
                 exploration = self.exploration_runner.run(
                     query, obs=obs, langfuse_trace=langfuse_trace
                 )
@@ -911,7 +1036,7 @@ class PlannerTaskRuntime:
                 ps = plan_state_from_plan_document(old_pd)
                 if not _budget_planner():
                     return _exit_budget_exhausted()
-                pctx_sub = exploration_to_planner_context(exploration, session=mem, state=state)
+                pctx_sub = _exploration_to_planner_ctx_with_validation(state, exploration, mem)
                 assert should_call_planner_v2(context="post_exploration_merge")
                 np = _pcw(
                     pctx_sub,
@@ -943,6 +1068,7 @@ class PlannerTaskRuntime:
                     _planner_context_for_replan(
                         _insufficiency_replan_context(plan_doc, state.instruction, state),
                         mem,
+                        validation_feedback=_validation_feedback_from_state(state),
                     ),
                     deep_kw=True,
                     require_controller_json=True,
@@ -968,6 +1094,7 @@ class PlannerTaskRuntime:
             out = self.plan_executor.run_one_step(plan_doc, state, trace_emitter=trace_emitter)
             st = out.get("status")
             if st == "success":
+                md["post_validation_synthesize_blocked"] = False
                 _record_session_after_executor_step(mem, plan_doc)
                 return plan_doc, out
             if st == "failed_step":
@@ -980,7 +1107,11 @@ class PlannerTaskRuntime:
                     return _exit_budget_exhausted()
                 assert should_call_planner_v2(context="failure_or_insufficiency_replan")
                 np = _pcw(
-                    _planner_context_for_replan(ctx, mem),
+                    _planner_context_for_replan(
+                        ctx,
+                        mem,
+                        validation_feedback=_validation_feedback_from_state(state),
+                    ),
                     deep_kw=True,
                     require_controller_json=True,
                 )
@@ -991,6 +1122,7 @@ class PlannerTaskRuntime:
                 _attach_plan_view(state, plan_doc)
                 continue
             if st == "progress":
+                md["post_validation_synthesize_blocked"] = False
                 old_pd = plan_doc
                 last_summary = ""
                 for s in plan_doc.steps:
@@ -999,7 +1131,7 @@ class PlannerTaskRuntime:
                 ps = plan_state_from_plan_document(plan_doc, last_result_summary=last_summary)
                 if not _budget_planner():
                     return _exit_budget_exhausted()
-                pctx_pr = exploration_to_planner_context(exploration, session=mem, state=state)
+                pctx_pr = _exploration_to_planner_ctx_with_validation(state, exploration, mem)
                 assert should_call_planner_v2(context="progress_refresh")
                 np = _pcw(
                     pctx_pr,

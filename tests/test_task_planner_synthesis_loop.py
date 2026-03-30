@@ -48,6 +48,9 @@ def _minimal_agent_v2_config(*, max_act: int = 256) -> AgentV2Config:
             task_planner_shadow_loop=False,
             task_planner_authoritative_loop=False,
             planner_plan_body_only_when_task_planner_authoritative=False,
+            enable_answer_validation=True,
+            max_answer_validation_rounds_per_task=8,
+            enable_answer_validation_llm=False,
         ),
         chat_planning=ChatPlanningConfig(
             enable_thin_task_planner=False,
@@ -55,6 +58,51 @@ def _minimal_agent_v2_config(*, max_act: int = 256) -> AgentV2Config:
             skip_answer_synthesis_when_sufficient=False,
         ),
     )
+
+
+def test_rule_based_planner_explores_with_validation_hint_when_validation_incomplete():
+    svc = RuleBasedTaskPlannerService()
+    snap = PlannerDecisionSnapshot(
+        instruction="original instruction",
+        last_loop_outcome="validation_incomplete",
+        validation_retrieval_hint="find symbol Foo | check tests",
+        has_pending_plan_work=False,
+        act_controller_iteration_count=0,
+    )
+    d = svc.decide(snap)
+    assert d.type == "explore"
+    assert d.tool == "explore"
+    assert "Foo" in (d.query or "")
+
+
+def test_rule_based_planner_acts_when_validation_incomplete_and_pending_plan_work():
+    svc = RuleBasedTaskPlannerService()
+    snap = PlannerDecisionSnapshot(
+        instruction="task",
+        last_loop_outcome="validation_incomplete",
+        validation_retrieval_hint="hint",
+        has_pending_plan_work=True,
+        act_controller_iteration_count=0,
+    )
+    d = svc.decide(snap)
+    assert d.type == "act"
+
+
+def test_build_planner_decision_snapshot_sets_validation_retrieval_hint():
+    st = MagicMock()
+    st.instruction = "x"
+    st.metadata = {}
+    st.context = {
+        "validation_feedback": {
+            "is_complete": False,
+            "missing_context": ["alpha", "beta"],
+            "issues": [],
+            "confidence": "low",
+        }
+    }
+    snap = build_planner_decision_snapshot(st, None, rolling_conversation_summary="")
+    assert "alpha" in snap.validation_retrieval_hint
+    assert "beta" in snap.validation_retrieval_hint
 
 
 def test_rule_based_planner_stops_when_last_loop_outcome_is_synthesize_completed():

@@ -30,6 +30,9 @@ def _make_cfg(*, skip: bool) -> AgentV2Config:
             task_planner_shadow_loop=False,
             task_planner_authoritative_loop=False,
             planner_plan_body_only_when_task_planner_authoritative=False,
+            enable_answer_validation=True,
+            max_answer_validation_rounds_per_task=8,
+            enable_answer_validation_llm=False,
         ),
         chat_planning=ChatPlanningConfig(
             enable_thin_task_planner=False,

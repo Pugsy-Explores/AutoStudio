@@ -594,11 +594,65 @@ class PlannerV2:
             "--------------------------------"
         )
 
+    # Max chars of user instruction to embed when QueryIntent was never parsed (prompt scope signal).
+    _USER_TASK_INTENT_FALLBACK_INSTRUCTION_CHARS = 1200
+
     @staticmethod
-    def _user_task_intent_section(planner_context: PlannerPlanContext) -> str:
+    def _validation_feedback_section(planner_context: PlannerPlanContext) -> str:
+        vf = planner_context.validation_feedback
+        if vf is None:
+            return ""
+        issues = "\n".join(f"- {i}" for i in vf.issues) or "(none)"
+        missing = "\n".join(f"- {m}" for m in vf.missing_context) or "(none)"
+        if not vf.is_complete:
+            mandate = (
+                'MANDATORY: Next decision MUST NOT be "synthesize". '
+                'Prioritize "explore" and use missing_context / issues to drive retrieval. '
+                '"act" is allowed only with a concrete next tool step.'
+            )
+        else:
+            mandate = (
+                "Answer validation passed (is_complete=true). "
+                "You may stop, act, or synthesize per task policy."
+            )
+        vreason = (vf.validation_reason or "").strip() or "(none)"
+        return (
+            "--------------------------------\n"
+            "VALIDATION FEEDBACK (post-synthesis; authoritative)\n"
+            "--------------------------------\n"
+            f"is_complete: {vf.is_complete}\n"
+            f"confidence: {vf.confidence}\n"
+            f"validation_reason: {vreason}\n"
+            "issues:\n"
+            f"{issues}\n"
+            "missing_context:\n"
+            f"{missing}\n"
+            f"{mandate}\n"
+            "--------------------------------"
+        )
+
+    @staticmethod
+    def _user_task_intent_section(
+        planner_context: PlannerPlanContext,
+        instruction: str = "",
+    ) -> str:
         qi = PlannerV2._effective_query_intent(planner_context)
         if qi is None:
-            body = "(not recorded — use USER INSTRUCTION and exploration context)"
+            hint = (instruction or "").strip()
+            if hint:
+                clipped = _truncate_for_planner_prompt(
+                    hint, PlannerV2._USER_TASK_INTENT_FALLBACK_INSTRUCTION_CHARS
+                )
+                body = (
+                    "structured_query_intent: not parsed by exploration engine\n"
+                    "scope_from_user_instruction:\n"
+                    f"{clipped}"
+                )
+            else:
+                body = (
+                    "structured_query_intent: not parsed; no user instruction in planner call "
+                    "(rely on EXPLORATION and KEY FINDINGS below)."
+                )
         else:
             lines: list[str] = []
             if qi.intent_type:
@@ -629,6 +683,7 @@ class PlannerV2:
         task_mode: Optional[str],
         *,
         plan_state: PlanState | None,
+        instruction: str = "",
     ) -> str:
         exploration = planner_context.exploration
         if exploration is None:
@@ -689,8 +744,16 @@ CONFIDENCE:
 {conf_band}{insufficiency_tail}{deep_tail}{ro_tail}{plan_safe_tail}{plan_progress}{PlannerV2._last_planner_validation_block(planner_context.session)}
 """
 
-        intent_section = self._user_task_intent_section(planner_context)
+        intent_section = self._user_task_intent_section(planner_context, instruction=instruction)
+        validation_block = PlannerV2._validation_feedback_section(planner_context)
         parts = [intent_section.strip(), exploration_block.strip(), session_block.strip()]
+        if validation_block.strip():
+            parts = [
+                intent_section.strip(),
+                exploration_block.strip(),
+                validation_block.strip(),
+                session_block.strip(),
+            ]
         return "\n\n".join(p for p in parts if p)
 
     def _compose_replan_context_block(
@@ -700,6 +763,7 @@ CONFIDENCE:
         task_mode: Optional[str],
         *,
         plan_state: PlanState | None,
+        instruction: str = "",
     ) -> str:
         ctx = planner_context.replan
         if ctx is None:
@@ -779,14 +843,23 @@ COMPLETED STEPS:
 {deep_tail}{ro_tail}{plan_safe_tail}{plan_progress}{PlannerV2._last_planner_validation_block(planner_context.session)}
 """
 
-        intent_section = self._user_task_intent_section(planner_context)
+        intent_section = self._user_task_intent_section(planner_context, instruction=instruction)
         budget_block = self._exploration_budget_advisory_block(planner_context)
+        validation_block = PlannerV2._validation_feedback_section(planner_context)
         parts = [
             intent_section.strip(),
             budget_block.strip(),
             exploration_block.strip(),
             session_block.strip(),
         ]
+        if validation_block.strip():
+            parts = [
+                intent_section.strip(),
+                budget_block.strip(),
+                exploration_block.strip(),
+                validation_block.strip(),
+                session_block.strip(),
+            ]
         return "\n\n".join(p for p in parts if p)
 
     def _build_plan_prompt_parts(
@@ -804,7 +877,7 @@ COMPLETED STEPS:
 
         if planner_context.replan is not None:
             ctx_block = self._compose_replan_context_block(
-                planner_context, deep, task_mode, plan_state=plan_state
+                planner_context, deep, task_mode, plan_state=plan_state, instruction=instruction
             )
             if self._tool_policy.mode == "plan":
                 system, user = reg.render_prompt_parts(
@@ -840,7 +913,7 @@ COMPLETED STEPS:
             return system, None
 
         ctx_block = self._compose_exploration_context_block(
-            planner_context, deep, task_mode, plan_state=plan_state
+            planner_context, deep, task_mode, plan_state=plan_state, instruction=instruction
         )
         if self._tool_policy.mode == "plan":
             system, user = reg.render_prompt_parts(

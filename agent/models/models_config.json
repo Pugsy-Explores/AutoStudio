@@ -17,6 +17,10 @@
     "REASONING_V2": {
       "name": "Qwen14B",
       "endpoint": "http://localhost:8003/v1/chat/completions"
+    },
+    "GOIN_2_57B": {
+      "name": "GOIN 2.57B",
+      "endpoint": "http://localhost:8081/v1/chat/completions"
     }
   },
   "task_models": {
@@ -54,7 +58,8 @@
     "EXPLORATION_SELECTOR_SINGLE": "REASONING",
     "EXPLORATION_SELECTOR_BATCH": "REASONING",
     "EXPLORATION_ANALYZER": "REASONING",
-    "ANSWER_SYNTHESIS": "REASONING"
+    "ANSWER_SYNTHESIS": "REASONING",
+    "ANSWER_VALIDATION": "REASONING"
   },
   "task_params": {
     "query rewriting": {
@@ -237,6 +242,11 @@
     "ANSWER_SYNTHESIS": {
       "temperature": 0.1,
       "max_tokens": 8192,
+      "request_timeout_seconds": 600
+    },
+    "ANSWER_VALIDATION": {
+      "temperature": 0.0,
+      "max_tokens": 2048,
       "request_timeout_seconds": 600
     }
   }

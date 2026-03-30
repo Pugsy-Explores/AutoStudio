@@ -17,6 +17,7 @@ from agent_v2.schemas.exploration import (
 from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.plan import PlanDocument
 from agent_v2.schemas.plan_state import PlanState
+from agent_v2.schemas.answer_validation import AnswerValidationResult
 from agent_v2.schemas.planner_plan_context import (
     ExplorationInsufficientContext,
     PlannerPlanContext,
@@ -66,6 +67,7 @@ def exploration_to_planner_context(
     *,
     query_intent: Optional[QueryIntent] = None,
     state: Optional[Any] = None,
+    validation_feedback: Optional[AnswerValidationResult] = None,
 ) -> PlannerPlanContext:
     """
     Always includes ``exploration`` when present; adds ``insufficiency`` when metadata is weak.
@@ -81,7 +83,11 @@ def exploration_to_planner_context(
     eb = effective_exploration_budget(qi)
     if exploration_allows_direct_plan_input(exploration):
         return PlannerPlanContext(
-            exploration=exploration, session=session, query_intent=qi, exploration_budget=eb
+            exploration=exploration,
+            session=session,
+            query_intent=qi,
+            exploration_budget=eb,
+            validation_feedback=validation_feedback,
         )
     reason = _termination_reason(exploration)
     ins = ExplorationInsufficientContext(
@@ -92,7 +98,12 @@ def exploration_to_planner_context(
         termination_reason=reason,
     )
     return PlannerPlanContext(
-        exploration=exploration, insufficiency=ins, session=session, query_intent=qi
+        exploration=exploration,
+        insufficiency=ins,
+        session=session,
+        query_intent=qi,
+        exploration_budget=eb,
+        validation_feedback=validation_feedback,
     )
 
 

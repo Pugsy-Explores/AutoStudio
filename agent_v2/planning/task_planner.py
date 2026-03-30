@@ -28,8 +28,22 @@ class RuleBasedTaskPlannerService:
 
     def decide(self, snapshot: PlannerDecisionSnapshot) -> PlannerDecision:
         lo = (snapshot.last_loop_outcome or "").strip()
-        if lo == "synthesize_completed":
+        if lo in ("synthesize_completed", "validation_complete"):
             return PlannerDecision(type="stop", step=None, query=None, tool=None)
+        if lo == "validation_incomplete":
+            if snapshot.has_pending_plan_work is True:
+                return PlannerDecision(type="act", step=None, query=None, tool=None)
+            inst = (snapshot.instruction or "").strip()
+            hint = (snapshot.validation_retrieval_hint or "").strip()
+            query = hint if hint else inst
+            if not query:
+                return PlannerDecision(type="stop", step=None, query=None, tool=None)
+            return PlannerDecision(
+                type="explore",
+                step=None,
+                query=query[:8000],
+                tool="explore",
+            )
         # Runtime-emitted stagnation / gate outcomes — deterministic escape (no blind re-explore).
         if lo == "replan_no_progress":
             return PlannerDecision(type="synthesize", step=None, query=None, tool="synthesize")

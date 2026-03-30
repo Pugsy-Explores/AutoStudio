@@ -312,6 +312,8 @@ _TIMEOUT = MODEL_REQUEST_TIMEOUT
 _MAX_PRETTY_LINES = 40
 _PRETTY_WIDTH = 72
 _MAX_CONTEXT_CHARS = 400
+# Full user-role text for workflow logs (section parser + small context keys omit most of it).
+_MAX_USER_PROMPT_LOG_CHARS = 20000
 
 
 def _dump_replanner_prompt_files(system_prompt: str | None, user_prompt: str) -> None:
@@ -348,6 +350,104 @@ def _truncate_for_log(text: str, max_chars: int = _MAX_CONTEXT_CHARS) -> str:
     if len(clean) <= max_chars:
         return clean
     return clean[:max_chars] + "..."
+
+
+def _truncate_preserve_newlines(text: str, max_chars: int) -> str:
+    """Truncate without squashing newlines (for prompt-shaped log fields)."""
+    t = text or ""
+    if len(t) <= max_chars:
+        return t
+    return t[: max(0, max_chars - 3)] + "..."
+
+
+# Log field values longer than this as a multi-line block under the key.
+_PRETTY_PRINT_BLOCK_MIN_CHARS = 120
+
+# Workflow stdout: only injected template variables / variable-shaped payloads (not static prompt text).
+_TEMPLATE_VARIABLE_LOG_KEYS = frozenset(
+    {
+        "instruction",
+        "context_block",
+        "expected_behavior",
+        "trace",
+        "previous_queries",
+        "failure_reason",
+        "query_intent",
+        "context_feedback",
+        "step_summaries",
+        "final_outcome",
+        "candidates",
+        "selected_indices",
+        "selected",
+    }
+)
+
+
+def _extract_planner_injected_variables(combined: str) -> dict[str, str]:
+    """instruction + context_block from rendered planner prompts ({instruction}, {context_block} slots)."""
+    out: dict[str, str] = {}
+    if not (combined or "").strip():
+        return out
+    # 1) Instruction: single-system prompts use "USER INSTRUCTION (latest):"; split system/user
+    #    prompts (e.g. planner.decision.act/models/qwen2.5-coder-7b) use "USER INSTRUCTION:" in user.
+    m = re.search(
+        r"USER INSTRUCTION \(latest\):\s*(.*?)(?=\n\s*-{5,}|\n\s*OUTPUT FORMAT|\Z)",
+        combined,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if m:
+        ins = m.group(1).strip()
+        if ins:
+            out["instruction"] = _truncate_preserve_newlines(ins, _MAX_USER_PROMPT_LOG_CHARS)
+    if "instruction" not in out:
+        m_alt = re.search(
+            r"(?:^|\n)\s*USER INSTRUCTION:\s*(.*?)(?=\n\s*-{5,}|\n\s*OUTPUT FORMAT|\Z)",
+            combined,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if m_alt:
+            ins = m_alt.group(1).strip()
+            if ins:
+                out["instruction"] = _truncate_preserve_newlines(ins, _MAX_USER_PROMPT_LOG_CHARS)
+
+    # 2) context_block: legacy — injected block starting with USER TASK INTENT before USER INSTRUCTION (latest)
+    m2 = re.search(
+        r"(USER TASK INTENT:[\s\S]*?)(?=\n\s*-{5,}\s*\n\s*USER INSTRUCTION \(latest\):)",
+        combined,
+        re.IGNORECASE,
+    )
+    if m2:
+        cb = m2.group(1).strip()
+        if cb:
+            out["context_block"] = _truncate_preserve_newlines(cb, _MAX_USER_PROMPT_LOG_CHARS)
+
+    # 3) Split user prompt: CONTEXT section (Qwen / model-specific YAML with user_prompt)
+    if "context_block" not in out:
+        m_ctx = re.search(
+            r"(?:^|\n)\s*CONTEXT\s*\n\s*-{5,}\s*\n([\s\S]*?)(?=\n\s*-{5,}\s*\n\s*TASK\b|\Z)",
+            combined,
+            re.IGNORECASE,
+        )
+        if m_ctx:
+            cb = m_ctx.group(1).strip()
+            if cb:
+                out["context_block"] = _truncate_preserve_newlines(cb, _MAX_USER_PROMPT_LOG_CHARS)
+
+    # 4) Flat system prompt: {context_block} sits in the last dashed segment before USER INSTRUCTION (latest)
+    if "context_block" not in out:
+        needle = "USER INSTRUCTION (latest):"
+        idx = combined.lower().find(needle.lower())
+        if idx >= 0:
+            head = combined[:idx]
+            parts = [p.strip() for p in re.split(r"\n\s*-{5,}\s*\n", head) if p.strip()]
+            if len(parts) >= 2:
+                cb = parts[-1]
+                if cb:
+                    out["context_block"] = _truncate_preserve_newlines(
+                        cb, _MAX_USER_PROMPT_LOG_CHARS
+                    )
+
+    return out
 
 
 def _extract_section_value(text: str, section_name: str) -> str:
@@ -390,6 +490,7 @@ def _extract_json_objects(text: str) -> list[dict[str, Any]]:
 
 
 def _extract_prompt_context(messages: list[dict]) -> dict[str, str]:
+    """Extract only template-variable / injected payloads for workflow logs (not full prompts)."""
     user_content = "\n\n".join(
         str(m.get("content") or "")
         for m in (messages or [])
@@ -400,76 +501,79 @@ def _extract_prompt_context(messages: list[dict]) -> dict[str, str]:
         for m in (messages or [])
         if str(m.get("role") or "").lower() == "system"
     )
+    combined = (system_content + "\n\n" + user_content).strip()
     src = user_content or system_content or ""
-    context: dict[str, str] = {}
-    instruction = _extract_section_value(src, "Instruction") or _extract_section_value(system_content, "Instruction")
-    if instruction:
-        context["instruction"] = instruction
-    expected = _extract_section_value(src, "Expected Behavior") or _extract_section_value(system_content, "Expected Behavior")
-    if expected:
-        context["expected_behavior"] = expected
-    trace = _extract_section_value(src, "Trace") or _extract_section_value(system_content, "Trace")
-    if trace:
-        context["trace"] = trace
-    previous = _extract_section_value(src, "Previous queries (optional)") or _extract_section_value(
-        system_content, "Previous queries (optional)"
-    )
-    if previous:
-        context["previous_queries"] = previous
-    failure = _extract_section_value(src, "Failure reason (optional)") or _extract_section_value(
-        system_content, "Failure reason (optional)"
-    )
-    if failure:
-        context["failure_reason"] = failure
 
-    # Parse embedded JSON payloads (common in exploration/scoper/selector prompts).
+    out: dict[str, str] = {}
+    out.update(_extract_planner_injected_variables(combined))
+
+    # Section-style prompts (non-planner): only allowlisted keys.
+    if "instruction" not in out:
+        instruction = _extract_section_value(src, "Instruction") or _extract_section_value(
+            system_content, "Instruction"
+        )
+        if instruction:
+            out["instruction"] = instruction
+    for section_key, label in (
+        ("expected_behavior", "Expected Behavior"),
+        ("trace", "Trace"),
+        ("previous_queries", "Previous queries (optional)"),
+        ("failure_reason", "Failure reason (optional)"),
+    ):
+        if section_key in out:
+            continue
+        val = _extract_section_value(src, label) or _extract_section_value(system_content, label)
+        if val:
+            out[section_key] = val
+
     for blob in _extract_json_objects(src) + _extract_json_objects(system_content):
-        for key in (
-            "instruction",
-            "expected_behavior",
-            "context_feedback",
-            "previous_queries",
-            "failure_reason",
-            "step_summaries",
-            "final_outcome",
-            "candidates",
-            "selected_indices",
-            "selected",
-            "query_intent",
-        ):
-            if key in blob and key not in context:
+        for key in _TEMPLATE_VARIABLE_LOG_KEYS:
+            if key in blob and key not in out:
                 try:
-                    context[key] = _truncate_for_log(json.dumps(blob[key], ensure_ascii=False))
+                    out[key] = _truncate_for_log(
+                        json.dumps(blob[key], ensure_ascii=False),
+                        max_chars=_MAX_USER_PROMPT_LOG_CHARS,
+                    )
                 except Exception:
-                    context[key] = _truncate_for_log(str(blob[key]))
-        if "candidates" in blob:
-            try:
-                context.setdefault("candidates_count", str(len(blob["candidates"])))
-            except Exception:
-                pass
+                    out[key] = _truncate_for_log(str(blob[key]), max_chars=_MAX_USER_PROMPT_LOG_CHARS)
 
-    # Fallback when prompt template has no section markers.
-    if not context:
-        first_non_empty = next((ln.strip() for ln in (user_content or system_content).splitlines() if ln.strip()), "")
-        if first_non_empty:
-            context["context"] = _truncate_for_log(first_non_empty)
-    return context
+    filtered = {k: v for k, v in out.items() if k in _TEMPLATE_VARIABLE_LOG_KEYS and v}
+    return filtered
 
 
 def _pretty_print_request(task_name: str | None, context_fields: dict[str, str], *, model_key: str | None = None) -> None:
-    """Print sanitized, centralized LLM request log (no raw prompt)."""
-    print("    [workflow] model request:")
-    print("    " + "─" * _PRETTY_WIDTH)
-    print(f"    step: {task_name or 'unknown'}")
+    """
+    Workflow line: ``[workflow] model request`` + step/model_key, then **only** injected
+    template variables (same slots as prompt ``{{...}}`` / ``{instruction}`` / ``{context_block}``),
+    pretty-printed — not full system/user prompts.
+    """
+    indent = "    "
+    cont = indent + "    "
+    print(f"{indent}[workflow] model request:")
+    print(indent + "─" * _PRETTY_WIDTH)
+    print(f"{indent}step: {task_name or 'unknown'}")
     if model_key:
-        print(f"    model_key: {model_key}")
-    if context_fields:
-        for k, v in context_fields.items():
-            if v:
-                print(f"    {k}: {v}")
-    else:
-        print("    context: (none)")
-    print("    " + "─" * _PRETTY_WIDTH)
+        print(f"{indent}model_key: {model_key}")
+    print(indent + "─" * _PRETTY_WIDTH)
+    if not context_fields:
+        print(f"{indent}(no template variables extracted for log)")
+        print(indent + "─" * _PRETTY_WIDTH)
+        return
+    preferred = ("instruction", "context_block")
+    keys = [k for k in preferred if k in context_fields]
+    keys.extend(sorted(k for k in context_fields if k not in keys))
+    for k in keys:
+        v = context_fields[k]
+        if not v:
+            continue
+        use_block = "\n" in v or len(v) > _PRETTY_PRINT_BLOCK_MIN_CHARS
+        if use_block:
+            print(f"{indent}{k}:")
+            for line in v.splitlines():
+                print(f"{cont}{line}")
+        else:
+            print(f"{indent}{k}: {v}")
+    print(indent + "─" * _PRETTY_WIDTH)
 
 
 def _raw_response_repr(resp_obj) -> str:

@@ -27,6 +27,7 @@ from .plan import (
     PlanStepFailure,
     PlanStepLastResult,
 )
+from .answer_validation import AnswerValidationResult
 from .plan_state import PlanState, plan_state_from_plan_document
 from .planner_decision import PlannerDecision, PlannerDecisionType
 from .planner_plan_context import (
@@ -115,6 +116,7 @@ __all__ = [
     "PlanStepLastResult",
     "PlanState",
     "plan_state_from_plan_document",
+    "AnswerValidationResult",
     "PlannerDecision",
     "PlannerDecisionType",
     "ExplorationInsufficientContext",

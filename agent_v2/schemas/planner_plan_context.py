@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from agent_v2.schemas.answer_validation import AnswerValidationResult
 from agent_v2.schemas.exploration import QueryIntent
 from agent_v2.schemas.replan import ReplanContext
 
@@ -43,6 +44,8 @@ class PlannerPlanContext(BaseModel):
     query_intent: Optional[QueryIntent] = None
     # Advisory cap for planner EXPLORE decisions (derived from query_intent); not engine-enforced.
     exploration_budget: Optional[int] = None
+    # First-class post-synthesis validation; when incomplete, runtime blocks immediate re-synthesize.
+    validation_feedback: Optional[AnswerValidationResult] = None
 
     @model_validator(mode="after")
     def _one_primary_mode(self) -> "PlannerPlanContext":

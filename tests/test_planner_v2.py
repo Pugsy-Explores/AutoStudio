@@ -154,6 +154,16 @@ class TestPlannerActSemanticCoercion(unittest.TestCase):
         self.assertIn("LAST PLANNER JSON VALIDATION ERROR", block)
         self.assertIn("non-empty search query", block)
 
+    def test_user_task_intent_falls_back_to_instruction_when_query_intent_missing(self):
+        """When exploration never produced QueryIntent, CONTEXT still carries scope from the user task."""
+        ctx = PlannerPlanContext(exploration=_minimal_exploration())
+        text = PlannerV2._user_task_intent_section(
+            ctx, instruction="Locate the frobulator and describe its API"
+        )
+        self.assertIn("scope_from_user_instruction", text)
+        self.assertIn("frobulator", text)
+        self.assertNotIn("not recorded", text)
+
 
 class TestPlannerActionTypeCoercion(unittest.TestCase):
     """
