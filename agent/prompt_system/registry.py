@@ -9,6 +9,7 @@ import yaml
 from agent.models.model_types import ModelType
 from agent.prompt_system.guardrails import check_constraints, check_prompt_injection
 from agent.prompt_system.loader import load_prompt
+from agent.prompt_system.prompt_call_context import PromptResolution, bind_prompt_resolution
 from agent.prompt_system.prompt_context_builder import build_context
 from agent.prompt_system.prompt_template import PromptTemplate
 
@@ -66,7 +67,10 @@ class PromptRegistry:
             k: v[0] for k, v in _DEFAULT_REGISTRY.items()
         }
         self._custom: dict[str, tuple[str, str, ModelType]] = {}
-        self._compiled_prompt_cache: dict[tuple[str, str, str | None, str], tuple[str, str]] = {}
+        self._compiled_prompt_cache: dict[
+            tuple[str, str, str | None, str],
+            tuple[str, str, str, str | None],
+        ] = {}
         self._compiled_prompt_cache_max: int = 256
 
     @classmethod
@@ -122,20 +126,26 @@ class PromptRegistry:
         Falls back to legacy single-body instructions as system prompt.
         """
         key = (name, version, model_name, self._vars_hash(variables))
+        bind_prompt_resolution(None)
         cached = self._compiled_prompt_cache.get(key)
         if cached is not None:
-            return cached
+            sys_p, usr_p, fv, spath = cached
+            bind_prompt_resolution(PromptResolution(name, fv, spath, model_name))
+            return (sys_p, usr_p)
         tmpl = self.get(name, version=version, variables=variables, model_name=model_name)
         system_prompt = (tmpl.system_prompt or tmpl.instructions or "").strip()
         user_prompt = (tmpl.user_prompt_template or "").strip()
-        rendered = (system_prompt, user_prompt)
+        fv = tmpl.version
+        spath = tmpl.source_path
+        rendered_row = (system_prompt, user_prompt, fv, spath)
         if len(self._compiled_prompt_cache) >= self._compiled_prompt_cache_max:
             try:
                 self._compiled_prompt_cache.pop(next(iter(self._compiled_prompt_cache)))
             except Exception:
                 self._compiled_prompt_cache.clear()
-        self._compiled_prompt_cache[key] = rendered
-        return rendered
+        self._compiled_prompt_cache[key] = rendered_row
+        bind_prompt_resolution(PromptResolution(name, fv, spath, model_name))
+        return (system_prompt, user_prompt)
 
     def get_guarded(
         self,
@@ -234,6 +244,7 @@ class PromptRegistry:
             system_prompt=template.system_prompt,
             user_prompt_template=template.user_prompt_template,
             extra=template.extra,
+            source_path=template.source_path,
         )
 
 

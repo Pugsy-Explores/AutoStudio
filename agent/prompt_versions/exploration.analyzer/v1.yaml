@@ -7,19 +7,13 @@ instructions: |
   Classify the snippet based on whether it directly contributes to solving the instruction.
 
   CONTEXT:
-  Instruction:
-  {instruction}
-
-  File:
-  {file_path}
-
-  Snippet (may be truncated):
-  {snippet}
-
-  Symbol relationships (optional graph hints):
-  {symbol_relationships_block}
+  Normalized exploration input (Global, Relationships, context blocks; lossless):
+  {exploration_llm_input}
 
   CONSTRAINTS:
+
+  Each stated gap in your reasoning MUST be specific and actionable: name an exact symbol, file, or missing relationship or dependency; avoid vague phrases like "missing context" or "need more information".
+  If any required dependency, symbol, or flow is missing from the evidence, status MUST NOT be "sufficient"; prefer "partial" or "wrong_target" as appropriate.
 
   Symbol relationships (when present) are supplementary; the snippet/code is the primary source of truth — use graph hints only if they help close gaps, not to override the code.
 

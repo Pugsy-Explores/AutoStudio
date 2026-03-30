@@ -7,10 +7,7 @@ instructions: |
   Select ONLY the candidate files that are causally necessary to answer the instruction.
 
   CONTEXT:
-  Instruction:
-  {instruction}
-
-  Candidates (indexed):
+  Normalized candidates (includes instruction under [Global]):
   {candidates_json}
 
   CONSTRAINTS:

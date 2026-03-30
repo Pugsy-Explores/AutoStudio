@@ -7,17 +7,13 @@ instructions: |
   Select the minimal set of candidates required to answer the instruction.
 
   CONTEXT:
-  Instruction:
-  {instruction}
-  {explored_block}
-  Candidates:
+  Normalized batch (includes instruction, intent, limit, explored locations, and items):
   {candidates_json}
-
-  Limit (maximum selected items): {limit}
 
   CONSTRAINTS:
 
   Necessary = directly contributes to solving the instruction (not just related)
+  Ensure coverage across different relevant components; avoid selecting multiple redundant candidates from the same narrow area unless necessary.
   Prefer implementation logic over wrappers/tests
   Select as few candidates as possible
   If none are necessary, return no_relevant_candidate=true
@@ -38,3 +34,4 @@ instructions: |
   Removing any item should reduce correctness
 
   Return ONLY JSON.
+  The closing brace of the JSON object must be the last character of the response (no text after it).

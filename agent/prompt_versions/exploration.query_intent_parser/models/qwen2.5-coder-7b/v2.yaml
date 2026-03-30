@@ -7,10 +7,16 @@ system_prompt: |
   You MAY think step-by-step before answering.
 
   FINAL OUTPUT RULE (STRICT):
-
+  * You MUST first output reasoning. Then output JSON.
   * The last output MUST be valid JSON
   * No text is allowed after JSON
   * JSON must follow schema exactly
+
+  BINDING CLASSIFICATION (NOT OPTIONAL):
+  * intent_type, scope, and focus are REQUIRED fields in every response.
+  * They are a binding classification decision — not stylistic hints. You MUST assign all three.
+  * Only `target` may be null when the primary entity is genuinely unclear.
+  * If uncertain, still pick the closest valid enum for each of intent_type, scope, and focus — never omit them and never leave them null.
 
   Process:
 
@@ -21,9 +27,18 @@ system_prompt: |
      - If no clear identifiers can be inferred, leave symbols empty
   3. From the Instruction block ONLY (ignore context_feedback for this step), set user task fields:
      * intent_type: one of explanation | debugging | navigation | modification
+     * debugging: use when instruction describes incorrect, missing, or unexpected behavior
      * target: primary entity (symbol, file, feature name) or null if unclear
      * scope: one of narrow | component | system
+     * scope definitions:
+       * narrow: a specific symbol, method, or file
+       * component: a single module/class and its internal behavior
+       * system: interactions across multiple components or end-to-end flow
      * focus: one of internal_logic | relationships | usage
+     * focus definitions:
+       * internal_logic: how something works internally
+       * relationships: interactions, data flow, or connections between components
+       * usage: how something is used or invoked externally
   4. Generate diverse retrieval queries:
 
      * symbols (exact identifiers)
@@ -41,13 +56,6 @@ system_prompt: |
     - wrong_abstraction -> shift retrieval layer (API/service/DB)
     - missing_symbol_signal -> increase identifier-focused symbol queries
     - ambiguous_intent -> produce clearer intents and concrete retrieval anchors
-
-  You are given context feedback with:
-  1) partial findings already discovered,
-  2) known entities (symbols/files),
-  3) remaining knowledge gaps,
-  4) discovered relationships (if available).
-  Use this context to build on progress, target missing information, follow relationship signals, and avoid repeating explored paths.
 
   Constraints:
 
@@ -93,7 +101,7 @@ user_prompt_template: |
   Context feedback (optional):
   {context_feedback}
 
-  Structured memory / refine context (optional; use with failure_reason when refining):
+  Structured memory / refine context (optional):
   {refine_context}
 
   Generate improved retrieval queries.
@@ -101,8 +109,6 @@ user_prompt_template: |
   Rules:
 
   * Learn from previous failures
-  * Build on partial findings and focus remaining gaps
-  * Use discovered relationships to guide next retrieval queries
-  * Avoid repeating already explored entities when possible
+  * Build on partial findings when context feedback is present; classification fields still come from the Instruction block only
   * Do not repeat previous queries
   * Final output MUST be JSON only

@@ -12,6 +12,10 @@ Configure via MODEL_RETRY_MAX_ATTEMPTS (default 5) and MODEL_RETRY_BASE_DELAY_SE
 
 Stage 28: Model call audit — record_model_call() is invoked only from _call_chat (real HTTP).
 Stubbed benchmark paths never reach _call_chat, so audit counts are trustworthy.
+
+Per-call token estimates: ``estimate_tokens`` (chars/3.8) on final message contents and on streamed
+completion (reasoning + content). Logged at INFO as ``[llm_tokens_est]``; API usage echoed when the
+server includes usage in the stream.
 """
 
 import contextvars
@@ -25,6 +29,61 @@ import time
 from typing import Any, Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
+
+# --- Token estimation (prompt after template injection; completion from streamed text) ------------
+
+_CHARS_PER_TOKEN_EST: float = 3.8
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token count from UTF-8 character length (~3.8 chars/token for Latin-ish text)."""
+    if not text:
+        return 0
+    return int(len(text) / _CHARS_PER_TOKEN_EST)
+
+
+def _prompt_text_from_messages(messages: list[dict]) -> str:
+    """Flatten chat messages to a single string matching payload content (post-normalization)."""
+    parts: list[str] = []
+    for m in messages or []:
+        parts.append(str(m.get("content") or ""))
+    return "".join(parts)
+
+
+def _log_llm_token_estimates(
+    *,
+    task_name: str | None,
+    model_key: str | None,
+    messages: list[dict],
+    completion_text: str,
+    last_usage: dict[str, Any] | None,
+) -> None:
+    """Info log + workflow line: estimated prompt/completion tokens; API usage when server sends it."""
+    prompt_text = _prompt_text_from_messages(messages)
+    prompt_est = estimate_tokens(prompt_text)
+    completion_est = estimate_tokens(completion_text)
+    api_pt = last_usage.get("prompt_tokens") if last_usage else None
+    api_ct = last_usage.get("completion_tokens") if last_usage else None
+    logger.info(
+        "[llm_tokens_est] task=%s model_key=%s prompt_tokens_est=%s completion_tokens_est=%s "
+        "prompt_chars=%s completion_chars=%s api_prompt_tokens=%s api_completion_tokens=%s",
+        task_name or "unknown",
+        model_key or "unknown",
+        prompt_est,
+        completion_est,
+        len(prompt_text),
+        len(completion_text),
+        api_pt,
+        api_ct,
+    )
+    api_suffix = ""
+    if api_pt is not None or api_ct is not None:
+        api_suffix = f" api_prompt={api_pt} api_completion={api_ct}"
+    print(
+        "    [workflow] token estimate: "
+        f"prompt≈{prompt_est} completion≈{completion_est}{api_suffix}"
+    )
+
 
 # Last chat completion usage from `_call_chat` (for Langfuse / observability). Context-local.
 _last_chat_usage: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
@@ -636,6 +695,7 @@ def _call_chat(
                 method="POST",
             )
             content_parts: list[str] = []
+            reasoning_parts: list[str] = []
             last_usage: dict[str, Any] | None = None
             print("    [workflow] model response (streaming):")
             print("    " + "─" * _PRETTY_WIDTH)
@@ -668,15 +728,24 @@ def _call_chat(
                             reasoning = d.get("reasoning_content")
                             delta = d.get("content")
                             if reasoning:
+                                reasoning_parts.append(reasoning)
                                 _stream_chunk_to_terminal(reasoning)
                             if delta:
                                 content_parts.append(delta)
                                 _stream_chunk_to_terminal(delta)
             print()
             print("    " + "─" * _PRETTY_WIDTH)
+            full_out = "".join(reasoning_parts) + "".join(content_parts)
+            _log_llm_token_estimates(
+                task_name=task_name,
+                model_key=model_key,
+                messages=messages,
+                completion_text=full_out,
+                last_usage=last_usage,
+            )
             _set_last_chat_usage(last_usage)
             content = "".join(content_parts).strip()
-            if not content:
+            if not content and not reasoning_parts:
                 _debug_empty_response(None)
             return content
 
@@ -742,6 +811,14 @@ def _call_chat(
             finish_reason = getattr(chunk.choices[0], "finish_reason", None)
         print()
         print("    " + "─" * _PRETTY_WIDTH)
+        full_out = "".join(reasoning_parts) + "".join(content_parts)
+        _log_llm_token_estimates(
+            task_name=task_name,
+            model_key=model_key,
+            messages=messages,
+            completion_text=full_out,
+            last_usage=last_usage,
+        )
         content = "".join(content_parts).strip()
         if finish_reason == "length" and content:
             content = content + "\n[Response truncated - consider increasing max_tokens]"
@@ -752,6 +829,36 @@ def _call_chat(
         return content
 
     return _retry_with_exponential_backoff(_do_call)
+
+
+def _log_bound_prompt_for_llm_call(
+    task_name: Optional[str], *, _exploration_suppress_duplicate: bool = False
+) -> None:
+    """
+    If :meth:`PromptRegistry.render_prompt_parts` ran in this context, log the resolved
+    prompt file (version + absolute path) for the upcoming HTTP call.
+
+    When ``_exploration_suppress_duplicate`` is True and exploration wrapped this call in
+    :func:`agent.prompt_system.prompt_call_context.exploration_suppress_inner_call_reasoning_prompt_log`,
+    skip (exploration already logged via :func:`agent.prompt_system.prompt_call_context.log_exploration_llm_prompt_line`).
+
+    Mirrors other workflow diagnostics: ``print`` lines use the ``[workflow]`` prefix so they
+    show under ``pytest -s`` without ``--log-cli-level``; ``logger.info`` remains for log aggregation.
+    """
+    if _exploration_suppress_duplicate:
+        try:
+            from agent.prompt_system.prompt_call_context import peek_exploration_suppress_inner_prompt_log
+
+            if peek_exploration_suppress_inner_prompt_log():
+                return
+        except Exception:
+            pass
+    try:
+        from agent.prompt_system.prompt_call_context import log_bound_prompt_resolution
+
+        log_bound_prompt_resolution(task_name)
+    except Exception:
+        return
 
 
 def _run_guardrails_pre(user_content: str) -> None:
@@ -805,6 +912,7 @@ def call_small_model(
     When prompt_name is set, runs post-call constraint validation (logs on failure).
     Guardrails: injection check on prompt before call (always when ENABLE_PROMPT_GUARDRAILS=1)."""
     _run_guardrails_pre(prompt)
+    _log_bound_prompt_for_llm_call(task_name)
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
     # Resolve endpoint from task_models: task_name -> model_key (SMALL, REASONING, etc.)
@@ -914,6 +1022,7 @@ def call_reasoning_model(
     Guardrails: injection check on prompt before call (always when ENABLE_PROMPT_GUARDRAILS=1).
     """
     _run_guardrails_pre(prompt)
+    _log_bound_prompt_for_llm_call(task_name, _exploration_suppress_duplicate=True)
     from agent.models.model_config import get_model_for_task
 
     params = get_model_call_params(task_name)
@@ -1024,6 +1133,7 @@ def call_reasoning_model_messages(
         if str(m.get("role") or "").lower() == "system"
     )
     _run_guardrails_pre(user_prompt)
+    _log_bound_prompt_for_llm_call(task_name, _exploration_suppress_duplicate=True)
     from agent.models.model_config import get_model_for_task
 
     params = get_model_call_params(task_name)

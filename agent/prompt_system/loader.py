@@ -97,10 +97,16 @@ def load_from_flat_packaged(
         return None
     ver, model_path = discover_highest_v_prompt_yaml(model_dir)
     raw = _load_yaml(model_path)
-    return _raw_to_template(name, ver, raw)
+    return _raw_to_template(name, ver, raw, source_path=str(model_path.resolve()))
 
 
-def _raw_to_template(name: str, version: str, raw: dict) -> PromptTemplate:
+def _raw_to_template(
+    name: str,
+    version: str,
+    raw: dict,
+    *,
+    source_path: str | None = None,
+) -> PromptTemplate:
     """Convert raw YAML dict to PromptTemplate."""
     # Preferred format: separate system/user; fallback to legacy single-field instructions.
     system_prompt = raw.get("system_prompt") or ""
@@ -142,6 +148,7 @@ def _raw_to_template(name: str, version: str, raw: dict) -> PromptTemplate:
         system_prompt=system_prompt,
         user_prompt_template=user_prompt_template,
         extra=extra,
+        source_path=source_path,
     )
 
 
@@ -163,12 +170,12 @@ def load_from_versioned(
         if model_dir.is_dir():
             ver, model_path = discover_highest_v_prompt_yaml(model_dir)
             raw = _load_yaml(model_path)
-            return _raw_to_template(name, ver, raw)
+            return _raw_to_template(name, ver, raw, source_path=str(model_path.resolve()))
     path = _PROMPT_VERSIONS_DIR / name / f"{version}.yaml"
     if not path.exists():
         return None
     raw = _load_yaml(path)
-    return _raw_to_template(name, version, raw)
+    return _raw_to_template(name, version, raw, source_path=str(path.resolve()))
 
 
 def load_from_legacy(file_stem: str, name: str, version: str = "v1") -> PromptTemplate:
@@ -209,6 +216,7 @@ def load_from_legacy(file_stem: str, name: str, version: str = "v1") -> PromptTe
         system_prompt=(instructions or ""),
         user_prompt_template="",
         extra=extra,
+        source_path=str(path.resolve()),
     )
 
 
@@ -239,6 +247,7 @@ def _apply_prompt_variables(template: PromptTemplate, variables: dict | None) ->
             if template.user_prompt_template
             else "",
             extra=template.extra,
+            source_path=template.source_path,
         )
     except (KeyError, ValueError):
         return template

@@ -5,18 +5,21 @@ instructions: |
 
   Task: Select a subset of candidates that are most relevant to the instruction.
 
-  You MUST think step-by-step before answering.
+  Think step-by-step briefly and focus only on relevant candidates.
 
   Goal:
   - Reduce the number of candidates
   - Preserve potentially relevant items
-  - Avoid removing useful candidates too aggressively
+  - Avoid removing useful candidates aggressively
 
   Selection Principles:
   - Keep candidates directly related to the instruction
-  - Keep candidates that may be indirectly useful (dependencies, related modules)
+  - Keep only candidates that are directly required to understand or modify the target. 
+  - Include dependencies only if they are essential for correctness or execution.
+  - Exclude loosely related, optional, or speculative candidates.
   - Remove clearly irrelevant candidates
   - Prefer slightly broader coverage over over-pruning
+  - Signal strength (semantic, not a mechanical rule): prefer rows where the candidate symbol reflects definition or primary implementation of the behavior over rows that only mention a name in passing (e.g. incidental string or comment). Favor the file that owns the logic over a test or unrelated file that merely references a symbol.
 
   STRICT RULES:
   - You MUST first output reasoning. Then output JSON.
@@ -28,7 +31,8 @@ instructions: |
   - If unsure, KEEP the candidate
 
   Constraints:
-  - Select all relevant candidates
+  - Select only clearly relevant candidates and reason about them together
+  - Do not reason about non-relevant candidates; exclude them outright
   - Never return empty list unless all are clearly irrelevant
 
   Output Format (STRICT JSON):
@@ -37,10 +41,7 @@ instructions: |
   }}
 
   USER PROMPT:
-  Instruction:
-  {instruction}
-
-  Candidates:
+  Normalized candidates (includes instruction under [Global]):
   {candidates_json}
 
   Select relevant candidates.
