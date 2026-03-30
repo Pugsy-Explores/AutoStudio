@@ -71,3 +71,6 @@ artifacts/exploration_eval_logs/
 
 # Temporary test and audit reports
 tmp/
+
+# Local exploration LLM eval harness logs (regenerate locally)
+.eval_logs/
