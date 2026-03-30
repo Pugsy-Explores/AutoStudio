@@ -163,6 +163,7 @@ AGENT_V2_LIVE=1 pytest tests/test_agent_v2_phases_live.py -m agent_v2_live
 | `integration` | Real services; use `TEST_MODE=integration`. |
 | `agent_v2_live` | Live LLM; requires `AGENT_V2_LIVE=1`. |
 | `replanner_regression` | Replanner prompt regression (live LLM). |
+| `query_intent_parser_eval`, `scoper_eval`, `selector_batch_eval`, `analyzer_eval` | Live LLM suites for exploration pipeline modules; each requires its own `*_EVAL_LIVE=1` (see [`tests/README.md`](tests/README.md#exploration-llm-eval-harness-testsevals)). |
 
 **Useful targets:**
 
@@ -171,6 +172,7 @@ AGENT_V2_LIVE=1 pytest tests/test_agent_v2_phases_live.py -m agent_v2_live
 | Mode manager | `pytest tests/test_mode_manager.py` |
 | Agent loop (unit) | `pytest tests/test_agent_v2_loop_retry.py` |
 | Router eval (mock) | `python -m router_eval.router_eval --mock` |
+| Exploration LLM eval harness | [`tests/README.md`](tests/README.md#exploration-llm-eval-harness-testsevals) — per-module `export` gates and `pytest` commands |
 
 CI tip: `SKIP_STARTUP_CHECKS=1` is often set in automated test environments to avoid daemon/bootstrap side effects.
 
@@ -184,11 +186,11 @@ When configured, runs emit structured traces (generations, tool spans). Executio
 
 ## 1. Overview
 
-**What it does:** Turns an instruction into repository-grounded actions (search, read, edit, tests, shell) using a **planner-centric control plane** (`agent_v2/`): the model proposes a `PlanDocument`; execution walks that plan and fills per-step arguments. A **bounded exploration phase** runs first so the planner receives real context instead of guessing.
+**What it does:** Turns an instruction into repository-grounded actions using **`agent_v2/`**: **bounded exploration** (`ExplorationEngineV2`) → optional **answer synthesis** → **`PlannerTaskRuntime`** outer loop → **`PlanExecutor`** (structured steps via **`Dispatcher`** → legacy **`_dispatch_react`**). The live **`PlanDocument`** is produced by **PlannerV2**; **control** (what to do next: explore again, refresh plan, run one step, synthesize, stop) is owned by **`PlannerTaskRuntime`**, optionally driven by **`TaskPlannerService`** when `AGENT_V2_TASK_PLANNER_AUTHORITATIVE_LOOP=1`. PlannerV2 is a **gated plan generator**, not the controller.
 
-**What is different from a pure ReAct loop:** The architecture freeze (`Docs/architecture_freeze/ARCHITECTURE_FREEZE.md`) replaces “LLM picks the next tool forever” with **plan as source of truth** for execution. In code, `ModeManager` routes `act` through **ExplorationRunner → PlannerV2 → PlanExecutor**, not through the composable `AgentLoop` class (see [Known issues](#8-known-issues--legacy-parts)).
+**Not a pure ReAct loop:** `ModeManager` does **not** use `AgentLoop.run()` for `act`. See [`agent_v2/README.md`](agent_v2/README.md).
 
-**IDE / automation:** Prefer **`autostudio`** or `create_runtime()`; do **not** call `agent.orchestrator.run_controller` (it **raises**).
+**IDE / automation:** Use **`autostudio`** or `create_runtime()`; **`agent.orchestrator.run_controller` raises**.
 
 ---
 
@@ -196,109 +198,124 @@ When configured, runs emit structured traces (generations, tool spans). Executio
 
 ### High level
 
-1. **`AgentRuntime`** (`agent_v2/runtime/runtime.py`) — composes dispatcher, optional `PlanExecutor`, `ExplorationRunner`, `ModeManager`, and observability (Langfuse trace, graph projection).
-2. **`ModeManager`** (`agent_v2/runtime/mode_manager.py`) — selects pipeline by **mode** string.
-3. **Exploration** — read-only, bounded steps (search / open_file / shell) producing `ExplorationResult`.
-4. **Planner** — `PlannerV2` emits a validated **`PlanDocument`** (steps with tool actions).
-5. **Tool execution** — `PlanExecutor` runs steps via **`Dispatcher`** → legacy **`_dispatch_react`** (`agent/execution/step_dispatcher.py`), with retries and optional replan (`Replanner`).
+1. **`AgentRuntime`** — composes `ModeManager`, `ExplorationRunner`, `PlanExecutor`, dispatcher, observability.
+2. **`ModeManager`** — maps `mode` → `PlannerTaskRuntime` methods (`run_explore_plan_execute`, `run_plan_explore_execute_safe`, `run_plan_only`).
+3. **Exploration** — `ExplorationEngineV2`: QIP → discovery → scoper → selector → analyzer → `FinalExplorationSchema` (bounded; read-only tools).
+4. **PlannerV2** — LLM emits **`PlanDocument`** + `engine` controller fields; invocation is **gated** by `should_call_planner_v2` when TaskPlanner is authoritative (`agent_v2/planning/planner_v2_invocation.py`).
+5. **TaskPlanner** — `TaskPlannerService.decide(PlannerDecisionSnapshot) → PlannerDecision` (rule-based default: `RuleBasedTaskPlannerService`).
+6. **PlanExecutor** — runs the next plan step or returns status to the outer loop; **`PlannerTaskRuntime._run_act_controller_loop`** schedules PlannerV2 and exploration re-runs.
 
 ### Key concepts
 
 | Concept | Role |
 |--------|------|
-| **Plan** (`plan` mode) | Exploration → planner (`deep=False`) → **no** `PlanExecutor`; returns `AgentState` with `current_plan` and trace for UI/API. |
-| **Deep plan** (`deep_plan` mode) | Same as plan but planner called with **`deep=True`** (stronger “thorough plan” prompt). |
-| **Act** (`act` or `plan_execute`) | Exploration → planner (`deep=False`) → **`PlanExecutor.run`** (full tool execution + replan). |
-| **Agent loop** | The class **`AgentLoop`** (`agent_v2/runtime/agent_loop.py`) implements a generic ReAct-style loop (action → dispatch → observe). It is **wired on `AgentRuntime` but not used** by `ModeManager` for `act` (see tests `test_mode_manager.py`). |
-| **Tool execution** | Structured steps from `PlanDocument`; `PlanArgumentGenerator` may call the model for **arguments only** per step policy. |
-| **Memory / state** | **`AgentState`** (`agent_v2/state/agent_state.py`): `instruction`, `history`, `context`, `exploration_result`, `current_plan` / `current_plan_steps`, `step_results`, `metadata`. |
-
-### Deviation from ArchitectureFreeze
-
-- **Intended** (freeze): planner-centric pipeline, plan decides next step at execution time.
-- **Code:** matches for **`act`**. The separate **`AgentLoop`** module exists for tests/alternate wiring; default production path does not call `AgentLoop.run()` from `ModeManager`.
+| **ACT / `plan_execute`** | Exploration → synthesis (if enabled) → **controller loop** (if `AGENT_V2_PLANNER_CONTROLLER_LOOP=1`) → else single PlannerV2 + full `PlanExecutor.run`. |
+| **`plan` / `deep_plan`** | Exploration → same controller path with **`PLAN_MODE_TOOL_POLICY`** (no edit). |
+| **`plan_legacy`** | Exploration → **one** PlannerV2 call → plan-only (no controller loop). |
+| **TaskPlanner authoritative** | `AGENT_V2_TASK_PLANNER_AUTHORITATIVE_LOOP=1` — decisions from `TaskPlannerService`; PlannerV2 only when gate allows. |
+| **Shadow loop** | `AGENT_V2_TASK_PLANNER_SHADOW_LOOP=1` (and not authoritative) — logs TaskPlanner vs `PlanDocument.engine` mismatch; engine still wins. |
+| **Memory** | **Task working memory** (`state.context["task_working_memory"]`), **conversation store** (`state.context["conversation_memory_store"]`), **planner session memory** — see §3 below. |
 
 ---
 
 ## 3. Execution flow (lifecycle)
 
-**Modes `act` / `plan_execute`:**
+**Decision → execution → memory update → next decision** (controller enabled):
 
-1. Build `AgentState`, set `metadata["mode"]`, create Langfuse root trace.
-2. `ModeManager._run_explore_plan_execute`: set `context["react_mode"] = True` (interacts with `REACT_MODE` in `config/agent_runtime.py` inside dispatch/policy paths).
-3. **ExplorationRunner.run** — until cap or stop: propose next exploration action (JSON ReAct shape), validate, dispatch (read-only allowlist).
-4. If exploration metadata says incomplete → **RuntimeError** (gated planning).
-5. **PlannerV2.plan** — `ExplorationResult` → **`PlanDocument`**.
-6. **PlanExecutor.run** — for each step: validate, merge args, dispatch tool, retries, **Replanner** on exhaustion (policy limits).
-7. Normalize result: `status`, `trace`, `graph`, `state`; finalize Langfuse trace.
+1. Build `AgentState`; Langfuse root trace optional.
+2. **ExplorationRunner.run** — `FinalExplorationSchema`; write `state.context` exploration fields; **task working memory** tick via `PlannerTaskRuntime`.
+3. **maybe_synthesize_to_state** — if `AGENT_V2_ENABLE_ANSWER_SYNTHESIS=1` and policy allows.
+4. **Bootstrap PlannerV2** — first `call_planner_with_context` → `PlanDocument`.
+5. **Loop (`_run_act_controller_loop`):**
+   - Build **`PlannerDecisionSnapshot`** (consumes `task_planner_last_loop_outcome` from metadata when present).
+   - **Resolve decision:** authoritative → `TaskPlanner.decide`; else → `planner_decision_from_plan_document(plan_doc)`; shadow → compare + engine decision.
+   - **Branch:** `synthesize` / `plan` / `replan` / `explore` / `act` / `stop` — see [`agent_v2/runtime/README.md`](agent_v2/runtime/README.md).
+   - On **act:** `PlanExecutor.run_one_step` → `success` | `failed_step` | `progress` → may trigger gated PlannerV2 **progress_refresh** or failure replan.
+6. Append assistant turn to **conversation memory**; normalize CLI result.
 
-**Modes `plan` / `deep_plan`:** steps 1–5 only (no `PlanExecutor`); attach plan-only trace for Phase 13-style observability.
+**Controller disabled (`AGENT_V2_PLANNER_CONTROLLER_LOOP=0`):** steps 2–4 then a **single** `PlanExecutor.run` (full plan walk).
+
+**Modes `plan_legacy`:** steps 2–4 once, no `PlanExecutor`; plan trace only.
+
+### Memory model (snapshot)
+
+| Layer | Location | Content |
+|-------|----------|---------|
+| **Working memory** | `state.context["task_working_memory"]` | Per-instruction counters, exploration query hash, completed-step kinds, fingerprint for snapshots. Reset when a new top-level run starts. |
+| **Conversation memory** | `state.context["conversation_memory_store"]` | Turn summaries; `metadata["chat_session_id"]` selects session. |
+| **Planner session** | `state.context["planner_session_memory"]` | Short planner/executor session facts for prompts. |
+| **Snapshot** | `PlannerDecisionSnapshot` (ephemeral) | Built each controller iteration; not persisted as a single blob. |
+
+### Control-plane evolution
+
+| Period | Control |
+|--------|---------|
+| **Default today (env off)** | **`PlannerDecision`** derived from **`PlanDocument.engine`** / legacy `controller` via `planner_decision_from_plan_document`. |
+| **Authoritative TaskPlanner (`AGENT_V2_TASK_PLANNER_AUTHORITATIVE_LOOP=1`)** | **`TaskPlannerService.decide`** returns **`PlannerDecision`**; **PlannerV2** runs only when **`should_call_planner_v2`** is true (bootstrap materialization, `plan`/`replan` decisions, post-sub-exploration merge, failure/insufficiency replan, progress refresh). |
 
 ---
 
 ## 4. Diagrams
 
-### a) System architecture
+### a) System architecture (control plane)
 
 ```mermaid
-graph TD
-    CLI[CLI autostudio / tests runtime_adapter] --> RT[AgentRuntime]
-    RT --> MM[ModeManager]
-    MM --> ER[ExplorationRunner]
-    ER --> PV[PlannerV2]
-    PV --> PE[PlanExecutor]
-    PE --> DISP[Dispatcher]
-    DISP --> LEG[agent.execution step_dispatcher / _dispatch_react]
-    LEG --> RET[agent.retrieval / repo_graph / editing]
-    RT --> OBS[Langfuse + graph_builder]
+flowchart TD
+  User[User / CLI] --> TP[TaskPlannerService optional]
+  PTR[PlannerTaskRuntime]
+  User --> AR[AgentRuntime]
+  AR --> MM[ModeManager]
+  MM --> PTR
+  PTR --> ER[ExplorationRunner / EngineV2]
+  ER --> PTR
+  PTR --> PV2[PlannerV2 gated]
+  PV2 --> PTR
+  PTR --> PE[PlanExecutor]
+  PE --> DISP[Dispatcher]
+  DISP --> LEG[step_dispatcher]
+  TP -.->|decide when authoritative| PTR
 ```
 
-### b) Agent loop (logical vs class)
+### b) ACT path with controller loop
 
 ```mermaid
 sequenceDiagram
-    participant U as User / CLI
-    participant AR as AgentRuntime
-    participant MM as ModeManager
-    participant ER as ExplorationRunner
-    participant P as PlannerV2
-    participant PE as PlanExecutor
-    participant D as Dispatcher
-    U->>AR: run(instruction, mode=act)
-    AR->>MM: run(state, mode)
-    MM->>ER: run(instruction)
-    ER-->>MM: ExplorationResult
-    MM->>P: plan(instruction, exploration, deep?)
-    P-->>MM: PlanDocument
-    MM->>PE: run(plan, state)
-    loop Each plan step
-        PE->>D: execute(step, state)
-        D-->>PE: ExecutionResult
+  participant MM as ModeManager
+  participant PTR as PlannerTaskRuntime
+  participant ER as ExplorationRunner
+  participant TP as TaskPlanner optional
+  participant PV2 as PlannerV2
+  participant PE as PlanExecutor
+  MM->>PTR: run_explore_plan_execute
+  PTR->>ER: run initial exploration
+  ER-->>PTR: FinalExplorationSchema
+  PTR->>PV2: bootstrap PlanDocument
+  PV2-->>PTR: PlanDocument
+  loop ACT controller
+    PTR->>TP: decide snapshot
+    TP-->>PTR: PlannerDecision
+    alt act
+      PTR->>PE: run_one_step
+    else explore / plan / replan / progress
+      PTR->>PV2: gated call_planner_with_context
+      PV2-->>PTR: PlanDocument merged
+    else synthesize
+      PTR->>PTR: maybe_synthesize_to_state
+    else stop
+      PTR-->>MM: return
     end
-    MM-->>AR: state / dict with trace
+  end
 ```
 
-### c) Module interaction
+### c) Exploration engine (data plane)
 
 ```mermaid
 flowchart LR
-    subgraph agent_v2
-        RT[runtime]
-        MM[mode_manager]
-        PE[plan_executor]
-        PL[planner_v2]
-        ER[exploration_runner]
-    end
-    subgraph agent_legacy
-        SD[step_dispatcher]
-        PM[policy_engine]
-        RC[retrieval]
-    end
-    ER --> PL
-    PL --> PE
-    PE --> SD
-    SD --> PM
-    SD --> RC
+  QIP[QIP] --> DISC[Discovery]
+  DISC --> SCP[Scoper]
+  SCP --> SEL[Selector]
+  SEL --> ANA[Analyzer]
+  ANA --> FE[FinalExplorationSchema]
 ```
 
 ---
@@ -307,7 +324,7 @@ flowchart LR
 
 | Path | Purpose |
 |------|---------|
-| **`agent_v2/`** | Current runtime: `AgentRuntime`, `ModeManager`, `PlanExecutor`, `ExplorationRunner`, schemas, observability. See [`agent_v2/README.md`](agent_v2/README.md). |
+| **`agent_v2/`** | `AgentRuntime`, `ModeManager`, **`PlannerTaskRuntime`** (ACT loop), `PlanExecutor`, `ExplorationRunner`, schemas, observability. Module READMEs: [`agent_v2/README.md`](agent_v2/README.md), [`agent_v2/runtime/README.md`](agent_v2/runtime/README.md), [`agent_v2/planning/README.md`](agent_v2/planning/README.md), [`agent_v2/exploration/README.md`](agent_v2/exploration/README.md), [`agent_v2/memory/README.md`](agent_v2/memory/README.md). |
 | **`agent/`** | Legacy integration: execution dispatch, retrieval, models, CLI, prompts. **Orchestrator `run_controller` removed** (raises). |
 | **`planner/`** | Standalone **legacy** JSON planner + `planner_eval`; production plans come from **`agent_v2/planner/planner_v2.py`**. |
 | **`config/`** | Env-backed limits and flags (`REACT_MODE`, retrieval, editing). |
@@ -333,9 +350,9 @@ flowchart LR
 ## 7. Development guide
 
 - **New tool behavior:** Extend **`agent/execution/step_dispatcher.py`** dispatch paths; keep policy + trace hooks. Plan steps must map to allowed `PlanStep.action` values (`planner_v2.py` / schemas).
-- **Tune exploration:** `agent_v2/config.py` (`EXPLORATION_STEPS`, `ENABLE_EXPLORATION_ENGINE_V2`, etc.).
-- **Modes:** `agent_v2/cli_adapter.VALID_MODES` — `act`, `plan`, `deep_plan`, `plan_execute`.
-- **Tests:** `pytest tests/test_mode_manager.py`, `tests/test_agent_v2_phases_live.py`, `tests/test_agent_v2_loop_retry.py` ( **`AgentLoop`** unit behavior).
+- **Tune exploration / controller:** `agent_v2/config.py` — e.g. `AGENT_V2_EXPLORATION_MAX_STEPS`, `AGENT_V2_PLANNER_CONTROLLER_LOOP`, `AGENT_V2_TASK_PLANNER_AUTHORITATIVE_LOOP`, `AGENT_V2_MAX_PLANNER_CONTROLLER_CALLS`.
+- **Modes:** `agent_v2/cli_adapter.VALID_MODES` — `act`, `plan`, `deep_plan`, `plan_execute`, `plan_legacy`.
+- **Tests:** `pytest tests/test_mode_manager.py`, `tests/test_planner_v2_invocation.py`, `tests/test_task_planner_synthesis_loop.py`, `tests/test_agent_v2_phases_live.py`, `tests/test_agent_v2_loop_retry.py` (**`AgentLoop`** is not the `act` path; tests cover class behavior in isolation).
 
 ---
 
@@ -346,8 +363,8 @@ flowchart LR
 | **`AgentLoop.run` in production `act`** | **Not used** by `ModeManager`; class kept for composition/tests. |
 | **`agent/orchestrator.run_controller`** | **Raises** — use **`tests.utils.runtime_adapter`** or CLI. |
 | **`planner/` package** | Legacy plan format + eval; **PlannerV2** is the live planner. |
-| **`REACT_MODE` env** | Default **on**; affects dispatcher/policy when `react_mode` context is set — not the same as “ReAct is the main loop” (control plane is planner-centric). |
-| **Docs under `Docs/`** | Many describe older pipeline/ReAct-primary narrative; trust **`agent_v2`** + this README for runtime behavior. |
+| **`REACT_MODE` env** | Default **on**; affects dispatcher/policy when `react_mode` context is set — not the same as “ReAct is the main loop” (orchestration is **`PlannerTaskRuntime`** + optional TaskPlanner). |
+| **Docs under `Docs/`** | Normative freeze docs may lag; **runtime truth** = `agent_v2/**/*.py` + READMEs under `agent_v2/`. |
 
 ---
 
