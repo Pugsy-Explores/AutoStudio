@@ -12,8 +12,20 @@ from agent_v2.config import (
     PlannerLoopConfig,
     PytestConfig,
 )
-from agent_v2.planning.decision_snapshot import build_planner_decision_snapshot
+from agent_v2.planning.decision_snapshot import (
+    build_planner_decision_snapshot,
+    plan_document_fingerprint,
+)
 from agent_v2.planning.task_planner import RuleBasedTaskPlannerService
+from agent_v2.runtime.planner_task_runtime import _insufficiency_replan_context
+from agent_v2.schemas.plan import (
+    PlanDocument,
+    PlanMetadata,
+    PlanRisk,
+    PlanSource,
+    PlanStep,
+    PlanStepExecution,
+)
 from agent_v2.schemas.planner_action import PlannerDecisionSnapshot
 
 
@@ -87,3 +99,133 @@ def test_build_planner_decision_snapshot_includes_act_controller_iteration_count
     snap = build_planner_decision_snapshot(st, None, rolling_conversation_summary="")
     assert snap.act_controller_iteration_count == 7
     assert st.metadata.get("act_controller_iteration_count") == 7
+
+
+def test_rule_based_planner_synthesizes_on_explore_blocked_not_explore():
+    svc = RuleBasedTaskPlannerService()
+    snap = PlannerDecisionSnapshot(
+        instruction="same query forever",
+        last_loop_outcome="explore_blocked:signals",
+        act_controller_iteration_count=0,
+    )
+    d = svc.decide(snap)
+    assert d.type == "synthesize"
+
+
+def test_rule_based_planner_synthesizes_on_replan_no_progress():
+    svc = RuleBasedTaskPlannerService()
+    snap = PlannerDecisionSnapshot(
+        instruction="task",
+        last_loop_outcome="replan_no_progress",
+        act_controller_iteration_count=0,
+    )
+    d = svc.decide(snap)
+    assert d.type == "synthesize"
+
+
+def test_rule_based_legacy_explore_gate_prefix_still_synthesizes():
+    svc = RuleBasedTaskPlannerService()
+    snap = PlannerDecisionSnapshot(
+        instruction="x",
+        last_loop_outcome="explore_gate:signals",
+        act_controller_iteration_count=0,
+    )
+    d = svc.decide(snap)
+    assert d.type == "synthesize"
+
+
+def test_build_planner_decision_snapshot_consumes_explore_block_details_with_outcome():
+    st = MagicMock()
+    st.instruction = "x"
+    st.metadata = {
+        "task_planner_last_loop_outcome": "explore_blocked:duplicate_query",
+        "explore_block_details": {"gaps_count": 2, "confidence": "high"},
+    }
+    st.context = {}
+    snap = build_planner_decision_snapshot(st, None, rolling_conversation_summary="")
+    assert snap.last_loop_outcome == "explore_blocked:duplicate_query"
+    assert snap.explore_block_details == {"gaps_count": 2, "confidence": "high"}
+    assert "task_planner_last_loop_outcome" not in st.metadata
+    assert "explore_block_details" not in st.metadata
+
+
+def test_build_planner_decision_snapshot_includes_last_plan_hash_when_plan_doc_given():
+    st = MagicMock()
+    st.instruction = "x"
+    st.metadata = {}
+    st.context = {}
+    s = PlanStep(
+        step_id="s1",
+        index=1,
+        type="finish",
+        goal="g",
+        action="finish",
+        inputs={},
+        execution=PlanStepExecution(),
+    )
+    pd = PlanDocument(
+        plan_id="p1",
+        instruction="i",
+        understanding="u",
+        sources=[PlanSource(type="other", ref="r", summary="s")],
+        steps=[s],
+        risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
+        completion_criteria=["c"],
+        metadata=PlanMetadata(created_at="2026-01-01T00:00:00Z", version=1),
+    )
+    snap = build_planner_decision_snapshot(st, None, rolling_conversation_summary="", plan_doc=pd)
+    assert snap.last_plan_hash == plan_document_fingerprint(pd)
+
+
+def test_plan_fingerprint_detects_identical_plans():
+    s = PlanStep(
+        step_id="s1",
+        index=1,
+        type="finish",
+        goal="g",
+        action="finish",
+        inputs={},
+        execution=PlanStepExecution(),
+    )
+    pd = PlanDocument(
+        plan_id="p1",
+        instruction="i",
+        understanding="u",
+        sources=[PlanSource(type="other", ref="r", summary="s")],
+        steps=[s],
+        risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
+        completion_criteria=["c"],
+        metadata=PlanMetadata(created_at="2026-01-01T00:00:00Z", version=1),
+    )
+    assert plan_document_fingerprint(pd) == plan_document_fingerprint(pd)
+
+
+def test_insufficiency_replan_context_includes_explore_block_from_metadata():
+    s = PlanStep(
+        step_id="s1",
+        index=1,
+        type="finish",
+        goal="g",
+        action="finish",
+        inputs={},
+        execution=PlanStepExecution(),
+    )
+    pd = PlanDocument(
+        plan_id="p1",
+        instruction="i",
+        understanding="u",
+        sources=[PlanSource(type="other", ref="r", summary="s")],
+        steps=[s],
+        risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
+        completion_criteria=["c"],
+        metadata=PlanMetadata(created_at="2026-01-01T00:00:00Z", version=1),
+    )
+    st = MagicMock()
+    st.metadata = {
+        "task_planner_last_loop_outcome": "explore_blocked:signals",
+        "explore_block_details": {"gaps_count": 0, "confidence": "high"},
+    }
+    ctx = _insufficiency_replan_context(pd, "instr", st)
+    assert ctx.task_control_last_outcome == "explore_blocked:signals"
+    assert ctx.explore_block_details == {"gaps_count": 0, "confidence": "high"}
+    assert "explore_blocked" in ctx.failure_context.error.message

@@ -30,8 +30,11 @@ class RuleBasedTaskPlannerService:
         lo = (snapshot.last_loop_outcome or "").strip()
         if lo == "synthesize_completed":
             return PlannerDecision(type="stop", step=None, query=None, tool=None)
-        if lo.startswith("explore_gate:"):
-            return PlannerDecision(type="replan", step=None, query=None, tool=None)
+        # Runtime-emitted stagnation / gate outcomes — deterministic escape (no blind re-explore).
+        if lo == "replan_no_progress":
+            return PlannerDecision(type="synthesize", step=None, query=None, tool="synthesize")
+        if lo.startswith("explore_blocked:") or lo.startswith("explore_gate:"):
+            return PlannerDecision(type="synthesize", step=None, query=None, tool="synthesize")
         max_iter = get_config().planner_loop.max_act_controller_iterations
         if snapshot.act_controller_iteration_count >= max_iter:
             return PlannerDecision(type="synthesize", step=None, query=None, tool=None)

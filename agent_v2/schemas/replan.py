@@ -7,9 +7,9 @@ PlannerInput is the union type for the planner's context input.
 """
 from __future__ import annotations
 
-from typing import Literal, Optional, Union
+from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 try:
     from typing import TypeAlias
@@ -57,6 +57,35 @@ class ReplanContext(BaseModel):
     exploration_summary: Optional[ReplanExplorationSummary] = None
     trigger: Literal["failure", "insufficiency"] = "failure"
     query_intent: Optional[QueryIntent] = None
+    # Optional control-plane handoff (TaskPlanner / runtime metadata); does not replace failure_context.
+    task_control_last_outcome: Optional[str] = None
+    explore_block_details: Optional[dict[str, Any]] = None
+
+    @field_validator("task_control_last_outcome", mode="before")
+    @classmethod
+    def _cap_task_control(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s[:2048] if s else None
+
+    @field_validator("explore_block_details", mode="before")
+    @classmethod
+    def _cap_ebd(cls, v: object) -> dict[str, Any] | None:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            return None
+        out: dict[str, Any] = {}
+        for i, (k, val) in enumerate(v.items()):
+            if i >= 16:
+                break
+            ks = str(k)[:64]
+            if isinstance(val, (int, float, bool)):
+                out[ks] = val
+            else:
+                out[ks] = str(val)[:512]
+        return out or None
 
 
 PlannerInput: TypeAlias = Union[FinalExplorationSchema, ReplanContext]

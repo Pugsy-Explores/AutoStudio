@@ -22,7 +22,10 @@ from agent_v2.memory.task_working_memory import (
     reset_task_working_memory,
     task_working_memory_from_state,
 )
-from agent_v2.planning.decision_snapshot import build_planner_decision_snapshot
+from agent_v2.planning.decision_snapshot import (
+    build_planner_decision_snapshot,
+    plan_document_fingerprint,
+)
 from agent_v2.planning.exploration_outcome_policy import (
     should_stop_after_exploration,
     sub_exploration_allowed,
@@ -231,6 +234,22 @@ def _sub_exploration_allowed(state: Any, exploration: FinalExplorationSchema) ->
     return sub_exploration_allowed(exploration, wm, cfg=cfg)
 
 
+def _explore_block_details_from_exploration(exploration: FinalExplorationSchema) -> dict[str, Any]:
+    gaps = exploration.exploration_summary.knowledge_gaps or []
+    gn = len([g for g in gaps if str(g).strip()])
+    return {
+        "gaps_count": gn,
+        "confidence": str(exploration.confidence) if exploration.confidence else None,
+    }
+
+
+def _set_explore_blocked(md: dict, exploration: FinalExplorationSchema, reason: str) -> None:
+    """State transition: sub-explore was not run; planner must see outcome + details next tick."""
+    md["task_planner_last_loop_outcome"] = f"explore_blocked:{reason}"
+    md["explore_block_details"] = _explore_block_details_from_exploration(exploration)
+    md["explore_gate"] = reason
+
+
 def _record_task_memory_after_exploration(
     state: Any,
     exploration: FinalExplorationSchema,
@@ -353,11 +372,32 @@ def _insufficiency_replan_context(plan: PlanDocument, instruction: str, state: A
                 summ = str(s.execution.last_result.output_summary or "")
             completed.append(ReplanCompletedStep(step_id=s.step_id, summary=summ))
     sid = plan.steps[-1].step_id if plan.steps else "s1"
+    msg = "Insufficient evidence for next decision (controller replan)"
+    md = getattr(state, "metadata", None)
+    tc_lo: str | None = None
+    ebd: dict[str, Any] | None = None
+    if isinstance(md, dict):
+        raw_tc = md.get("task_planner_last_loop_outcome")
+        if raw_tc is not None and str(raw_tc).strip():
+            tc_lo = str(raw_tc).strip()
+        raw_ebd = md.get("explore_block_details")
+        if isinstance(raw_ebd, dict):
+            ebd = dict(raw_ebd)
+        if tc_lo and tc_lo.startswith("explore_blocked:"):
+            msg = (
+                f"{msg} Task control: {tc_lo}. "
+                "Sub-exploration was not run; do not re-issue the same explore until gate clears."
+            )
+        elif tc_lo == "replan_no_progress":
+            msg = (
+                f"{msg} Task control: replan_no_progress — merged plan unchanged; "
+                "choose synthesize, stop, or a materially different plan."
+            )
     fc = ReplanFailureContext(
         step_id=sid,
         error=ReplanFailureError(
             type=ErrorType.unknown,
-            message="Insufficient evidence for next decision (controller replan)",
+            message=msg,
         ),
         attempts=0,
         last_output_summary="",
@@ -368,6 +408,8 @@ def _insufficiency_replan_context(plan: PlanDocument, instruction: str, state: A
         exploration_summary=None,
         trigger="insufficiency",
         query_intent=read_query_intent_from_agent_state(state),
+        task_control_last_outcome=tc_lo,
+        explore_block_details=ebd,
     )
 
 
@@ -789,9 +831,8 @@ class PlannerTaskRuntime:
 
             if decision.type == "explore":
                 if md["sub_explorations_used"] >= cfg.max_sub_explorations_per_task:
-                    md["explore_gate"] = "sub_exploration_budget"
+                    _set_explore_blocked(md, exploration, "sub_exploration_budget")
                     if authoritative:
-                        md["task_planner_last_loop_outcome"] = "explore_gate:sub_exploration_budget"
                         continue
                     if not _budget_planner():
                         return _exit_budget_exhausted()
@@ -811,9 +852,8 @@ class PlannerTaskRuntime:
                     _attach_plan_view(state, plan_doc)
                     continue
                 if not _sub_exploration_allowed(state, exploration):
-                    md["explore_gate"] = "signals"
+                    _set_explore_blocked(md, exploration, "signals")
                     if authoritative:
-                        md["task_planner_last_loop_outcome"] = "explore_gate:signals"
                         continue
                     if not _budget_planner():
                         return _exit_budget_exhausted()
@@ -837,9 +877,8 @@ class PlannerTaskRuntime:
                 if query and is_duplicate_explore_proposal(
                     twm_pre.last_exploration_query_hash, query
                 ):
-                    md["explore_gate"] = "duplicate_query"
+                    _set_explore_blocked(md, exploration, "duplicate_query")
                     if authoritative:
-                        md["task_planner_last_loop_outcome"] = "explore_gate:duplicate_query"
                         continue
                     if not _budget_planner():
                         return _exit_budget_exhausted()
@@ -893,6 +932,7 @@ class PlannerTaskRuntime:
             if decision.type == "replan":
                 if not _budget_planner():
                     return _exit_budget_exhausted()
+                fp_before = plan_document_fingerprint(plan_doc)
                 if authoritative:
                     assert should_call_planner_v2(
                         context="task_decision",
@@ -910,6 +950,13 @@ class PlannerTaskRuntime:
                 if not isinstance(np, PlanDocument):
                     raise TypeError(f"Planner must return PlanDocument, got {type(np).__name__}")
                 plan_doc = _merge(np, plan_doc)
+                fp_after = plan_document_fingerprint(plan_doc)
+                if fp_after == fp_before:
+                    md["task_planner_last_loop_outcome"] = "replan_no_progress"
+                    md.pop("explore_block_details", None)
+                    md["replan_same_plan_streak"] = int(md.get("replan_same_plan_streak", 0) or 0) + 1
+                else:
+                    md["replan_same_plan_streak"] = 0
                 _record_session_after_plan(mem, plan_doc)
                 _attach_plan_view(state, plan_doc)
                 continue
