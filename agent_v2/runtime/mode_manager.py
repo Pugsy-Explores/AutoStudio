@@ -23,12 +23,15 @@ class ModeManager:
         plan_executor: Any,
         *,
         loop: Any = None,
+        task_planner: Any = None,
     ):
         self.exploration_runner = exploration_runner
         self.planner = planner
         self.plan_executor = plan_executor
         self.loop = loop
-        self._task_runtime = PlannerTaskRuntime(exploration_runner, planner, plan_executor)
+        self._task_runtime = PlannerTaskRuntime(
+            exploration_runner, planner, plan_executor, task_planner=task_planner
+        )
 
     def run(self, state: Any, mode: str = "act") -> Any:
         if mode == "act":

@@ -12,6 +12,11 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Any, Callable
 
+from agent.prompt_system.prompt_call_context import (
+    exploration_suppress_inner_call_reasoning_prompt_log,
+    log_exploration_llm_prompt_line,
+)
+
 # Max prompt characters stored on Langfuse generation ``input`` (matches ``planner_v2``).
 LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS = 12000
 
@@ -224,6 +229,11 @@ def exploration_llm_call(
         merge_extra.update(input_extra)
     merge_extra["stage"] = st
     merge_extra["model_name"] = mn
+    log_exploration_llm_prompt_line(
+        task_name=name,
+        prompt_registry_key=key,
+        model_name=mn,
+    )
     gen = try_langfuse_generation(
         *parents,
         name=name,
@@ -238,7 +248,8 @@ def exploration_llm_call(
         return o
 
     try:
-        raw = invoke()
+        with exploration_suppress_inner_call_reasoning_prompt_log():
+            raw = invoke()
     except Exception as e:
         if gen is not None:
             try:

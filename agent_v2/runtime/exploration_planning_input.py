@@ -126,10 +126,12 @@ def call_planner_with_context(
     require_controller_json: bool = False,
     session: Optional[Any] = None,
     validation_task_mode: Optional[str] = None,
+    plan_body_only: bool = False,
 ) -> Any:
     """Single path: planner always receives planner_context=PlannerPlanContext."""
     if session is not None:
         ctx = ctx.model_copy(update={"session": session})
+    req = False if plan_body_only else require_controller_json
     return planner.plan(
         instruction,
         planner_context=ctx,
@@ -138,6 +140,6 @@ def call_planner_with_context(
         langfuse_trace=langfuse_trace,
         plan_state=plan_state,
         prior_plan_document=prior_plan_document,
-        require_controller_json=require_controller_json,
+        require_controller_json=req,
         validation_task_mode=validation_task_mode,
     )

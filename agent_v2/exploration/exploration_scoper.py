@@ -14,10 +14,10 @@ subset transform when called.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Callable
 
+from agent_v2.exploration.llm_input_normalize import normalize_scoper
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
     exploration_llm_call,
@@ -180,6 +180,6 @@ class ExplorationScoper:
         return payload, dedupe_orig_indices
 
     def _build_prompt(self, instruction: str, payload: list[dict]) -> str:
-        candidates_json = json.dumps(payload, ensure_ascii=False)
+        candidates_json = normalize_scoper(instruction=instruction, rows=payload)
         tmpl = get_registry().get_instructions(_EXPLORATION_SCOPER_KEY, model_name=self._model_name)
-        return tmpl.format(instruction=instruction, candidates_json=candidates_json) + "\n"
+        return tmpl.format(candidates_json=candidates_json) + "\n"

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Callable, Sequence
 
 _LOG = logging.getLogger(__name__)
 
+from agent_v2.exploration.llm_input_normalize import (
+    format_explored_locations_for_prompt,
+    normalize_selector_batch,
+    normalize_selector_single,
+)
 from agent_v2.config import (
     EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K,
     EXPLORATION_SELECTOR_TOP_K,
@@ -191,12 +195,13 @@ class CandidateSelector:
             raise ValueError("CandidateSelector.select requires single LLM callable in strict mode.")
 
         payload = [_selector_candidate_payload(c) for c in top]
+        candidates_json = normalize_selector_single(items=payload)
         system_prompt, user_prompt = get_registry().render_prompt_parts(
             _EXPLORATION_SELECTOR_SINGLE_KEY,
             model_name=self._model_name_single,
             variables={
                 "instruction": instruction,
-                "candidates_json": json.dumps(payload),
+                "candidates_json": candidates_json,
             },
         )
         prompt = (
@@ -290,28 +295,22 @@ class CandidateSelector:
         for i, c in enumerate(top):
             ol = outline_rows[i] if outline_rows and i < len(outline_rows) else None
             payload.append(_selector_candidate_payload(c, outline_for_prompt=ol))
-        explored_block = ""
-        if explored_location_keys:
-            rows = [
-                {"file_path": fp, "symbol": sym or ""}
-                for fp, sym in sorted(explored_location_keys, key=lambda t: (t[0], t[1]))[
-                    :EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K
-                ]
-            ]
-            explored_block = (
-                "\nLocations already inspected in this run (choose different file/symbol pairs "
-                "unless no alternative exists):\n"
-                f"{json.dumps(rows, ensure_ascii=False)}\n"
-            )
+        explored_block = format_explored_locations_for_prompt(
+            explored_location_keys,
+            max_rows=EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K,
+        )
+        candidates_json = normalize_selector_batch(
+            instruction=instruction,
+            intent=intent or "no intent",
+            limit=limit,
+            explored_block=explored_block,
+            items=payload,
+        )
         system_prompt, user_prompt = get_registry().render_prompt_parts(
             _EXPLORATION_SELECTOR_BATCH_KEY,
             model_name=self._model_name_batch,
             variables={
-                "instruction": instruction,
-                "intent": intent or "no intent",
-                "explored_block": explored_block,
-                "candidates_json": json.dumps(payload, ensure_ascii=False),
-                "limit": limit,
+                "candidates_json": candidates_json,
             },
         )
         prompt = (
@@ -381,6 +380,13 @@ class CandidateSelector:
         )
         parsed = holder["parsed"]
         raw = holder["raw"]
+        if isinstance(parsed, dict) and len(parsed) == 0:
+            parsed = {
+                "selected_indices": [],
+                "selected_symbols": {},
+                "selection_confidence": "low",
+            }
+            holder["parsed"] = parsed
         cov_default: CoverageSignal = self._normalize_coverage(parsed.get("coverage_signal"))
         conf_default: SelectionConfidence = self._normalize_selection_confidence(
             parsed.get("selection_confidence")
@@ -393,6 +399,28 @@ class CandidateSelector:
                 selection_confidence="low",
                 coverage_signal="weak",
                 selected_symbols={},
+                selected_top_indices=[],
+            )
+
+        selected_indices_raw_pre = parsed.get("selected_indices")
+        sraw_pre = parsed.get("selected")
+        if (
+            isinstance(selected_indices_raw_pre, list)
+            and len(selected_indices_raw_pre) == 0
+            and not (isinstance(sraw_pre, list) and len(sraw_pre) > 0)
+        ):
+            sym_raw_empty = _parse_selected_symbols_raw(parsed.get("selected_symbols"))
+            sym_clean_empty = _validate_selected_symbols_against_outlines(
+                sym_raw_empty,
+                outline_rows,
+                len(top),
+                set(),
+            )
+            return SelectorBatchResult(
+                selected_candidates=[],
+                selection_confidence=conf_default,
+                coverage_signal=cov_default,
+                selected_symbols=sym_clean_empty,
                 selected_top_indices=[],
             )
 

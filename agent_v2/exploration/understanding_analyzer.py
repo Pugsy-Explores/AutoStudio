@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Callable
 
+from agent_v2.exploration.llm_input_normalize import normalize_analyzer
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
     exploration_llm_call,
@@ -39,6 +39,7 @@ class UnderstandingAnalyzer:
         context_blocks: list[ContextBlock],
         task_intent_summary: str = "",
         symbol_relationships_block: str = "",
+        upstream_selection_confidence: str | None = None,
         lf_analyze_span: Any = None,
         lf_exploration_parent: Any = None,
     ) -> UnderstandingResult:
@@ -52,17 +53,22 @@ class UnderstandingAnalyzer:
         srb = (symbol_relationships_block or "").strip()
         if not srb:
             srb = "(not provided)"
+        blocks_payload = [b.model_dump() for b in context_blocks[:6]]
+        exploration_llm_input = normalize_analyzer(
+            instruction=instruction,
+            intent=intent,
+            task_intent_summary=tis,
+            file_path=file_path,
+            snippet=snippet,
+            symbol_relationships_block=srb,
+            context_blocks=blocks_payload,
+            upstream_selection_confidence=upstream_selection_confidence,
+        )
         system_prompt, user_prompt = get_registry().render_prompt_parts(
             _EXPLORATION_ANALYZER_KEY,
             model_name=self._model_name,
             variables={
-                "instruction": instruction,
-                "file_path": file_path,
-                "snippet": snippet[:6000],
-                "intent": intent,
-                "task_intent_summary": tis,
-                "context_blocks": self._context_blocks_json(context_blocks),
-                "symbol_relationships_block": srb,
+                "exploration_llm_input": exploration_llm_input,
             },
         )
         prompt = (
@@ -108,14 +114,6 @@ class UnderstandingAnalyzer:
             on_complete=_complete,
         )
         return parsed_out[0]
-
-    @staticmethod
-    def _context_blocks_json(context_blocks: list[ContextBlock]) -> str:
-        try:
-            payload = [b.model_dump() for b in context_blocks][:6]
-            return json.dumps(payload, ensure_ascii=False)
-        except Exception:
-            return "[]"
 
     @staticmethod
     def _context_blocks_to_snippet(context_blocks: list[ContextBlock]) -> str:

@@ -23,7 +23,9 @@ from agent_v2.config import (
     ANSWER_SYNTHESIS_IDEAL_EVIDENCE_ITEMS,
     ANSWER_SYNTHESIS_MAX_EVIDENCE_ITEMS,
     ENABLE_ANSWER_SYNTHESIS,
+    get_config,
 )
+from agent_v2.planning.exploration_outcome_policy import normalize_understanding
 from agent_v2.schemas.answer_synthesis import (
     AnswerSynthesisInput,
     AnswerSynthesisResult,
@@ -321,6 +323,10 @@ def maybe_synthesize_to_state(state: Any, exploration: FinalExplorationSchema, l
     """
     if not ENABLE_ANSWER_SYNTHESIS:
         return
+    cfg = get_config()
+    if cfg.chat_planning.skip_answer_synthesis_when_sufficient:
+        if normalize_understanding(exploration) == "sufficient":
+            return
     ctx = getattr(state, "context", None)
     if not isinstance(ctx, dict):
         return

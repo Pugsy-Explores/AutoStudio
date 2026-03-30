@@ -39,6 +39,16 @@ def _decision_from_engine(plan_doc: PlanDocument) -> PlannerDecision | None:
         return PlannerDecision(type="stop", step=None, query=None, tool=tv)
     if d == "act":
         return PlannerDecision(type="act", step=None, query=None, tool=tv)
+    if d == "synthesize":
+        return PlannerDecision(type="synthesize", step=None, query=None, tool=tv or "synthesize")
+    if d == "plan":
+        q = (eng.query or "").strip()
+        return PlannerDecision(
+            type="plan",
+            step=None,
+            query=q if q else None,
+            tool=tv,
+        )
     return None
 
 

@@ -6,10 +6,36 @@ ModeManager delegates here; control flow branches on PlannerDecision only (see p
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Optional
 
 from agent_v2.config import get_config
 from agent_v2.exploration.answer_synthesizer import maybe_synthesize_to_state
+from agent_v2.memory.conversation_memory import (
+    get_or_create_in_memory_store,
+    get_session_id_from_state,
+)
+from agent_v2.memory.task_working_memory import (
+    TASK_WORKING_MEMORY_VERSION,
+    CompletedStepRecord,
+    reset_task_working_memory,
+    task_working_memory_from_state,
+)
+from agent_v2.planning.decision_snapshot import build_planner_decision_snapshot
+from agent_v2.planning.exploration_outcome_policy import (
+    should_stop_after_exploration,
+    sub_exploration_allowed,
+)
+from agent_v2.planning.planner_action_mapper import (
+    exploration_query_hash,
+    is_duplicate_explore_proposal,
+)
+from agent_v2.planning.planner_v2_invocation import (
+    plan_document_valid_for_v2_gate,
+    should_call_planner_v2,
+)
+from agent_v2.planning.task_planner import default_task_planner_service
 from agent_v2.schemas.exploration import (
     effective_exploration_budget,
     read_query_intent_from_agent_state,
@@ -32,6 +58,8 @@ from agent_v2.runtime.trace_emitter import TraceEmitter
 from agent_v2.schemas.execution import ErrorType
 from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.plan import PlanDocument
+from agent_v2.schemas.planner_action import PlannerDecisionSnapshot
+from agent_v2.schemas.planner_decision import PlannerDecision
 from agent_v2.schemas.plan_state import plan_state_from_plan_document
 from agent_v2.schemas.replan import (
     ReplanCompletedStep,
@@ -39,6 +67,17 @@ from agent_v2.schemas.replan import (
     ReplanFailureContext,
     ReplanFailureError,
 )
+
+
+def _snapshot_hash(snap: PlannerDecisionSnapshot) -> str:
+    payload = snap.model_dump(mode="json", exclude_none=True)
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:32]
+
+
+def _decision_mismatch(a: PlannerDecision, b: PlannerDecision) -> bool:
+    aq = (a.query or "").strip()
+    bq = (b.query or "").strip()
+    return a.type != b.type or aq != bq
 
 
 def _plan_to_state_payload(plan: Any) -> object:
@@ -185,6 +224,85 @@ def _sub_exploration_gates_ok(exploration: FinalExplorationSchema) -> bool:
     return exploration.confidence == "low"
 
 
+def _sub_exploration_allowed(state: Any, exploration: FinalExplorationSchema) -> bool:
+    """Legacy gate + optional stop policy (full-planner-arch-freeze-impl)."""
+    cfg = get_config()
+    wm = task_working_memory_from_state(state)
+    return sub_exploration_allowed(exploration, wm, cfg=cfg)
+
+
+def _record_task_memory_after_exploration(
+    state: Any,
+    exploration: FinalExplorationSchema,
+    explore_query: str,
+) -> None:
+    from agent_v2.planning.exploration_outcome_policy import normalize_understanding
+
+    wm = task_working_memory_from_state(state)
+    nu = normalize_understanding(exploration)
+    gaps = exploration.exploration_summary.knowledge_gaps or []
+    gaps_nonempty = any(str(g).strip() for g in gaps)
+    qh = exploration_query_hash(explore_query)
+    wm.record_exploration_tick(
+        exploration_id=str(exploration.exploration_id),
+        query_hash=qh,
+        confidence=str(exploration.confidence) if exploration.confidence else None,
+        gaps_nonempty=gaps_nonempty,
+        understanding=nu,
+    )
+    stop, reason = should_stop_after_exploration(
+        exploration, wm, chat=get_config().chat_planning
+    )
+    md = getattr(state, "metadata", None)
+    if isinstance(md, dict) and stop and reason:
+        md["stop_reason"] = reason
+
+
+def _maybe_thin_planner_observability(
+    state: Any,
+    exploration: FinalExplorationSchema,
+    task_planner: Any,
+) -> None:
+    """When enabled, record thin planner proposal on metadata (no control transfer)."""
+    if not get_config().chat_planning.enable_thin_task_planner:
+        return
+    md = getattr(state, "metadata", None)
+    if not isinstance(md, dict):
+        return
+    store = get_or_create_in_memory_store(state)
+    sid = get_session_id_from_state(state)
+    rolling = store.load(sid).rolling_summary
+    snap = build_planner_decision_snapshot(
+        state, exploration, rolling_conversation_summary=rolling
+    )
+    decision = task_planner.decide(snap)
+    md["thin_planner_decision"] = decision.model_dump(mode="json")
+    md["thin_planner_action"] = md["thin_planner_decision"]
+
+
+def _sync_chat_planning_metadata(state: Any) -> None:
+    md = getattr(state, "metadata", None)
+    if not isinstance(md, dict):
+        return
+    md["task_working_memory_version"] = TASK_WORKING_MEMORY_VERSION
+    store = get_or_create_in_memory_store(state)
+    sid = get_session_id_from_state(state)
+    n = len(store.load(sid).turns)
+    md["conversation_memory_turns"] = n
+
+
+def _conversation_append_assistant_summary(state: Any) -> None:
+    store = get_or_create_in_memory_store(state)
+    sid = get_session_id_from_state(state)
+    ctx = getattr(state, "context", None)
+    fa = ""
+    if isinstance(ctx, dict):
+        fa = str(ctx.get("final_answer") or "").strip()
+    summ = fa[:2000] if fa else str(getattr(state, "instruction", ""))[:200]
+    store.append_turn(sid, "assistant", summ)
+    store.set_last_final_answer_summary(sid, summ)
+
+
 def _failure_replan_context_from_step(
     plan: PlanDocument,
     instruction: str,
@@ -261,10 +379,15 @@ class PlannerTaskRuntime:
         exploration_runner: Any,
         planner: Any,
         plan_executor: Any,
+        *,
+        task_planner: Any = None,
     ) -> None:
         self.exploration_runner = exploration_runner
         self.planner = planner
         self.plan_executor = plan_executor
+        self._task_planner = (
+            task_planner if task_planner is not None else default_task_planner_service()
+        )
 
     def run_explore_plan_execute(self, state: Any, *, deep: bool) -> Any:
         if self.plan_executor is None:
@@ -281,14 +404,24 @@ class PlannerTaskRuntime:
         trace_emitter.reset()
         set_active_trace_emitter(trace_emitter)
         try:
+            reset_task_working_memory(state)
             mem = _planner_session_memory_from_state(state)
             mem.record_user_turn(state.instruction)
+            _st = get_or_create_in_memory_store(state)
+            _sid = get_session_id_from_state(state)
+            _st.append_turn(_sid, "user", str(state.instruction)[:2000])
+
             exploration = self.exploration_runner.run(state.instruction, obs=obs, langfuse_trace=lf)
             state.exploration_result = exploration
             state.context["exploration_summary_text"] = exploration.exploration_summary.overall
             state.context["exploration_result"] = exploration.model_dump(mode="json")
             _sync_session_after_exploration(mem, exploration)
+            if isinstance(exploration, FinalExplorationSchema):
+                _record_task_memory_after_exploration(state, exploration, str(state.instruction))
             maybe_synthesize_to_state(state, exploration, lf)
+            if isinstance(exploration, FinalExplorationSchema):
+                _maybe_thin_planner_observability(state, exploration, self._task_planner)
+            _sync_chat_planning_metadata(state)
 
             if get_config().planner_loop.controller_loop_enabled:
                 plan_doc, exec_out = self._run_act_controller_loop(
@@ -328,6 +461,9 @@ class PlannerTaskRuntime:
             md_fin = getattr(state, "metadata", None)
             if isinstance(md_fin, dict):
                 md_fin.pop("plan_validation_task_mode", None)
+
+        _conversation_append_assistant_summary(state)
+        _sync_chat_planning_metadata(state)
 
         final_plan = plan_doc
         ctx = getattr(state, "context", None)
@@ -370,14 +506,24 @@ class PlannerTaskRuntime:
                 md0 = state.metadata
             md0["plan_validation_task_mode"] = "plan_safe"
 
+            reset_task_working_memory(state)
             mem = _planner_session_memory_from_state(state)
             mem.record_user_turn(state.instruction)
+            _st = get_or_create_in_memory_store(state)
+            _sid = get_session_id_from_state(state)
+            _st.append_turn(_sid, "user", str(state.instruction)[:2000])
+
             exploration = self.exploration_runner.run(state.instruction, obs=obs, langfuse_trace=lf)
             state.exploration_result = exploration
             state.context["exploration_summary_text"] = exploration.exploration_summary.overall
             state.context["exploration_result"] = exploration.model_dump(mode="json")
             _sync_session_after_exploration(mem, exploration)
+            if isinstance(exploration, FinalExplorationSchema):
+                _record_task_memory_after_exploration(state, exploration, str(state.instruction))
             maybe_synthesize_to_state(state, exploration, lf)
+            if isinstance(exploration, FinalExplorationSchema):
+                _maybe_thin_planner_observability(state, exploration, self._task_planner)
+            _sync_chat_planning_metadata(state)
 
             if get_config().planner_loop.controller_loop_enabled:
                 plan_doc, exec_out = self._run_act_controller_loop(
@@ -419,6 +565,9 @@ class PlannerTaskRuntime:
             if isinstance(md_fin, dict):
                 md_fin.pop("plan_validation_task_mode", None)
 
+        _conversation_append_assistant_summary(state)
+        _sync_chat_planning_metadata(state)
+
         final_plan = plan_doc
         ctx = getattr(state, "context", None)
         if isinstance(ctx, dict):
@@ -444,14 +593,24 @@ class PlannerTaskRuntime:
         trace_emitter.reset()
         set_active_trace_emitter(trace_emitter)
         try:
+            reset_task_working_memory(state)
             mem = _planner_session_memory_from_state(state)
             mem.record_user_turn(state.instruction)
+            _st = get_or_create_in_memory_store(state)
+            _sid = get_session_id_from_state(state)
+            _st.append_turn(_sid, "user", str(state.instruction)[:2000])
+
             exploration = self.exploration_runner.run(state.instruction, obs=obs, langfuse_trace=lf)
             state.exploration_result = exploration
             state.context["exploration_summary_text"] = exploration.exploration_summary.overall
             state.context["exploration_result"] = exploration.model_dump(mode="json")
             _sync_session_after_exploration(mem, exploration)
+            if isinstance(exploration, FinalExplorationSchema):
+                _record_task_memory_after_exploration(state, exploration, str(state.instruction))
             maybe_synthesize_to_state(state, exploration, lf)
+            if isinstance(exploration, FinalExplorationSchema):
+                _maybe_thin_planner_observability(state, exploration, self._task_planner)
+            _sync_chat_planning_metadata(state)
 
             pctx = exploration_to_planner_context(exploration, session=mem, state=state)
             plan = call_planner_with_context(
@@ -474,6 +633,8 @@ class PlannerTaskRuntime:
         finally:
             clear_active_trace_emitter()
             _restore_planner_tool_policy(self.planner, prev_policy)
+        _conversation_append_assistant_summary(state)
+        _sync_chat_planning_metadata(state)
         return state
 
     def _run_act_controller_loop(
@@ -496,6 +657,7 @@ class PlannerTaskRuntime:
             md = state.metadata
         md["planner_controller_calls"] = 0
         md["sub_explorations_used"] = 0
+        md["act_controller_iteration_count"] = 0
 
         def _budget_planner() -> bool:
             if md["planner_controller_calls"] >= cfg.max_planner_controller_calls:
@@ -508,21 +670,71 @@ class PlannerTaskRuntime:
             validate_completed_steps_immutable(old, merged)
             return merged
 
+        authoritative = cfg.task_planner_authoritative_loop
+        shadow = cfg.task_planner_shadow_loop and not authoritative
+        plan_body_only = authoritative and cfg.planner_plan_body_only_when_task_planner_authoritative
+
+        def _pcw(
+            ctx: PlannerPlanContext,
+            *,
+            deep_kw: bool,
+            require_controller_json: bool = True,
+            plan_state=None,
+            prior_plan_document=None,
+        ) -> Any:
+            return call_planner_with_context(
+                self.planner,
+                state.instruction,
+                ctx,
+                deep=deep_kw,
+                obs=obs,
+                langfuse_trace=langfuse_trace,
+                plan_state=plan_state,
+                prior_plan_document=prior_plan_document,
+                require_controller_json=require_controller_json,
+                session=mem,
+                validation_task_mode=validation_task_mode,
+                plan_body_only=plan_body_only,
+            )
+
+        def _rolling_store_summary() -> str:
+            st = get_or_create_in_memory_store(state)
+            sid = get_session_id_from_state(state)
+            return st.load(sid).rolling_summary
+
+        def _resolve_decision(plan_doc: PlanDocument) -> PlannerDecision:
+            snap = build_planner_decision_snapshot(
+                state,
+                exploration,
+                rolling_conversation_summary=_rolling_store_summary(),
+                plan_doc=plan_doc,
+            )
+            if shadow:
+                tp = self._task_planner.decide(snap)
+                eng = planner_decision_from_plan_document(plan_doc)
+                md["decision_source"] = "shadow"
+                md["task_planner_decision"] = tp.model_dump(mode="json")
+                md["engine_decision"] = eng.model_dump(mode="json")
+                md["task_planner_shadow_mismatch"] = _decision_mismatch(tp, eng)
+                md["decision_snapshot_hash"] = _snapshot_hash(snap)
+                return eng
+            if authoritative:
+                d = self._task_planner.decide(snap)
+                md["decision_source"] = "task_planner"
+                md["task_planner_decision"] = d.model_dump(mode="json")
+                md["decision_snapshot_hash"] = _snapshot_hash(snap)
+                return d
+            return planner_decision_from_plan_document(plan_doc)
+
         if not _budget_planner():
             raise RuntimeError(
                 "planner_controller_calls budget misconfigured (max_planner_controller_calls < 1)"
             )
         pctx0 = exploration_to_planner_context(exploration, session=mem, state=state)
-        plan_doc = call_planner_with_context(
-            self.planner,
-            state.instruction,
+        plan_doc = _pcw(
             pctx0,
-            deep=deep,
-            obs=obs,
-            langfuse_trace=langfuse_trace,
+            deep_kw=deep,
             require_controller_json=True,
-            session=mem,
-            validation_task_mode=validation_task_mode,
         )
         if not isinstance(plan_doc, PlanDocument):
             raise TypeError(
@@ -538,26 +750,59 @@ class PlannerTaskRuntime:
             return plan_doc, self.plan_executor._finalize_run(state, plan_doc, "failed")
 
         while True:
-            decision = planner_decision_from_plan_document(plan_doc)
+            md["act_controller_iteration_count"] = int(md.get("act_controller_iteration_count", 0)) + 1
+            decision = _resolve_decision(plan_doc)
+
+            if decision.type == "synthesize":
+                maybe_synthesize_to_state(state, exploration, langfuse_trace)
+                twm = task_working_memory_from_state(state)
+                twm.record_completed(
+                    CompletedStepRecord(kind="synthesize", summary="answer_synthesis")
+                )
+                md["task_planner_last_loop_outcome"] = "synthesize_completed"
+                continue
+
+            if decision.type == "plan":
+                if not _budget_planner():
+                    return _exit_budget_exhausted()
+                if authoritative:
+                    assert should_call_planner_v2(
+                        context="task_decision",
+                        decision=decision,
+                        plan_valid=plan_document_valid_for_v2_gate(plan_doc),
+                    )
+                np = _pcw(
+                    exploration_to_planner_context(exploration, session=mem, state=state),
+                    deep_kw=deep,
+                    require_controller_json=True,
+                )
+                if not isinstance(np, PlanDocument):
+                    raise TypeError(f"Planner must return PlanDocument, got {type(np).__name__}")
+                plan_doc = _merge(np, plan_doc)
+                twm = task_working_memory_from_state(state)
+                twm.record_completed(
+                    CompletedStepRecord(kind="plan_refresh", summary="planner_refresh")
+                )
+                _record_session_after_plan(mem, plan_doc)
+                _attach_plan_view(state, plan_doc)
+                continue
 
             if decision.type == "explore":
                 if md["sub_explorations_used"] >= cfg.max_sub_explorations_per_task:
                     md["explore_gate"] = "sub_exploration_budget"
+                    if authoritative:
+                        md["task_planner_last_loop_outcome"] = "explore_gate:sub_exploration_budget"
+                        continue
                     if not _budget_planner():
                         return _exit_budget_exhausted()
-                    np = call_planner_with_context(
-                        self.planner,
-                        state.instruction,
+                    assert should_call_planner_v2(context="failure_or_insufficiency_replan")
+                    np = _pcw(
                         _planner_context_for_replan(
                             _insufficiency_replan_context(plan_doc, state.instruction, state),
                             mem,
                         ),
-                        deep=True,
-                        obs=obs,
-                        langfuse_trace=langfuse_trace,
+                        deep_kw=True,
                         require_controller_json=True,
-                        session=mem,
-                        validation_task_mode=validation_task_mode,
                     )
                     if not isinstance(np, PlanDocument):
                         raise TypeError(f"Planner must return PlanDocument, got {type(np).__name__}")
@@ -565,23 +810,21 @@ class PlannerTaskRuntime:
                     _record_session_after_plan(mem, plan_doc)
                     _attach_plan_view(state, plan_doc)
                     continue
-                if not _sub_exploration_gates_ok(exploration):
+                if not _sub_exploration_allowed(state, exploration):
                     md["explore_gate"] = "signals"
+                    if authoritative:
+                        md["task_planner_last_loop_outcome"] = "explore_gate:signals"
+                        continue
                     if not _budget_planner():
                         return _exit_budget_exhausted()
-                    np = call_planner_with_context(
-                        self.planner,
-                        state.instruction,
+                    assert should_call_planner_v2(context="failure_or_insufficiency_replan")
+                    np = _pcw(
                         _planner_context_for_replan(
                             _insufficiency_replan_context(plan_doc, state.instruction, state),
                             mem,
                         ),
-                        deep=True,
-                        obs=obs,
-                        langfuse_trace=langfuse_trace,
+                        deep_kw=True,
                         require_controller_json=True,
-                        session=mem,
-                        validation_task_mode=validation_task_mode,
                     )
                     if not isinstance(np, PlanDocument):
                         raise TypeError(f"Planner must return PlanDocument, got {type(np).__name__}")
@@ -590,6 +833,31 @@ class PlannerTaskRuntime:
                     _attach_plan_view(state, plan_doc)
                     continue
                 query = (decision.query or "").strip()
+                twm_pre = task_working_memory_from_state(state)
+                if query and is_duplicate_explore_proposal(
+                    twm_pre.last_exploration_query_hash, query
+                ):
+                    md["explore_gate"] = "duplicate_query"
+                    if authoritative:
+                        md["task_planner_last_loop_outcome"] = "explore_gate:duplicate_query"
+                        continue
+                    if not _budget_planner():
+                        return _exit_budget_exhausted()
+                    assert should_call_planner_v2(context="failure_or_insufficiency_replan")
+                    np = _pcw(
+                        _planner_context_for_replan(
+                            _insufficiency_replan_context(plan_doc, state.instruction, state),
+                            mem,
+                        ),
+                        deep_kw=True,
+                        require_controller_json=True,
+                    )
+                    if not isinstance(np, PlanDocument):
+                        raise TypeError(f"Planner must return PlanDocument, got {type(np).__name__}")
+                    plan_doc = _merge(np, plan_doc)
+                    _record_session_after_plan(mem, plan_doc)
+                    _attach_plan_view(state, plan_doc)
+                    continue
                 old_pd = plan_doc
                 exploration = self.exploration_runner.run(
                     query, obs=obs, langfuse_trace=langfuse_trace
@@ -598,24 +866,20 @@ class PlannerTaskRuntime:
                 state.context["exploration_summary_text"] = exploration.exploration_summary.overall
                 state.context["exploration_result"] = exploration.model_dump(mode="json")
                 _sync_session_after_exploration(mem, exploration)
+                _record_task_memory_after_exploration(state, exploration, query)
                 maybe_synthesize_to_state(state, exploration, langfuse_trace)
                 md["sub_explorations_used"] = md["sub_explorations_used"] + 1
                 ps = plan_state_from_plan_document(old_pd)
                 if not _budget_planner():
                     return _exit_budget_exhausted()
                 pctx_sub = exploration_to_planner_context(exploration, session=mem, state=state)
-                np = call_planner_with_context(
-                    self.planner,
-                    state.instruction,
+                assert should_call_planner_v2(context="post_exploration_merge")
+                np = _pcw(
                     pctx_sub,
-                    deep=deep,
-                    obs=obs,
-                    langfuse_trace=langfuse_trace,
+                    deep_kw=deep,
+                    require_controller_json=True,
                     plan_state=ps,
                     prior_plan_document=old_pd,
-                    require_controller_json=True,
-                    session=mem,
-                    validation_task_mode=validation_task_mode,
                 )
                 if not isinstance(np, PlanDocument):
                     raise TypeError(
@@ -629,19 +893,19 @@ class PlannerTaskRuntime:
             if decision.type == "replan":
                 if not _budget_planner():
                     return _exit_budget_exhausted()
-                np = call_planner_with_context(
-                    self.planner,
-                    state.instruction,
+                if authoritative:
+                    assert should_call_planner_v2(
+                        context="task_decision",
+                        decision=decision,
+                        plan_valid=plan_document_valid_for_v2_gate(plan_doc),
+                    )
+                np = _pcw(
                     _planner_context_for_replan(
                         _insufficiency_replan_context(plan_doc, state.instruction, state),
                         mem,
                     ),
-                    deep=True,
-                    obs=obs,
-                    langfuse_trace=langfuse_trace,
+                    deep_kw=True,
                     require_controller_json=True,
-                    session=mem,
-                    validation_task_mode=validation_task_mode,
                 )
                 if not isinstance(np, PlanDocument):
                     raise TypeError(f"Planner must return PlanDocument, got {type(np).__name__}")
@@ -667,16 +931,11 @@ class PlannerTaskRuntime:
                 )
                 if not _budget_planner():
                     return _exit_budget_exhausted()
-                np = call_planner_with_context(
-                    self.planner,
-                    state.instruction,
+                assert should_call_planner_v2(context="failure_or_insufficiency_replan")
+                np = _pcw(
                     _planner_context_for_replan(ctx, mem),
-                    deep=True,
-                    obs=obs,
-                    langfuse_trace=langfuse_trace,
+                    deep_kw=True,
                     require_controller_json=True,
-                    session=mem,
-                    validation_task_mode=validation_task_mode,
                 )
                 if not isinstance(np, PlanDocument):
                     raise TypeError(f"Planner must return PlanDocument, got {type(np).__name__}")
@@ -694,18 +953,13 @@ class PlannerTaskRuntime:
                 if not _budget_planner():
                     return _exit_budget_exhausted()
                 pctx_pr = exploration_to_planner_context(exploration, session=mem, state=state)
-                np = call_planner_with_context(
-                    self.planner,
-                    state.instruction,
+                assert should_call_planner_v2(context="progress_refresh")
+                np = _pcw(
                     pctx_pr,
-                    deep=deep,
-                    obs=obs,
-                    langfuse_trace=langfuse_trace,
+                    deep_kw=deep,
+                    require_controller_json=True,
                     plan_state=ps,
                     prior_plan_document=old_pd,
-                    require_controller_json=True,
-                    session=mem,
-                    validation_task_mode=validation_task_mode,
                 )
                 if not isinstance(np, PlanDocument):
                     raise TypeError(

@@ -703,6 +703,10 @@ class ExplorationEngineV2:
                             Path(str(target.file_path)).name or target.file_path,
                             target.symbol or "",
                         )
+                    upstream_sel_conf: str | None = None
+                    sb = getattr(target, "selector_batch", None)
+                    if sb is not None and getattr(sb, "selection_confidence", None):
+                        upstream_sel_conf = str(sb.selection_confidence)
                     understanding = self._analyzer.analyze(
                         instruction,
                         intent=", ".join([s for s in (intent.intents or []) if str(s).strip()])
@@ -710,6 +714,7 @@ class ExplorationEngineV2:
                         context_blocks=context_blocks,
                         task_intent_summary=task_intent_summary_for_analyzer(intent, instruction),
                         symbol_relationships_block=rel_block,
+                        upstream_selection_confidence=upstream_sel_conf,
                         lf_analyze_span=analyze_span,
                         lf_exploration_parent=exploration_outer,
                     )
