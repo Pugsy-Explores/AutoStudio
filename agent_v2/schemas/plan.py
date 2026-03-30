@@ -145,7 +145,7 @@ class PlannerEngineOutput(BaseModel):
     Executor-facing PlanStep rows are synthesized from this for PlanExecutor compatibility.
     """
 
-    decision: Literal["act", "explore", "replan", "stop"]
+    decision: Literal["act", "explore", "replan", "stop", "synthesize", "plan"]
     tool: PlannerPlannerTool = "none"
     reason: str = ""
     query: str = ""

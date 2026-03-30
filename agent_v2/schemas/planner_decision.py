@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .plan import PlanStep
 
-PlannerDecisionType = Literal["explore", "act", "replan", "stop"]
+PlannerDecisionType = Literal["explore", "act", "replan", "stop", "synthesize", "plan"]
 
 
 class PlannerDecision(BaseModel):
