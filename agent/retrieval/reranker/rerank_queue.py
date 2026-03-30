@@ -1,14 +1,9 @@
-"""RerankQueue: batch multiple (query, docs) requests for single model inference.
-
-Collects add(query, docs) calls and on flush() runs one batched inference.
-Configurable via RERANK_BATCH_WINDOW_MS (future: time-based flush).
-"""
+"""RerankQueue: batch multiple (query, docs) requests for single model inference."""
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +26,6 @@ def flush(reranker) -> list[list[tuple[str, float]]]:
         _queue.clear()
     if not requests:
         return []
-    if not hasattr(reranker, "rerank_batch"):
-        # Fallback: sequential rerank
-        return [reranker.rerank(q, d) for q, d in requests]
     return reranker.rerank_batch(requests)
 
 

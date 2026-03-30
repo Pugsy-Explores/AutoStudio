@@ -1,0 +1,22 @@
+[
+  {
+    "id": "simple_explain",
+    "input": {
+      "instruction": "Explain how Settings from settings.load reaches dispatch.handle",
+      "repo_path": "mini_repos/mr01_arch"
+    },
+    "expected": {
+      "structure": {
+        "no_loops": true,
+        "max_steps": 6
+      },
+      "metrics": {
+        "termination_reason": null
+      }
+    },
+    "llm_judge": {
+      "enabled": true,
+      "criteria": "Answer should correctly describe the system behavior"
+    }
+  }
+]

@@ -1,0 +1,8 @@
+role: system
+system_prompt: |
+
+
+  Your previous JSON was rejected: invalid or inconsistent "tool" field.
+  "tool" MUST be exactly one of: explore, open_file, search_code, run_shell, edit, run_tests, none.
+  Mapping: decision explore → tool explore; decision act → one of the act tools (not none); decision stop or replan → tool none.
+  Reply with ONE corrected JSON object only, no prose or fences.

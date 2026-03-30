@@ -1,78 +1,24 @@
-# Router Eval
+# Router Eval (`router_eval/`)
 
-Phased router evolution and evaluation harness. Same dataset for all phases; swap router by changing one import in `router_eval.py`. Categories: EDIT, SEARCH, EXPLAIN, INFRA, GENERAL.
+Harness for evaluating **instruction routers** (category routing: EDIT, SEARCH, EXPLAIN, INFRA, …). Production routing uses **`route_production_instruction`** in `agent/routing/`; this package isolates datasets and metrics.
 
-## Run evaluation
-
-From the **AutoStudio** project root:
+## Run
 
 ```bash
 python -m router_eval.router_eval
-```
-
-Use `--mock` to run without an LLM server (stub router; verifies dataset load and metrics):
-
-```bash
 python -m router_eval.router_eval --mock
-```
-
-Run all routers (or `--mock` for no LLM):
-
-```bash
 python -m router_eval.run_all_routers
-python -m router_eval.run_all_routers --mock
-```
-
-Run with production router integration (uses `ROUTER_TYPE` from env):
-
-```bash
 python -m router_eval.run_all_routers --production
 ```
 
-**Config:** Reads from `agent/models/models_config.json`:
-- `task_models.routing` → model key (e.g. SMALL)
-- `models.SMALL.endpoint` → LLM endpoint (e.g. `http://localhost:8081/v1/chat/completions`)
-- `task_params.routing` → temperature, max_tokens, request_timeout_seconds
+## Config
 
-Override with env: `ROUTER_LLM_BASE_URL`, `ROUTER_LLM_API_KEY` (when agent package not importable).
+Reads from `agent/models/models_config.json` (task models, endpoints). Env overrides: `ROUTER_LLM_BASE_URL`, `ROUTER_LLM_API_KEY`.
 
-## Swap router
+## Relation to `agent_v2`
 
-Edit `router_eval.py` and change the active import:
-
-```python
-from router_eval.routers.baseline_router import route
-# from router_eval.routers.fewshot_router import route
-# from router_eval.routers.ensemble_router import route
-# ...
-```
-
-## Phases
-
-| Phase | Router | Description |
-|-------|--------|-------------|
-| 1 | baseline_router | Single prompt → category |
-| 2 | fewshot_router | Few-shot examples in prompt |
-| 3 | ensemble_router | Three prompts, majority vote |
-| 4 | confidence_router | Category + confidence, ensemble |
-| 5 | dual_router | Primary + secondary + confidence |
-| 6 | critic_router | Critic when low conf or ambiguity |
-| 7 | final_router | Fast accept if high conf + agree, else critic |
-
-**Rule:** Do not change the dataset and a router in the same change. The dataset is the fixed test suite.
-
-## Subpackages
-
-- **`router_eval/routers/`**: router variants under test — see [`router_eval/routers/README.md`](routers/README.md)
-- **`router_eval/prompts/`**: evaluation prompts/assets — see [`router_eval/prompts/README.md`](prompts/README.md)
-- **`router_eval/utils/`**: metrics + dataset helpers — see [`router_eval/utils/README.md`](utils/README.md)
-- **`router_eval/tests/`**: harness tests — see [`router_eval/tests/README.md`](tests/README.md)
+Router output may **precede** planning in older **`agent/`** flows. **`agent_v2`** `PlanExecutor` does not depend on this package directly; routing is still relevant for CLI paths that classify intent before invoking the runtime.
 
 ## See also
 
-- [Docs/PROMPT_ARCHITECTURE.md](../Docs/PROMPT_ARCHITECTURE.md) — Prompt layer: router prompts, few-shot strategy, evaluation prompts
-- [Docs/CONFIGURATION.md](../Docs/CONFIGURATION.md) — Centralized config (ROUTER_TYPE, etc.)
-- [Docs/AGENT_LOOP_WORKFLOW.md](../Docs/AGENT_LOOP_WORKFLOW.md) — Agent execution flow
-- [README.md](../README.md) — Project overview
-- [dev/roadmap/phase_3_scenarios.md](../dev/roadmap/phase_3_scenarios.md) — Phase 3 scenario evaluation (40-task benchmark; `python scripts/run_principal_engineer_suite.py --scenarios`)
-- [dev/roadmap/phase_5_metrics.md](../dev/roadmap/phase_5_metrics.md) — Phase 5 capability eval (`python scripts/run_capability_eval.py`)
+[`agent/routing/README.md`](../agent/routing/README.md) for production routing contract.

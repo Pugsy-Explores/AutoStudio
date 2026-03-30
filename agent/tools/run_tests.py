@@ -6,6 +6,7 @@ Detects test framework and runs tests with fallback when no tests run.
 import json
 import logging
 import subprocess
+import sys
 from pathlib import Path
 
 from config.agent_runtime import TEST_TIMEOUT
@@ -17,14 +18,20 @@ from editing.test_runner_utils import (
 logger = logging.getLogger(__name__)
 
 
+def _py() -> str:
+    """Interpreter running AutoStudio (avoids `python` vs `python3` on macOS CI)."""
+    return sys.executable or "python3"
+
+
 def _detect_test_cmd(project_root: str) -> tuple[str, str]:
     """
     Return (test_cmd, fallback_cmd) for the project.
     Order: pyproject/pytest.ini -> poetry.lock -> tox.ini -> Makefile -> package.json -> go.mod -> Cargo.toml.
     """
     root = Path(project_root)
+    py = _py()
     if (root / "pyproject.toml").exists() or (root / "pytest.ini").exists():
-        return "python -m pytest -x -q", "python -m py_compile ."
+        return f"{py} -m pytest -x -q", f"{py} -m py_compile ."
     if (root / "poetry.lock").exists():
         return "poetry run pytest -x -q", "poetry run python -m py_compile ."
     if (root / "tox.ini").exists():
@@ -48,7 +55,7 @@ def _detect_test_cmd(project_root: str) -> tuple[str, str]:
         return "go test ./...", "go build ./..."
     if (root / "Cargo.toml").exists():
         return "cargo test", "cargo build"
-    return "python -m pytest -x -q", "python -m py_compile ."
+    return f"{py} -m pytest -x -q", f"{py} -m py_compile ."
 
 
 def run_tests(
@@ -64,7 +71,7 @@ def run_tests(
     if test_cmd is None:
         test_cmd, fallback_cmd = _detect_test_cmd(project_root)
     else:
-        fallback_cmd = "python -m py_compile ."
+        fallback_cmd = f"{_py()} -m py_compile ."
 
     passed, stdout, stderr, error_type = run_tests_raw(project_root, test_cmd, timeout)
     out = {"passed": passed, "stdout": stdout or "", "stderr": stderr or "", "error_type": error_type}

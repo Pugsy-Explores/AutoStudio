@@ -38,8 +38,15 @@ def build_context(
         query = state.context.get("query") or state.instruction or ""
         from agent.retrieval.docs_retriever import build_docs_context
 
-        context_blocks = build_docs_context(query, project_root, candidates=candidates or state.context.get("candidates") or [])
+        cands = candidates or state.context.get("candidates") or []
+        context_blocks = build_docs_context(query, project_root, candidates=cands)
         state.context["ranked_context"] = context_blocks
+        # Stage 15: hierarchical retrieval telemetry for explain/docs runs
+        state.context["retrieval_telemetry"] = {
+            "viable_source_hit_count": len(cands),
+            "top_hit_paths": [str(c.get("file", ""))[:200] for c in context_blocks[:8] if isinstance(c, dict)],
+            "artifact_mode": "docs",
+        }
         if state.context.get("trace_id"):
             files_read = [c.get("file", "")[:120] for c in context_blocks[:10] if isinstance(c, dict)]
             total_chars = sum(len((c.get("snippet") or "")) for c in context_blocks if isinstance(c, dict))
@@ -70,12 +77,24 @@ def build_context(
     search_results = []
     for c in candidates:
         if isinstance(c, dict):
-            search_results.append({
+            row = {
                 "file": c.get("file", ""),
                 "symbol": c.get("symbol", ""),
                 "snippet": c.get("snippet", ""),
                 "line": c.get("line"),
-            })
+            }
+            for opt in (
+                "candidate_kind",
+                "retrieval_result_type",
+                "implementation_body_present",
+                "line_range",
+                "source",
+                "localization_score",
+                "type",
+            ):
+                if opt in c and c[opt] is not None:
+                    row[opt] = c[opt]
+            search_results.append(row)
 
     query = state.context.get("query") or state.instruction or ""
     from agent.retrieval.retrieval_pipeline import run_retrieval_pipeline

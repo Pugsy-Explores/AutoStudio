@@ -1,41 +1,12 @@
 # Agent Controller — Full Pipeline
 
-The **agent controller** (`run_controller`) orchestrates the complete development workflow: instruction → plan → retrieval → edit → conflict resolution → patch execution → change detection → test repair → task memory. All step execution goes through `StepExecutor.execute_step(step, state)`, which calls `dispatch(step, state)` under the hood; EDIT steps use the full pipeline inside the dispatcher's `_edit_fn`. Mode routing: `deterministic` (default), `autonomous`, or `multi_agent`.
+The **agent controller** (`run_controller`) orchestrates the development workflow: instruction → build_repo_map → run_hierarchical → execution_loop (ReAct) → save_task. Model selects actions (search, open_file, edit, run_tests, finish). EDIT uses `_edit_react` → `_generate_patch_once` → execute_patch → run_tests. See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
 
 ---
 
-## CLI (Phase 6)
+## CLI
 
-The `autostudio` CLI wraps `run_controller` for common workflows:
-
-```bash
-autostudio explain StepExecutor      # Explain a symbol
-autostudio edit "add logging"        # Edit per instruction
-autostudio run "Fix the null check"  # Single-shot (legacy)
-autostudio chat                      # Interactive session with slash-commands
-autostudio chat --live               # Session with live step visualization
-```
-
-**Slash-commands in chat:** `/explain <symbol>`, `/fix <desc>`, `/refactor <desc>`, `/add-logging`, `/find <symbol>`
-
-**Trace inspection:**
-
-```bash
-autostudio trace <task_id>   # View trace (print mode)
-autostudio debug last-run   # Interactive trace viewer for most recent run
-```
-
-**Phase 12 — Developer workflow:**
-
-```bash
-autostudio issue "Fix retry logic in StepExecutor"   # Full workflow: parse issue → solve → PR → CI → review
-autostudio fix "add logging to execute_step"         # Multi-agent solve only (no PR/CI/review)
-autostudio pr                                       # Generate PR from last workflow run
-autostudio review                                   # Review last patch
-autostudio ci                                       # Run CI (pytest, ruff) on project root
-```
-
-The `issue` and `fix` commands persist the last workflow result to `.agent_memory/last_workflow.json`; `pr` and `review` load from that file.
+`autostudio explain/edit/chat/trace/debug` and Phase 12 `issue/fix/pr/review/ci`. See root [README.md](../README.md) Quick Start for full commands.
 
 ---
 
@@ -47,13 +18,12 @@ from agent.orchestrator.agent_controller import run_controller
 result = run_controller(
     instruction="Add a retry decorator to the fetch function",
     project_root="/path/to/repo",
-    mode="deterministic",  # default; use "autonomous" or "multi_agent" for other modes
 )
 # Returns: {
 #   task_id,
 #   instruction,
 #   state,                    # AgentState (for backward compatibility with run_agent() callers)
-#   completed_steps,          # len(AgentState.completed_steps); step identity is (plan_id, step_id) (Phase 4)
+#   completed_steps,          # len(AgentState.completed_steps)
 #   files_modified,           # derived from AgentState.step_results
 #   patches_applied,          # integer count of all applied patches in this attempt
 #   errors,
@@ -61,60 +31,38 @@ result = run_controller(
 # }
 ```
 
-**CLI entrypoints (Phase 1):** Both `python -m agent` and `python -m agent.cli.run_agent` invoke `run_controller(instruction)` and then use `result["state"]` for result printing. Flow: CLI → `run_controller(instruction)` → `run_attempt_loop(...)` → `run_deterministic(...)` → **execution_loop()**. **Phase 3:** The deprecated `run_agent(instruction)` also uses the shared **execution_loop()** (with step retries, no goal evaluator); same config limits and failure semantics as run_deterministic. See [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md) for the loop comparison table.
+**CLI entrypoints:** `python -m agent` and `python -m agent.cli.run_agent` invoke `run_controller(instruction)` → `run_hierarchical` → **execution_loop** (ReAct). See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
 
 ---
 
 ## Pipeline Flow
 
-**Mode routing:** `mode="deterministic"` (default) runs the loop below; `mode="autonomous"` delegates to `run_autonomous`; `mode="multi_agent"` delegates to `run_multi_agent`.
-
-**Phase 5 — Attempt loop:** In deterministic mode, the controller calls `run_attempt_loop()` (not a single `run_deterministic`). The attempt loop runs up to `MAX_AGENT_ATTEMPTS` (default 3). Each attempt: run deterministic runner → evaluate goal → record attempt in TrajectoryMemory → if goal_met return; else Critic.analyze (deterministic + LLM strategy hint) → RetryPlanner.build_retry_context → next attempt with retry_context (strategy_hint, previous_attempts, critic_feedback). The planner receives retry_context so it sees strategy hint, previous attempt plans, and diversity guidance. See [Docs/PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+**Current implementation:** The controller has no mode parameter. It always runs the ReAct path:
 
 ```
 instruction
-  → [if mode != deterministic] _run_controller_by_mode → run_autonomous or run_multi_agent
+  → start_trace()
+  → ensure_retrieval_daemon() (if RERANKER/EMBEDDING_USE_DAEMON)
   → build_repo_map() — spec format {modules, symbols, calls} → repo_map.json
   → search_similar_tasks() — vector index of past tasks (optional)
-  → run_attempt_loop(instruction, project_root, trace_id, similar_tasks)   # Phase 5
-       for attempt in range(MAX_AGENT_ATTEMPTS):
-            run_deterministic(instruction, project_root, trace_id, similar_tasks, retry_context=retry_context)
-                 → get_plan(instruction, retry_context=retry_context)
-                      → [router or planner] planner.plan(instruction, retry_context) when CODE_EDIT/GENERAL
-                 → AgentState (plan with plan_id; completed_steps as (plan_id, step_id)); while not state.is_finished(): step → execute_step → validate → record
-            goal_met = GoalEvaluator.evaluate(instruction, state)
-            TrajectoryMemory.record_attempt(attempt_data)
-            if goal_met: return (state, loop_output)
-            critic_feedback = Critic.analyze(instruction, attempt_data)   # hybrid: deterministic + LLM strategy_hint
-            retry_context = RetryPlanner.build_retry_context(instruction, trajectory_memory, critic_feedback)
+  → run_hierarchical(instruction, root, trace_id, similar_tasks)
+       → execution_loop(state, instruction)  # ReAct: model selects actions
   → save_task() — persist to .agent_memory/tasks/
   → finish_trace()
   → return task summary
 ```
 
+See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md) for the execution_loop flow.
+
+**Legacy design (not in code):** run_attempt_loop, get_plan, GoalEvaluator, Critic, RetryPlanner. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+
 ---
 
-## EDIT Flow (Extended)
+## EDIT Flow
 
-When `action == "EDIT"`, the controller runs an extended pipeline instead of the standard policy-engine edit:
+**ReAct:** EDIT → `_edit_react` → `_generate_patch_once` → execute_patch → run_tests. [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
 
-```
-plan_diff(instruction, context)
-  → changes: [{ file, symbol, action, patch, reason }]
-  → safety checks: max 5 files, 200 lines per patch
-  → detect_change_impact() — affected callers, risk level (LOW/MEDIUM/HIGH)
-  → resolve_conflicts() — same symbol, same file, semantic overlap → sequential_groups
-  → for each group:
-        to_structured_patches()
-        run_with_repair(patch_plan, project_root, context, max_attempts=3)
-          → execute_patch (ast_patcher → patch_validator → write; rollback on invalid syntax, validation failure, or apply error)
-          → run tests (pytest)
-          → on failure: plan repair, retry (max 3 attempts)
-          → flaky detection: re-run failing test with pytest --count=2
-          → compile step (py_compile) before tests when COMPILE_BEFORE_TEST=1
-  → update_index_for_file() for each modified file
-  → update_repo_map_for_file() for each modified file (incremental repo_map refresh)
-```
+**Legacy:** plan_diff → resolve_conflicts → to_structured_patches → run_with_repair. [EDIT_PIPELINE_DETAILED_ANALYSIS.md](EDIT_PIPELINE_DETAILED_ANALYSIS.md).
 
 ---
 

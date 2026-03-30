@@ -130,6 +130,11 @@ def _heuristic_rewrite_no_llm(text: str) -> str:
     return " ".join(filtered) if filtered else stripped
 
 
+def heuristic_condense_for_retrieval(text: str) -> str:
+    """Public helper: strip filler words for retrieval query. Deterministic, no LLM."""
+    return _heuristic_rewrite_no_llm(text)
+
+
 def _format_attempts_for_prompt(attempts: list[SearchAttempt]) -> str:
     """Format previous attempts as tool(arg) → outcome for compact rewriter context."""
     if not attempts:
@@ -238,6 +243,7 @@ def rewrite_query_with_context(
         if state and tool and tool in ("retrieve_graph", "retrieve_vector", "retrieve_grep", "list_dir"):
             state.context["chosen_tool"] = tool
         # Return query variants when present; policy engine will try each until success
+        # (ExecutionPolicyEngine caps/dedupes the list on attempts 2+ — see Stage 44.)
         if queries:
             return queries
         return query

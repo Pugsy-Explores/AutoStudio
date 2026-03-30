@@ -7,15 +7,15 @@
   },
   "models": {
     "SMALL": {
-      "name": "Qwen 2B",
+      "name": "Qwen2B",
       "endpoint": "http://localhost:8082/v1/chat/completions"
     },
     "REASONING": {
-      "name": "Qwen 9B",
+      "name": "Qwen2.5-Coder-7B",
       "endpoint": "http://localhost:8081/v1/chat/completions"
     },
     "REASONING_V2": {
-      "name": "Qwen 14B",
+      "name": "Qwen14B",
       "endpoint": "http://localhost:8003/v1/chat/completions"
     }
   },
@@ -32,19 +32,29 @@
     "EDIT": "REASONING",
     "routing": "REASONING",
     "planner": "REASONING",
-    "replanner": "REASONING",
+    "PLANNER_DECISION_PLAN": "REASONING",
+    "PLANNER_DECISION_ACT": "REASONING",
+    "PLANNER_REPLAN_PLAN": "REASONING",
+    "PLANNER_REPLAN_ACT": "REASONING",
+    "PLANNER_REPLAN_ORCHESTRATOR": "REASONING",
     "context_ranking": "REASONING",
     "localization": "REASONING",
     "supervisor_routing": "REASONING",
     "issue_parsing": "REASONING",
     "pr_generation": "REASONING",
     "code_review": "REASONING",
-    "code_review_summary": "REASONING"
-  },
-  "reranker": {
-    "gpu_model": "Qwen/Qwen3-Reranker-0.6B",
-    "cpu_model": "models/reranker/model.onnx",
-    "cpu_tokenizer": "models/reranker"
+    "code_review_summary": "REASONING",
+    "PLANNER_TOOL_ARGS_PLAN": "REASONING",
+    "PLANNER_TOOL_ARGS_ACT": "REASONING",
+    "bundle_selector": "REASONING",
+    "EXPLORATION_V2": "REASONING",
+    "EXPLORATION_QUERY_INTENT": "REASONING",
+    "EXPLORATION_SCOPER": "REASONING",
+    "EXPLORATION_SELECTOR": "REASONING",
+    "EXPLORATION_SELECTOR_SINGLE": "REASONING",
+    "EXPLORATION_SELECTOR_BATCH": "REASONING",
+    "EXPLORATION_ANALYZER": "REASONING",
+    "ANSWER_SYNTHESIS": "REASONING"
   },
   "task_params": {
     "query rewriting": {
@@ -79,7 +89,27 @@
       "max_tokens": 32456,
       "request_timeout_seconds": 600
     },
-    "replanner": {
+    "PLANNER_DECISION_PLAN": {
+      "temperature": 0.02,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "PLANNER_DECISION_ACT": {
+      "temperature": 0.03,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "PLANNER_REPLAN_PLAN": {
+      "temperature": 0.02,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "PLANNER_REPLAN_ACT": {
+      "temperature": 0.02,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "PLANNER_REPLAN_ORCHESTRATOR": {
       "temperature": 0.0,
       "max_tokens": 32456,
       "request_timeout_seconds": 600
@@ -143,6 +173,71 @@
       "temperature": 0.0,
       "max_tokens": 32456,
       "request_timeout_seconds": 120
+    },
+    "PLANNER_TOOL_ARGS_PLAN": {
+      "temperature": 0.0,
+      "max_tokens": 8192,
+      "request_timeout_seconds": 120
+    },
+    "PLANNER_TOOL_ARGS_ACT": {
+      "temperature": 0.0,
+      "max_tokens": 8192,
+      "request_timeout_seconds": 120
+    },
+    "bundle_selector": {
+      "temperature": 0.0,
+      "max_tokens": 8192,
+      "request_timeout_seconds": 120
+    },
+    "EXPLORATION_V2": {
+      "temperature": 0.0,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_QUERY_INTENT": {
+      "temperature": 0.02,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_SCOPER": {
+      "temperature": 0.02,
+      "max_tokens": 32456,
+      "top_p": 0.9,
+      "frequency_penalty": 0.6,
+      "presence_penalty": 0.3,
+      "top_k": 50,
+      "repetition_penalty": 1.1,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_SELECTOR": {
+      "temperature": 0.02,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_SELECTOR_SINGLE": {
+      "temperature": 0.02,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_SELECTOR_BATCH": {
+      "temperature": 0.02,
+      "max_tokens": 32456,
+      "request_timeout_seconds": 600
+    },
+    "EXPLORATION_ANALYZER": {
+      "temperature": 0.05,
+      "max_tokens": 16000,
+      "top_p": 0.9,
+      "frequency_penalty": 0.6,
+      "presence_penalty": 0.3,
+      "top_k": 50,
+      "repetition_penalty": 1.1,
+      "request_timeout_seconds": 600
+    },
+    "ANSWER_SYNTHESIS": {
+      "temperature": 0.1,
+      "max_tokens": 8192,
+      "request_timeout_seconds": 600
     }
   }
 }

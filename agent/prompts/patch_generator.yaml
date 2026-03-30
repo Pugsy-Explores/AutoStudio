@@ -1,3 +1,5 @@
+# Deprecated: unified diff format not used by edit_proposal flow.
+# edit_proposal_system / edit_proposal_user are used instead.
 system_prompt: |
   You are a code editing engine.
 

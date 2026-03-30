@@ -1,51 +1,44 @@
 # Agent Loop Workflow Diagram
 
-End-to-end flow of the AutoStudio agent (Mode 1, Phase 5): **run_attempt_loop** wraps each task; per attempt: get_plan(retry_context) → plan → execute steps → validate → optional replan → **GoalEvaluator** → record in **TrajectoryMemory** → if not goal_met: **Critic** + **RetryPlanner** → next attempt; else return state.
+**Primary (Current Code):** run_controller → run_hierarchical → execution_loop (ReAct). Model chooses actions (search, open_file, edit, run_tests, finish). See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md) and [REACT_QUICK_START.md](REACT_QUICK_START.md).
 
-## Retrieval Pipeline (Stabilized)
-
-```
-SEARCH_CANDIDATES
-        ↓
-BUILD_CONTEXT
-        ↓
-EXECUTOR
-```
-
-Preferred flow for locate-then-edit: SEARCH_CANDIDATES (with query) → BUILD_CONTEXT → EDIT. Includes details on model routing, query rewriting, policy-engine retries, fallbacks, and heuristics.
-
-**Architecture (phase.md):** router decides, planner plans, dispatcher executes.
-
-**Instruction router:** Enabled by default (`ENABLE_INSTRUCTION_ROUTER=1`). Classifies before planner; CODE_SEARCH/CODE_EXPLAIN/INFRA skip planner. Set to 0 to disable.
+**Legacy (Design Reference — run_attempt_loop not in code):** The diagrams below document the original Phase 5 design (get_plan, GoalEvaluator, Critic, RetryPlanner). The current controller does not branch; it always uses run_hierarchical. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
 
 ---
 
-## High-level flow
+Retrieval: SEARCH_CANDIDATES → BUILD_CONTEXT → EDIT. Full pipeline: [RETRIEVAL_ARCHITECTURE.md](RETRIEVAL_ARCHITECTURE.md). Instruction routing (legacy): [ROUTING_ARCHITECTURE_REPORT.md](ROUTING_ARCHITECTURE_REPORT.md).
 
-**Phase 5:** Deterministic mode uses **run_controller** → **run_attempt_loop**. Each attempt runs **run_deterministic** (get_plan → step loop); after the attempt, **GoalEvaluator.evaluate**; on failure, **Critic.analyze** and **RetryPlanner.build_retry_context** feed the next attempt's **get_plan(retry_context)**. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+---
+
+## High-level flow (Legacy Design — Not in Current Code)
+
+**Phase 5 design:** run_controller → run_attempt_loop. Each attempt: run_deterministic (get_plan → step loop) → GoalEvaluator → Critic → RetryPlanner → next attempt. **The current code does not use this path**; it always calls run_hierarchical. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
 
 ```mermaid
 flowchart TB
-    subgraph ENTRY[" "]
-        A["User instruction"] --> B["run_controller (deterministic)"]
-        B --> B2["run_attempt_loop"]
+    subgraph ENTRY["Legacy design only"]
+        A["User instruction"] --> B["run_controller"]
+        B --> B2["run_attempt_loop (not in code)"]
         B2 --> C["get_plan with retry_context"]
     end
 
     subgraph PLAN["Plan resolver (router + planner)"]
         C --> D{"ENABLE_INSTRUCTION_ROUTER?"}
-        D -->|yes| E["route_instruction"]
-        E --> F{"category"}
-        F -->|CODE_SEARCH| G1["Single SEARCH step"]
-        F -->|CODE_EXPLAIN| G2["Single EXPLAIN step"]
+        D -->|yes| E["route_production_instruction"]
+        E --> RI["RoutedIntent"]
+        RI --> F{"primary_intent"}
+        F -->|DOC| G0["docs_seed_plan"]
+        F -->|SEARCH| G1["Single SEARCH step"]
+        F -->|EXPLAIN| G2["Single EXPLAIN step"]
         F -->|INFRA| G3["Single INFRA step"]
-        F -->|CODE_EDIT/GENERAL| H["plan instruction"]
+        F -->|EDIT/AMBIGUOUS/COMPOUND-flat| H["plan instruction"]
         D -->|no| H
         H --> I1{"Planner OK?"}
         I1 -->|yes| J["Parse JSON steps"]
         I1 -->|no| K["Fallback: single EXPLAIN"]
         J --> L["Plan: plan_id, steps with id, action, description, reason"]
         K --> L
+        G0 --> L
         G1 --> L
         G2 --> L
         G3 --> L
@@ -55,7 +48,7 @@ flowchart TB
         L --> M["AgentState with instruction, plan (plan_id), completed_steps (plan_id, step_id), results, context"]
     end
 
-    subgraph STEPLOOP["Attempt: step loop (execution_loop — shared by run_deterministic & run_agent)"]
+    subgraph STEPLOOP["Attempt: step loop (legacy design)"]
         M --> N{"Termination?"}
         N -->|max_iter/runtime/replan| O["Attempt done"]
         N -->|no| P["state.next_step"]
@@ -81,17 +74,17 @@ flowchart TB
     end
 ```
 
-**ASCII diagram:**
+**ASCII diagram (legacy design — not in current code):**
 
 ```
-  User instruction ──► run_controller ──► run_attempt_loop
+  User instruction ──► run_controller ──► run_attempt_loop (removed)
                                                     │
          ┌──────────────────────────────────────────┴──────────────────────────────────────────┐
          │ for each attempt: get_plan(retry_context)                                            │
          │   ENABLE_INSTRUCTION_ROUTER? (default: yes)                                          │
-         │   yes: route_instruction ──► category                                                 │
-         │     CODE_SEARCH ──► Single SEARCH  │  CODE_EXPLAIN ──► Single EXPLAIN  │  INFRA ──► Single INFRA │
-         │     CODE_EDIT/GENERAL ──► plan     │  no: plan instruction                           │
+         │   yes: route_production_instruction ──► RoutedIntent                                  │
+         │     DOC ──► docs_seed  │  SEARCH ──► Single SEARCH  │  EXPLAIN ──► Single EXPLAIN  │  INFRA ──► Single INFRA │
+         │     EDIT/AMBIGUOUS/COMPOUND-flat ──► plan     │  no: plan instruction              │
          │   ──► AgentState (instruction, plan with plan_id, completed_steps as (plan_id, step_id), results, context) │
          │   ──► Step loop: next_step ──► execute_step ──► dispatch ──► state.record             │
          │        validate? ──► success: record │ fail: replan, update_plan (no record)             │
@@ -100,7 +93,7 @@ flowchart TB
          └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Context initialization:** When execution goes through `run_controller` (CLI entrypoints `python -m agent`, `python -m agent.cli.run_agent`), `run_deterministic` sets `context.project_root` (from `SERENA_PROJECT_DIR` or cwd) so retrieval expansion can resolve relative paths. **Phase 3:** Both `run_agent` and `run_deterministic` share a single implementation: **execution_loop()** in `agent/orchestrator/execution_loop.py`. Behavior is selected via **ExecutionLoopMode**: `run_agent` uses `mode=AGENT`; `run_deterministic` uses `mode=DETERMINISTIC`. Same config limits and failure semantics (no record of failed steps, no `undo_last_step`). See `Docs/REPOSITORY_SYMBOL_GRAPH.md` for path normalization.
+**Current implementation:** `run_controller` calls `run_hierarchical` → `execution_loop` (ReAct). The execution_loop in `agent/orchestrator/execution_loop.py` is ReAct-only; model selects actions each step. No run_deterministic, run_agent, or ExecutionLoopMode in the current path.
 
 **Termination conditions (Phase 4):** task complete, max replan, max step retries (run_agent only), max steps, max tool calls, max runtime, max iterations. Both `run_agent` and `run_deterministic` use limits from `config/agent_config.py`. **Phase 7:** per-step timeout (`MAX_STEP_TIMEOUT_SECONDS`) via ThreadPoolExecutor around `execute_step`; step timeout returns RETRYABLE_FAILURE and logs `step_timeout`. See [CONFIGURATION.md](CONFIGURATION.md).
 

@@ -13,5 +13,9 @@ class PromptTemplate:
     instructions: str
     constraints: list[str]
     output_schema: dict | None
+    system_prompt: str = ""
+    user_prompt_template: str = ""
     # For multi-part prompts (e.g. query_rewrite_with_context: main, end)
     extra: dict[str, str] | None = None
+    # Resolved YAML path when loaded from disk (absolute); None for synthetic/legacy-only
+    source_path: str | None = None

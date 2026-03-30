@@ -1,0 +1,44 @@
+{
+  "total_searches": 4,
+  "bad_or_weak_rate": 0.5,
+  "effective_search_avg": 5.75,
+  "red_flag_counts": {
+    "generic_template_used": 2,
+    "too_vague": 2,
+    "missing_relationships": 1
+  },
+  "sample_bad_count": 2,
+  "sample_bad": [
+    {
+      "grounding": 2,
+      "specificity": 1,
+      "implementation_bias": 2,
+      "structural_intent": 0,
+      "result_quality": 0,
+      "red_flags": [
+        "generic_template_used",
+        "too_vague"
+      ],
+      "verdict": "weak",
+      "explanation": "The query is partially grounded as it relates to the instruction but lacks specificity. It uses a generic template and could be more precise about what kind of settings or config files are being referred to, which would improve its chances of retrieving relevant implementation code.",
+      "effective_search": 5,
+      "is_weak_or_bad": true,
+      "_line": 2
+    },
+    {
+      "grounding": 1,
+      "specificity": 2,
+      "implementation_bias": 2,
+      "structural_intent": 0,
+      "result_quality": 0,
+      "red_flags": [
+        "too_vague"
+      ],
+      "verdict": "weak",
+      "explanation": "The query is somewhat related to the instruction but lacks specificity. It does not clearly identify a particular engine or context, making it vague and likely to retrieve irrelevant results.",
+      "effective_search": 5,
+      "is_weak_or_bad": true,
+      "_line": 4
+    }
+  ]
+}

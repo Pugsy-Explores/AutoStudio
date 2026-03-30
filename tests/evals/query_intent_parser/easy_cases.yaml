@@ -1,0 +1,36 @@
+# Direct mapping: explicit symbols or paths, low ambiguity.
+- id: easy_explain_scoper
+  instruction: "Explain what ExplorationScoper does in the exploration pipeline."
+  expected:
+    intent_type: explanation
+    scope: component
+    focus: internal_logic
+    symbol_quality: high
+    notes: "Should surface ExplorationScoper as a symbol."
+
+- id: easy_method_enqueue
+  instruction: "What does ExplorationEngineV2._enqueue_ranked do?"
+  expected:
+    intent_type: explanation
+    scope: narrow
+    focus: internal_logic
+    symbol_quality: high
+    notes: "Method name should appear in symbols."
+
+- id: easy_navigate_file
+  instruction: "Show me the QueryIntent model in agent_v2/schemas/exploration.py"
+  expected:
+    intent_type: navigation
+    scope: narrow
+    focus: internal_logic
+    symbol_quality: high
+    notes: "Navigation to a file + type name."
+
+- id: easy_debug_parser
+  instruction: "I'm getting empty symbols from QueryIntentParser — help me debug the JSON output path."
+  expected:
+    intent_type: debugging
+    scope: narrow
+    focus: internal_logic
+    symbol_quality: medium
+    notes: "Debugging task; symbols may include QueryIntentParser."

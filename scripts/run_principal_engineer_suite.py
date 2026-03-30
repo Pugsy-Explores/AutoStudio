@@ -20,6 +20,7 @@ Usage:
   python scripts/run_principal_engineer_suite.py --failure-mining  # Phase 4: run scenarios 10x, aggregate failures
   python scripts/run_principal_engineer_suite.py --stress       # Phase 4: run scenarios with varied models/seeds
   python scripts/run_principal_engineer_suite.py --mock        # router_eval with --mock
+  python scripts/run_principal_engineer_suite.py --live4       # Run live4 agent_eval suite (4 edit tasks, real model)
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
+from agent_v2.runtime.bootstrap import create_runtime
 
 # Ensure AutoStudio root is on path
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,17 +78,21 @@ SMALL_EDIT_TASKS = [
 # ---------------------------------------------------------------------------
 
 
+def _run_state(instruction: str, mode: str = "act"):
+    runtime = create_runtime()
+    return runtime.run(instruction, mode=mode)
+
+
 def run_explain_tasks(count: int = 10) -> dict[str, bool]:
     """Run N explain tasks via run_agent. Returns {instruction: success}."""
-    from agent.orchestrator.agent_loop import run_agent
 
     tasks = EXPLAIN_TASKS[:count]
     results = {}
     for i, instruction in enumerate(tasks, 1):
         print(f"\n--- Explain {i}/{len(tasks)}: {instruction[:60]}... ---")
         try:
-            state = run_agent(instruction)
-            success = all(r.success for r in state.step_results) if state.step_results else False
+            state = _run_state(instruction, mode="act")
+            success = all(r.get("success") for r in state.step_results) if state.step_results else False
             results[instruction] = success
             print(f"  success={success} steps={len(state.step_results)}")
         except Exception as e:
@@ -96,15 +103,14 @@ def run_explain_tasks(count: int = 10) -> dict[str, bool]:
 
 def run_edit_tasks(count: int = 10) -> dict[str, bool]:
     """Run N small edit tasks via run_agent. Returns {instruction: success}."""
-    from agent.orchestrator.agent_loop import run_agent
 
     tasks = SMALL_EDIT_TASKS[:count]
     results = {}
     for i, instruction in enumerate(tasks, 1):
         print(f"\n--- Edit {i}/{len(tasks)}: {instruction[:60]}... ---")
         try:
-            state = run_agent(instruction)
-            success = all(r.success for r in state.step_results) if state.step_results else False
+            state = _run_state(instruction, mode="act")
+            success = all(r.get("success") for r in state.step_results) if state.step_results else False
             results[instruction] = success
             print(f"  success={success} steps={len(state.step_results)}")
         except Exception as e:
@@ -153,10 +159,20 @@ def _classify_failure_reason(reason: str | None) -> tuple[str, str]:
     if not reason:
         return ("unknown", "no reason captured")
     r = reason.lower()
+    # LOOP_PROTECTION / PLANNING_LOOP (from failure attribution layer)
+    if "loop_protection" in r or r == "planning_loop":
+        return ("planning_loop", "LOOP_PROTECTION / repeated planning failures")
+    # NO_SIGNAL_FAILURE
+    if r == "no_signal_failure":
+        return ("no_signal", "retrieval worked but pool has no useful signal")
     if "empty" in r or "retrieval" in r or "0 results" in r:
         return ("retrieval_empty", "query rewrite / repo_map / symbol expansion")
-    if "context" in r or "explain" in r:
+    if "selection" in r or "context" in r or "explain" in r:
         return ("context_explosion", "context pruning / ranking weights")
+    if "exploration" in r:
+        return ("exploration_failure", "graph expansion / exploration")
+    if "grounding" in r:
+        return ("grounding_failure", "edit grounding / anchor")
     if "invalid" in r or "step" in r or "planner" in r:
         return ("planner_hallucination", "prompt constraints / few-shot / step validation")
     if "patch" in r or "validation" in r or "reject" in r:
@@ -275,7 +291,7 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
     Returns report dict for eval_report.json.
     """
     from agent.memory.task_memory import load_task
-    from agent.orchestrator.agent_controller import run_controller
+    from agent.meta.failure_attribution import ensure_failure_reason
 
     with open(scenarios_path, encoding="utf-8") as f:
         scenarios = json.load(f)
@@ -299,31 +315,29 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
         failure_reason = None
         replan_count = None
         tool_calls = None
+        termination_reason = None
+        edit_failure_reason = None
+        errors = []
+        result = {}
 
         try:
             start = time.perf_counter()
-            if use_agent_loop:
-                from agent.orchestrator.agent_loop import run_agent
-
-                os.environ["SERENA_PROJECT_DIR"] = project_root_str
-                state = run_agent(instruction)
-                latency_sec = time.perf_counter() - start
-                counts = state.context.get("execution_counts", {})
-                replan_count = counts.get("replan_count")
-                tool_calls = counts.get("tool_calls")
-                completed_steps = len(state.completed_steps)
-                errors = [] if all(r.success for r in state.step_results) else [r.error or "step failed" for r in state.step_results if not r.success]
-                # For expect_edit: check EDIT step outputs for files_modified
-                files_modified = []
-                for step, res in zip(state.completed_steps, state.step_results):
-                    if (step.get("action") or "").upper() == "EDIT" and res.success and isinstance(res.output, dict):
-                        files_modified.extend(res.output.get("files_modified", []))
-                result = {"task_id": None, "errors": errors, "_files_modified": files_modified}
-            else:
-                result = run_controller(instruction, project_root=project_root_str)
-                latency_sec = time.perf_counter() - start
-                completed_steps = result.get("completed_steps", 0)
-                errors = result.get("errors", [])
+            os.environ["SERENA_PROJECT_DIR"] = project_root_str
+            state = _run_state(instruction, mode="act")
+            latency_sec = time.perf_counter() - start
+            completed_steps = len(state.step_results)
+            errors = [r.get("error") or "step failed" for r in state.step_results if not r.get("success")]
+            termination_reason = state.context.get("termination_reason")
+            tool_calls = len(state.step_results)
+            files_modified = []
+            result = {
+                "task_id": f"runtime-{uuid4()}",
+                "errors": errors,
+                "files_modified": files_modified,
+                "_files_modified": files_modified,
+                "termination_reason": termination_reason,
+                "loop_output": {},
+            }
 
             task_success = len(errors) == 0 and completed_steps >= expected_min_steps
 
@@ -346,20 +360,27 @@ def run_scenarios(scenarios_path: Path, project_root: Path, use_agent_loop: bool
             print(f"  task_success={task_success} retrieval={retrieval_success} edit={edit_success} latency={latency_sec:.2f}s")
         except Exception as e:
             failure_reason = str(e)
+            errors = [str(e)]
             print(f"  ERROR: {e}")
 
-        results.append({
+        record = {
             "id": sid,
+            "task_id": result.get("task_id"),
             "instruction": instruction,
             "task_success": task_success,
             "retrieval_success": retrieval_success,
             "edit_success": edit_success,
             "latency_sec": round(latency_sec, 2),
             "failure_reason": failure_reason,
+            "errors": errors,
+            "termination_reason": termination_reason,
+            "edit_failure_reason": edit_failure_reason,
             "expect_edit": expect_edit,
             "replan_count": replan_count,
             "tool_calls": tool_calls,
-        })
+        }
+        ensure_failure_reason(record, task_id=record.get("task_id") or sid)
+        results.append(record)
 
     task_ok = sum(1 for r in results if r["task_success"])
     retrieval_ok = sum(1 for r in results if r["retrieval_success"] is True)
@@ -415,11 +436,13 @@ def main() -> int:
     parser.add_argument("--use-agent-loop", action="store_true", help="Use run_agent (agent_loop) for scenarios to get Phase 4 metrics")
     parser.add_argument("--mock", action="store_true", help="Use --mock for router_eval (no LLM)")
     parser.add_argument("-n", "--count", type=int, default=10, help="Number of explain/edit tasks (default 10)")
+    parser.add_argument("--live4", action="store_true", help="Run live4 agent_eval suite (4 edit tasks, real model)")
+    parser.add_argument("--task-timeout", type=int, default=None, help="Per-task timeout in seconds for live4 (default: no limit)")
     args = parser.parse_args()
 
     run_all = not any([
         args.explain, args.edit, args.router_eval, args.failure_tests, args.swe_bench,
-        args.scenarios, args.failure_mining, args.stress,
+        args.scenarios, args.failure_mining, args.stress, args.live4,
     ])
 
     summary = []
@@ -498,6 +521,53 @@ def main() -> int:
     if run_all or args.swe_bench:
         run_swe_bench_placeholder()
         summary.append("SWE-bench: (placeholder)")
+
+    if run_all or args.live4:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        output_dir = ROOT / "artifacts" / "agent_eval_runs" / f"live4_{ts}"
+        log_path = ROOT / "docs" / f"live4_run_log_{ts}.txt"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"\n--- Live4 Suite ---")
+        print(f"Output: {output_dir}")
+        print(f"Logs: {log_path}")
+        print(f"Task timeout: {args.task_timeout or 'none'}s")
+        cmd = [
+            sys.executable, "-m", "tests.agent_eval.runner",
+            "--suite", "live4",
+            "--execution-mode", "live_model",
+            "--output", str(ROOT / "artifacts" / "agent_eval_runs" / "latest"),
+        ]
+        if args.task_timeout is not None:
+            cmd.extend(["--task-timeout", str(args.task_timeout)])
+        with open(log_path, "w", encoding="utf-8") as logf:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                logf.write(line)
+                logf.flush()
+            proc.wait()
+        latest_link = ROOT / "artifacts" / "agent_eval_runs" / "latest"
+        run_dir = latest_link.resolve() if latest_link.exists() else output_dir
+        summary_path = run_dir / "summary.json"
+        if summary_path.exists():
+            live4_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary.append(
+                f"Live4: {live4_summary.get('success_count', 0)}/{live4_summary.get('total_tasks', 0)} success "
+                f"(run_dir={run_dir.name})"
+            )
+            if live4_summary.get("success_count", 0) < live4_summary.get("total_tasks", 1):
+                ok = False
+        else:
+            summary.append(f"Live4: run completed (see {log_path})")
+        print(f"Logs saved to {log_path}")
 
     print("\n" + "=" * 60)
     print("PRINCIPAL ENGINEER SUITE SUMMARY")

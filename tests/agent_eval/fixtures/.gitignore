@@ -1,0 +1,5 @@
+.pytest_cache/
+__pycache__/
+*.pyc
+# Local symbol index (regenerate with scripts/index_agent_eval_fixtures.py or harness)
+.symbol_graph/

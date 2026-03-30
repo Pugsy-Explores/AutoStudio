@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -71,8 +72,16 @@ def _ensure_retrieval_daemon_running() -> None:
     # Run in foreground (no --daemon): avoids macOS fork+PyTorch MPS crash (SIGSEGV).
     # Daemon runs as subprocess; stays up for subsequent agent runs.
     try:
+        proj = os.environ.get("SERENA_PROJECT_DIR") or str(root)
         proc = subprocess.Popen(
-            [sys.executable, str(script), "--port", str(RETRIEVAL_DAEMON_PORT)],
+            [
+                sys.executable,
+                str(script),
+                "--port",
+                str(RETRIEVAL_DAEMON_PORT),
+                "--project-root",
+                proj,
+            ],
             cwd=str(root),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -106,19 +115,56 @@ def _ensure_retrieval_daemon_running() -> None:
 
 def _check_endpoint_reachable(url: str) -> tuple[bool, str]:
     """Probe endpoint; return (reachable, error_message)."""
+    parsed = urlparse(url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+    def _tcp_open() -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                return True
+        except Exception:
+            return False
+
     try:
-        parsed = urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}"
-        req = urllib.request.Request(base, method="GET")
-        with urllib.request.urlopen(req, timeout=_STARTUP_TIMEOUT_SEC) as resp:
-            _ = resp.read()
-        return True, ""
+        # llama-server and similar OpenAI-compatible servers may not answer GET "/"
+        # quickly while still being healthy. Probe canonical health/metadata paths first.
+        probe_paths = ("/health", "/v1/models", "/")
+        for p in probe_paths:
+            probe_url = f"{base}{p}"
+            try:
+                req = urllib.request.Request(probe_url, method="GET")
+                with urllib.request.urlopen(req, timeout=min(_STARTUP_TIMEOUT_SEC, 4)) as resp:
+                    _ = resp.read(256)
+                return True, ""
+            except Exception:
+                continue
+        # If all HTTP probes fail but socket is open, surface a precise error.
+        if _tcp_open():
+            return False, (
+                f"HTTP probes failed on {base} (/health, /v1/models, /). "
+                "A process is listening but not responding to compatible HTTP probes."
+            )
+        return False, f"Connection failed: {url}"
     except urllib.error.URLError as e:
         if e.reason and "Connection refused" in str(e.reason):
             return False, f"Connection refused: {url}"
         if e.reason and "timed out" in str(e.reason).lower():
+            if _tcp_open():
+                return False, (
+                    f"HTTP probe timed out (TCP port open): {url}. "
+                    "A process is listening but not responding to OpenAI-compatible HTTP requests."
+                )
             return False, f"Timeout: {url}"
         return False, str(e.reason) if e.reason else str(e)
+    except TimeoutError:
+        if _tcp_open():
+            return False, (
+                f"HTTP probe timed out (TCP port open): {url}. "
+                "A process is listening but not responding to OpenAI-compatible HTTP requests."
+            )
+        return False, f"Timeout: {url}"
     except Exception as e:
         return False, str(e)
 
@@ -147,8 +193,8 @@ def _ensure_reranker_ready() -> None:
     r = create_reranker()
     if r is None:
         logger.warning(
-            "Reranker init failed (model missing or disabled). Pipeline will use LLM ranker fallback (~100× slower). "
-            "Fix: pip install onnxruntime, python scripts/download_reranker.py --device cpu"
+            "Reranker init failed (model missing or disabled). "
+            "Fix: pip install onnxruntime transformers torch, then python scripts/prepare_reranker_models.py"
         )
     else:
         logger.info("Reranker initialized and ready.")
@@ -173,6 +219,18 @@ def _verify_llm_endpoints() -> None:
             unreachable.append((key, endpoint, err))
 
     if unreachable:
+        ollama_hint = ""
+        try:
+            ok_ollama, _ = _check_endpoint_reachable("http://localhost:11434/v1/models")
+            if ok_ollama:
+                ollama_hint = (
+                    "\nDetected a responsive Ollama-compatible endpoint at "
+                    "http://localhost:11434. If this is your intended server, set:\n"
+                    "  export REASONING_MODEL_ENDPOINT=http://localhost:11434/v1/chat/completions\n"
+                    "  export SMALL_MODEL_ENDPOINT=http://localhost:11434/v1/chat/completions"
+                )
+        except Exception:
+            pass
         lines = [
             "LLM model endpoints are not reachable. Start the model services first.",
             "",
@@ -182,6 +240,8 @@ def _verify_llm_endpoints() -> None:
             lines.append(f"    Error: {err}")
         lines.append("")
         lines.append("Example: run llama.cpp servers on the configured ports.")
+        if ollama_hint:
+            lines.append(ollama_hint)
         msg = "\n".join(lines)
         logger.error(msg)
         print(msg, file=sys.stderr)

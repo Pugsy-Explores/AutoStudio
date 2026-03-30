@@ -1,0 +1,20 @@
+prompt: |
+  Instruction:
+  {instruction}
+
+  You are editing file: {target_file}
+  You MUST ONLY modify this file. Do not propose changes for other files.
+
+  Target file: {target_file}
+  Symbol: {symbol}
+
+  Relevant context (when replacing, copy exact text from Full file content below):
+  {evidence}
+
+  Full file content:
+  ```
+  {full_content}
+  ```
+
+  Produce a minimal valid patch (JSON only). For text_sub: "old" must be an exact copy from the file above.
+  If the instruction does not specify what to change (e.g. "fix bug"), do not guess. Return already_correct or a minimal safe change.

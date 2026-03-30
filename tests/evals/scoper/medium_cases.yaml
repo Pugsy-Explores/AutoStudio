@@ -1,0 +1,67 @@
+# Conceptual queries — expect relevant modules, not only exact symbols.
+- id: medium_scope_layer
+  instruction: "How does the exploration scope layer reduce breadth before batch selection?"
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "Phase 12.6.F — LLM breadth reduction before CandidateSelector.select_batch"
+      symbol: ExplorationScoper
+      source: graph
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "CandidateSelector select_batch ranked candidates"
+      symbol: CandidateSelector
+      source: grep
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      snippet: "ExplorationEngineV2 enqueue discovery"
+      symbol: null
+      source: grep
+    - file_path: repo_index/index_repo.py
+      snippet: "def main(): CLI entry for repo indexing"
+      symbol: null
+      source: vector
+  expected:
+    must_include:
+      - exploration_scoper.py
+    should_include:
+      - candidate_selector.py
+
+- id: medium_discovery_pipeline
+  instruction: "Where are discovery candidates deduplicated by file path before the scoper prompt?"
+  candidates:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "deduplicated by file_path first-seen order aggregate_payload_by_file_path"
+      symbol: ExplorationScoper
+      source: graph
+    - file_path: agent_v2/exploration/llm_input_normalize.py
+      snippet: "normalize_scoper instruction rows"
+      symbol: normalize_scoper
+      source: grep
+    - file_path: agent/prompt_system/registry.py
+      snippet: "get_registry get_instructions"
+      symbol: null
+      source: vector
+  expected:
+    must_include:
+      - exploration_scoper.py
+    should_include:
+      - llm_input_normalize.py
+
+- id: medium_retrieval_context
+  instruction: "Which files tie query intent parsing to exploration candidate narrowing?"
+  candidates:
+    - file_path: agent_v2/exploration/query_intent_parser.py
+      snippet: "QueryIntentParser parse instruction"
+      symbol: QueryIntentParser
+      source: graph
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "ExplorationScoper scope candidates"
+      symbol: ExplorationScoper
+      source: grep
+    - file_path: editing/patch_executor.py
+      snippet: "apply_patch"
+      symbol: null
+      source: vector
+  expected:
+    must_include:
+      - query_intent_parser.py
+    should_include:
+      - exploration_scoper.py

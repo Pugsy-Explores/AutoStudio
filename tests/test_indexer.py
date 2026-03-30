@@ -54,8 +54,7 @@ def test_extract_symbols_functions_and_classes():
 def test_extract_symbols_class_methods():
     """extract_symbols extracts class methods."""
     mod = FIXTURES_DIR / "sub" / "mod.py"
-    if not mod.exists():
-        pytest.skip("fixture not found")
+    assert mod.is_file(), f"fixture missing: {mod}"
     tree = parse_file(str(mod))
     assert tree is not None
     source = mod.read_bytes()
@@ -105,8 +104,7 @@ def test_scan_repo_finds_all_python_files():
 def test_extract_symbols_type_info_and_signature():
     """extract_symbols extracts type_info and signature for typed functions."""
     typed = FIXTURES_DIR / "typed_foo.py"
-    if not typed.exists():
-        pytest.skip("typed_foo fixture not found")
+    assert typed.is_file(), f"fixture missing: {typed}"
     tree = parse_file(str(typed))
     assert tree is not None
     source = typed.read_bytes()
@@ -124,8 +122,7 @@ def test_extract_symbols_type_info_and_signature():
 def test_extract_symbols_docstring_triple_quoted():
     """extract_symbols extracts multi-line docstrings."""
     typed = FIXTURES_DIR / "typed_foo.py"
-    if not typed.exists():
-        pytest.skip("typed_foo fixture not found")
+    assert typed.is_file(), f"fixture missing: {typed}"
     tree = parse_file(str(typed))
     assert tree is not None
     source = typed.read_bytes()

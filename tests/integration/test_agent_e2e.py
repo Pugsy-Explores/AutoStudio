@@ -21,16 +21,12 @@ import pytest
 from agent.memory.state import AgentState
 from agent.memory.task_memory import load_task, save_task
 from agent.observability.trace_logger import finish_trace, log_event, start_trace
-from agent.orchestrator.deterministic_runner import run_deterministic
 from repo_index.indexer import index_repo
+from tests.utils.runtime_adapter import run_deterministic
 
 logger = logging.getLogger(__name__)
 
 pytestmark = pytest.mark.integration
-
-
-def _requires_tree_sitter():
-    pytest.importorskip("tree_sitter_python")
 
 
 _EXECUTORS_MULTI_FILE = [
@@ -42,7 +38,6 @@ _EXECUTORS_MULTI_FILE = [
 
 def _setup_indexed_executor_repo(tmp_path: Path) -> str:
     """Create repo with executor classes, indexed for graph retrieval."""
-    _requires_tree_sitter()
     exec_dir = tmp_path / "executors"
     exec_dir.mkdir(parents=True, exist_ok=True)
     (exec_dir / "__init__.py").write_text("")

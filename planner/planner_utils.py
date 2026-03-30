@@ -1,15 +1,21 @@
 """
 Planner utilities: validation, action normalization, step sequence extraction.
-Actions match router v2: EDIT, SEARCH, EXPLAIN, INFRA.
+Actions match canonical Action enum.
 """
 
-ALLOWED_ACTIONS = ("EDIT", "SEARCH", "SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN", "INFRA")
-_ALLOWED_SET = set(ALLOWED_ACTIONS)
+from agent.core.actions import Action, valid_action_values
+
+ALLOWED_ACTIONS = tuple(a.value for a in Action)
+_ALLOWED_SET = valid_action_values()
 _ALLOWED_ARTIFACT_MODES = ("code", "docs")
 _ALLOWED_ARTIFACT_MODE_SET = set(_ALLOWED_ARTIFACT_MODES)
 
 # Phase 6A: docs-compatible actions for single-lane contract.
-DOCS_COMPATIBLE_ACTIONS = ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN")
+DOCS_COMPATIBLE_ACTIONS = (
+    Action.SEARCH_CANDIDATES.value,
+    Action.BUILD_CONTEXT.value,
+    Action.EXPLAIN.value,
+)
 _DOCS_COMPATIBLE_SET = set(DOCS_COMPATIBLE_ACTIONS)
 
 
@@ -74,7 +80,7 @@ def validate_plan(plan_dict: dict) -> bool:
             if not isinstance(s, dict):
                 return False
             a = (s.get("action") or "").upper()
-            if a in ("SEARCH", "EDIT"):
+            if a in (Action.SEARCH.value, Action.EDIT.value):
                 return False
             if a in _DOCS_COMPATIBLE_SET:
                 # Must be explicitly present and set to "docs". No silent defaulting.
@@ -104,10 +110,10 @@ def normalize_actions(plan_dict: dict) -> dict:
             continue
         raw = step.get("action")
         if raw is None:
-            step["action"] = "EXPLAIN"
+            step["action"] = Action.EXPLAIN.value
             continue
         normalized = str(raw).strip().upper()
-        step["action"] = normalized if normalized in _ALLOWED_SET else "EXPLAIN"
+        step["action"] = normalized if normalized in _ALLOWED_SET else Action.EXPLAIN.value
     return plan_dict
 
 

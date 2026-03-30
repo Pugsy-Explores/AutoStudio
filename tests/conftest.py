@@ -1,10 +1,43 @@
 """Pytest configuration."""
 
+# Pre-import numpy before mocks/threads to avoid RecursionError in Python 3.12
+# (numpy + nested import loader; see Docs/RCA_AUDIT12_RECURSION_AND_STUBS.md)
+import numpy  # noqa: F401
+
+import importlib
 import logging
+import os
 
 import pytest
 
 logger = logging.getLogger(__name__)
+
+# Modules required for the default test suite. Install: pip install -e ".[test]" or bash scripts/install_test_deps.sh
+_REQUIRED_IMPORTS = ("tree_sitter_python", "rank_bm25")
+
+
+def pytest_sessionstart(session):
+    if os.environ.get("AUTOSTUDIO_SKIP_IMPORT_CHECK") == "1":
+        return
+    failed: list[str] = []
+    for name in _REQUIRED_IMPORTS:
+        try:
+            importlib.import_module(name)
+        except ImportError as e:
+            failed.append(f"{name} (ImportError: {e})")
+        except RecursionError as e:
+            failed.append(
+                f"{name} (RecursionError: installed but unusable). "
+                "Try: pip install numpy --upgrade && pip install rank-bm25 --force-reinstall"
+            )
+    if failed:
+        pytest.exit(
+            "Required packages for tests failed to import:\n  - "
+            + "\n  - ".join(failed)
+            + "\n\nInstall with: pip install -e \".[test]\" or bash scripts/install_test_deps.sh\n"
+            "(Set AUTOSTUDIO_SKIP_IMPORT_CHECK=1 only to bypass in emergencies.)",
+            returncode=2,
+        )
 
 
 def pytest_addoption(parser):
@@ -22,6 +55,38 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')")
+    config.addinivalue_line(
+        "markers",
+        "retrieval: mid-pipeline retrieval quality tests (require real repo tools; "
+        "deselect with '-m \"not retrieval\"')",
+    )
+    config.addinivalue_line(
+        "markers",
+        "external_repo: optional multi-clone retrieval tests (set AGENT_V2_RUN_EXTERNAL_REPO_RETRIEVAL_TESTS=1)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "agent_v2_integration_live: full-stack agent_v2 live validation (set AGENT_V2_LIVE=1; real LLM + tools)",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _pytest_langfuse_root_name(request, monkeypatch):
+    """
+    Unified Langfuse root span naming for any test that calls ``create_agent_trace``.
+
+    Consumed via ``AGENT_V2_LANGFUSE_ROOT_NAME`` (see ``agent_v2.observability.langfuse_client``).
+
+    - ``@pytest.mark.agent_v2_live``: ``live::<pytest node id>``
+    - all other tests: ``<pytest node id> - offline``
+    """
+    nodeid = request.node.nodeid
+    monkeypatch.setenv("AGENT_V2_PYTEST_NODEID", nodeid)
+    if request.node.get_closest_marker("agent_v2_live") is not None:
+        label = f"live::{nodeid}"
+    else:
+        label = f"{nodeid} - offline"
+    monkeypatch.setenv("AGENT_V2_LANGFUSE_ROOT_NAME", label)
 
 
 @pytest.fixture(scope="session")

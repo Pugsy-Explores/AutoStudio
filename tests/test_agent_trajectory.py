@@ -22,7 +22,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.memory.task_memory import load_task
-from agent.orchestrator.agent_controller import run_controller
+from tests.utils.runtime_adapter import run_controller
 from editing.conflict_resolver import resolve_conflicts
 from editing.test_repair_loop import run_with_repair
 from repo_index.indexer import index_repo
@@ -30,10 +30,6 @@ from repo_index.indexer import index_repo
 logger = logging.getLogger(__name__)
 
 MAX_TASK_RUNTIME_SECONDS = 15 * 60  # 15 minutes
-
-
-def _requires_tree_sitter():
-    pytest.importorskip("tree_sitter_python")
 
 
 # Three executor classes in ONE file to trigger conflict resolver (same_file)
@@ -55,7 +51,6 @@ class ExecutorC:
 
 def _setup_indexed_multi_executor_repo(tmp_path: Path, single_file: bool = False) -> str:
     """Create repo with 3 executor classes, indexed."""
-    _requires_tree_sitter()
     exec_dir = tmp_path / "executors"
     exec_dir.mkdir(parents=True, exist_ok=True)
     (exec_dir / "__init__.py").write_text("")

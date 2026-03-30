@@ -24,6 +24,33 @@ MAX_PATCH_FILES = int(os.getenv("MAX_PATCH_FILES", "5"))
 # Execution loop guard (Improvement 5)
 MAX_SAME_ERROR_RETRIES = int(os.getenv("MAX_SAME_ERROR_RETRIES", "2"))
 
+# Semantic retries: max per EDIT step before giving up
+MAX_SEMANTIC_RETRIES = int(os.getenv("MAX_SEMANTIC_RETRIES", "2"))
+
+# Stagnation: max repeated/no-progress attempts before terminating
+MAX_STAGNATION = int(os.getenv("MAX_STAGNATION", "2"))
+
+# Reason/feedback truncation for failure reporting and trajectory
+REASON_TRUNCATE_LEN = int(os.getenv("REASON_TRUNCATE_LEN", "500"))
+TRAJECTORY_REASON_MAX = int(os.getenv("TRAJECTORY_REASON_MAX", "300"))
+
+# Retry planner truncation limits
+RETRY_QUERY_MAX_LEN = int(os.getenv("RETRY_QUERY_MAX_LEN", "500"))
+RETRY_SUGGESTION_MAX_LEN = int(os.getenv("RETRY_SUGGESTION_MAX_LEN", "200"))
+
+# Project root fallback (env only; context/project_root takes precedence at runtime)
+SERENA_PROJECT_DIR = os.getenv("SERENA_PROJECT_DIR", "")
+
 # Sandbox: run patch + tests in a copy of project (no host filesystem modification)
 ENABLE_SANDBOX = _bool_env("ENABLE_SANDBOX", "0")
+
+# Deprecated: simplified edit pipeline is now default. Kept for policy_engine import compat.
+ENABLE_MINIMAL_EDIT_PIPELINE = False
+
+# Deprecated: simplified edit pipeline is now default. Kept for policy_engine import compat.
+ENABLE_ULTRA_MINIMAL_EDIT_PIPELINE = False
+
+# ReAct mode: default on. Model selects actions; policy-engine uses minimal mutations.
+# Env: REACT_MODE=0 to disable (legacy).
+REACT_MODE = _bool_env("REACT_MODE", "1")
 

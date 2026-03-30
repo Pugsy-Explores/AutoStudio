@@ -1,18 +1,22 @@
 {
-  "trace_id": "test-task_1234567890",
-  "query": "Explain StepExecutor",
-  "task_id": "test-task",
-  "started_at": 1234567890.0,
-  "finished_at": 1234567891.5,
-  "events": [
-    {"type": "planner_decision", "payload": {"plan": {"steps": [{"id": 1, "action": "SEARCH"}, {"id": 2, "action": "EXPLAIN"}]}}, "timestamp": 1234567890.1},
-    {"type": "step_executed", "payload": {"step_id": 1, "action": "SEARCH", "tool": "retrieve_graph", "success": true}, "timestamp": 1234567890.5},
-    {"type": "step_executed", "payload": {"step_id": 2, "action": "EXPLAIN", "tool": "call_reasoning", "success": true}, "timestamp": 1234567891.2}
-  ],
+  "trace_id": "fixture_trace_sample",
+  "task_id": "fixture_task",
+  "query": "sample query for replay test",
+  "started_at": 0.0,
+  "finished_at": 1.0,
   "stages": [
-    {"step_id": null, "stage": "planner", "latency_ms": 120.5, "summary": {"instruction": "Explain StepExecutor", "number_of_steps": 2, "actions": ["SEARCH", "EXPLAIN"]}},
-    {"step_id": 1, "stage": "retrieval", "latency_ms": 85.2, "summary": {"query": "StepExecutor", "results": 8, "top_files": ["agent/execution/executor.py"]}},
-    {"step_id": 1, "stage": "context_ranker", "latency_ms": 45.0, "summary": {"candidates": 12, "ranked": 6}},
-    {"step_id": 2, "stage": "reasoning", "latency_ms": 320.0, "summary": {"first_200_chars": "StepExecutor is the main execution engine..."}}
-  ]
+    {
+      "stage": "planner",
+      "step_id": 1,
+      "latency_ms": 10,
+      "summary": {"actions": ["SEARCH"]}
+    },
+    {
+      "stage": "retrieval",
+      "step_id": 2,
+      "latency_ms": 5,
+      "summary": {"results": 3}
+    }
+  ],
+  "events": []
 }

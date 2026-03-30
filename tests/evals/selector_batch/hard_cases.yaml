@@ -1,0 +1,73 @@
+# Mixed tests, implementation, callers — impl prioritized or complementary (impl + usage).
+- id: hard_impl_tests_callers
+  instruction: "Trace select_batch from unit tests through implementation to the engine that invokes batch selection; prefer implementation plus one usage or test witness."
+  intent: explanation
+  limit: 4
+  candidates:
+    - file_path: tests/test_candidate_selector.py
+      snippet: "test_select_batch_returns_ranked_matches_from_llm CandidateSelector"
+      symbol: null
+      source: grep
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "def select_batch SelectorBatchResult"
+      symbol: CandidateSelector
+      source: graph
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      snippet: "select_batch(instruction exploration"
+      symbol: null
+      source: grep
+    - file_path: agent_v2/utils/json_extractor.py
+      snippet: "JSON parsing utilities"
+      symbol: JSONExtractor
+      source: vector
+    - file_path: agent_v2/config.py
+      snippet: "EXPLORATION_SELECTOR_TOP_K"
+      symbol: null
+      source: vector
+  expected:
+    must_select:
+      - 1
+    should_select:
+      - test_candidate_selector.py
+      - exploration_engine_v2.py
+    soft_max_selections: 4
+    complementarity:
+      required: true
+      implementation_signals:
+        - candidate_selector.py
+      usage_signals:
+        - test_candidate_selector
+        - test_
+
+- id: hard_ambiguous_stack
+  instruction: "Pick candidates that together cover definition, call site, and test coverage for batch selection — avoid redundant config-only rows."
+  intent: explanation
+  limit: 3
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "select_batch implementation"
+      symbol: select_batch
+      source: graph
+    - file_path: tests/test_candidate_selector.py
+      snippet: "pytest select_batch stub"
+      symbol: null
+      source: grep
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      snippet: "CandidateSelector select_batch limit"
+      symbol: null
+      source: grep
+    - file_path: agent_v2/config.py
+      snippet: "EXPLORATION_SELECTOR_TOP_K limit"
+      symbol: null
+      source: vector
+  expected:
+    must_select:
+      - 0
+    should_select:
+      - exploration_engine_v2.py
+    complementarity:
+      required: false
+      implementation_signals:
+        - candidate_selector.py
+      usage_signals:
+        - test_candidate_selector

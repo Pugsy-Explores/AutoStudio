@@ -1,10 +1,11 @@
-"""Entry point for python -m agent. Delegates to run_controller and prints results."""
+"""Entry point for python -m agent routed through agent_v2 runtime."""
 
 import sys
 
 from config.config_validator import validate_config
 from config.logging_config import configure_logging
-from agent.orchestrator.agent_controller import run_controller
+from agent_v2.cli_adapter import print_formatted_output
+from agent_v2.runtime.bootstrap import create_runtime
 
 validate_config()
 # Errors highlighted in red when stderr is a TTY
@@ -18,17 +19,6 @@ if __name__ == "__main__":
     if not instruction:
         print("No instruction provided.", file=sys.stderr)
         sys.exit(1)
-    result = run_controller(instruction)
-    state = result["state"]
-    print("\n--- Results ---")
-    for r in state.step_results:
-        print(f"Step {r.step_id} [{r.action}] success={r.success} latency={r.latency_seconds:.3f}s")
-        if r.error:
-            print(f"  error: {r.error}")
-        else:
-            out = r.output
-            if isinstance(out, dict):
-                print(f"  output: {out}")
-            else:
-                s = str(out)
-                print(f"  output: {s[:200]}{'...' if len(s) > 200 else ''}")
+    runtime = create_runtime()
+    state = runtime.run(instruction, mode="act")
+    print_formatted_output(state)

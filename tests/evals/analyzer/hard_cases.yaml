@@ -1,0 +1,46 @@
+# Noisy / incomplete context — expect insufficiency or partial with precise gaps; penalize overconfidence.
+- id: hard_missing_callee
+  instruction: "Explain the exact call chain from Meta webhook signature verification through to inbox persistence, including function names."
+  intent: explanation
+  context:
+    - file_path: agent/models/model_client.py
+      start: 1
+      end: 50
+      content: |
+        def call_reasoning_model(prompt: str, task_name: str | None = None) -> str:
+            """HTTP client for local llama.cpp server."""
+            return _call_chat(prompt, task_name=task_name)
+  expected:
+    understanding: insufficient
+    gap_quality: high
+    terms_absent_from_context:
+      - webhook
+      - inbox
+      - Meta
+
+- id: hard_contradictory_noise
+  instruction: "Summarize how ExplorationScoper and CandidateSelector interact; list duplicate responsibilities if any."
+  intent: explanation
+  context:
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      start: 1
+      end: 40
+      content: |
+        class ExplorationScoper:
+            """LLM breadth reduction before CandidateSelector.select_batch."""
+    - file_path: agent_v2/config.py
+      start: 130
+      end: 145
+      content: |
+        EXPLORATION_SELECTOR_TOP_K: int = 10
+        EXPLORATION_SCOPER_K: int = 20
+    - file_path: repo_index/parser.py
+      start: 1
+      end: 30
+      content: |
+        # unrelated indexing utilities
+        def parse_file(path: str) -> None:
+            pass
+  expected:
+    understanding: partial
+    gap_quality: high

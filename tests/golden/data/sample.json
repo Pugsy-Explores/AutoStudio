@@ -1,0 +1,13 @@
+[
+  {
+    "id": "simple_case",
+    "input": {
+      "instruction": "Where is load_config defined?"
+    },
+    "expected": {
+      "metrics": {
+        "answer_supported": true
+      }
+    }
+  }
+]

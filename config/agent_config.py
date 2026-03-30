@@ -8,6 +8,10 @@ MAX_REPLAN_ATTEMPTS = int(os.getenv("MAX_REPLAN_ATTEMPTS", "5"))
 MAX_STEP_TIMEOUT_SECONDS = int(os.getenv("MAX_STEP_TIMEOUT_SECONDS", "90"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "32000"))  # Hard cap before LLM reasoning call
 
+# Hierarchical: parent-level retries per phase for two_phase_docs_code plans (plan_resolver._build_two_phase_parent_plan)
+TWO_PHASE_DOCS_CODE_MAX_PARENT_RETRIES_PHASE_0 = 1
+TWO_PHASE_DOCS_CODE_MAX_PARENT_RETRIES_PHASE_1 = 1
+
 # Phase 3: execution safety budgets (enforced in deterministic runner)
 MAX_STEPS = int(os.getenv("MAX_STEPS", "50"))
 MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "100"))
@@ -24,7 +28,7 @@ OUTPUT_TOKEN_RESERVE = int(os.getenv("OUTPUT_TOKEN_RESERVE", "2000"))
 MAX_REPO_SNIPPETS = int(os.getenv("MAX_REPO_SNIPPETS", "10"))
 MAX_HISTORY_TOKENS = int(os.getenv("MAX_HISTORY_TOKENS", "2000"))
 MAX_REPO_CONTEXT_TOKENS = int(os.getenv("MAX_REPO_CONTEXT_TOKENS", "7200"))  # 60% of 12000
-MAX_RETRIEVAL_RESULTS = int(os.getenv("MAX_RETRIEVAL_RESULTS", "20"))
+MAX_RETRIEVAL_RESULTS = int(os.getenv("MAX_RETRIEVAL_RESULTS", "50"))
 HISTORY_WINDOW_TURNS = int(os.getenv("HISTORY_WINDOW_TURNS", "10"))  # last N turns kept raw
 HISTORY_SUMMARY_TURNS = int(os.getenv("HISTORY_SUMMARY_TURNS", "30"))  # older turns summarized
 

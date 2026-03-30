@@ -14,10 +14,13 @@ def check_constraints(
     response: str,
     template: PromptTemplate,
     safety_policy: SafetyPolicy | None = None,
+    *,
+    relax_actions: bool = False,
 ) -> tuple[bool, str]:
     """
     Run all constraint checks: injection (on user_input), output schema, safety.
     Returns (is_valid, error_message).
+    relax_actions: When True (planner-only recovery), skip action validation in safety check.
     """
     if user_input:
         try:
@@ -30,7 +33,8 @@ def check_constraints(
         return False, msg
 
     policy = safety_policy or SafetyPolicy()
-    if not check_safety(response, policy):
-        return False, "Response violates safety policy"
+    safe, safety_msg = check_safety(response, policy, relax_actions=relax_actions)
+    if not safe:
+        return False, safety_msg or "Response violates safety policy"
 
     return True, ""

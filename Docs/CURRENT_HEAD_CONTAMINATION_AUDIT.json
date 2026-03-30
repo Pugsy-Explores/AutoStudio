@@ -1,0 +1,57 @@
+{
+  "audit_date": "2025-03-20",
+  "method": "code-first",
+  "scope": ["agent/", "editing/", "planner/", "repo_graph/", "tests/agent_eval/"],
+  "executive_summary": {
+    "core_logic_status": "mostly_clean",
+    "production_imports_tests": false,
+    "eval_leakage_to_production": false
+  },
+  "top_15_concerning_remnants": [
+    {"rank": 1, "file": "agent/retrieval/target_resolution.py", "line": 205, "heuristic": "phrases2 regex with guard, levels (adversarial fixture-shaped)", "risk": "high"},
+    {"rank": 2, "file": "agent/retrieval/target_resolution.py", "line": 221, "heuristic": "guard + validation phrase for av09_guard", "risk": "high"},
+    {"rank": 3, "file": "agent/retrieval/target_resolution.py", "line": 192, "heuristic": "fixture-shaped directory prefix set", "risk": "medium"},
+    {"rank": 4, "file": "tests/agent_eval/harness.py", "lines": "118-211", "heuristic": "plan shapes by grading_mode, tags", "risk": "medium", "eval_only": true},
+    {"rank": 5, "file": "tests/agent_eval/real_execution.py", "lines": "55-67", "heuristic": "tags -> SEARCH+EDIT plan injection", "risk": "medium", "eval_only": true},
+    {"rank": 6, "file": "tests/agent_eval/runner.py", "line": 224, "heuristic": "grading_mode != explain_artifact for semantic_rca", "risk": "low", "eval_only": true},
+    {"rank": 7, "file": "agent/retrieval/task_semantics.py", "line": 28, "heuristic": "docstring benchmark_local mention", "risk": "low"},
+    {"rank": 8, "file": "editing/grounded_patch_generator.py", "line": 592, "heuristic": "comment benchmark_local mention", "risk": "low"},
+    {"rank": 9, "file": "tests/agent_eval/harness.py", "line": 290, "heuristic": "_STDLIB_SHADOW_DIRS", "risk": "low", "eval_only": true},
+    {"rank": 10, "file": "agent/retrieval/target_resolution.py", "line": 332, "heuristic": "_STDLIB_SHADOW_CANDIDATES", "risk": "low", "product_worthy": true},
+    {"rank": 11, "file": "tests/agent_eval/success.py", "lines": "19-26", "heuristic": "path_mode compat vs hierarchical", "risk": "low", "eval_only": true},
+    {"rank": 12, "file": "tests/agent_eval/runner.py", "line": 118, "heuristic": "suite names in help", "risk": "low", "eval_only": true},
+    {"rank": 13, "file": "tests/agent_eval/suite_loader.py", "heuristic": "hard-coded suite names", "risk": "low", "eval_only": true},
+    {"rank": 14, "file": "tests/agent_eval/paired_comparison.py", "lines": "360-452", "heuristic": "canonical task types", "risk": "low", "eval_only": true},
+    {"rank": 15, "file": "agent/orchestrator/plan_resolver.py", "heuristic": "docs_seed_plan", "risk": "N/A", "product_worthy": true}
+  ],
+  "top_10_product_worthy_heuristics": [
+    {"rank": 1, "location": "agent/retrieval/target_resolution.py", "heuristic": "_VALIDATION_SCRIPT_PATTERNS"},
+    {"rank": 2, "location": "agent/retrieval/task_semantics.py", "heuristic": "instruction_suggests_docs_consistency"},
+    {"rank": 3, "location": "agent/retrieval/target_resolution.py", "heuristic": "detect_likely_import_shadowing"},
+    {"rank": 4, "location": "agent/retrieval/task_semantics.py", "heuristic": "instruction_edit_target_paths"},
+    {"rank": 5, "location": "agent/retrieval/task_semantics.py", "heuristic": "instruction_asks_to_modify_validation_script"},
+    {"rank": 6, "location": "editing/diff_planner.py", "heuristic": "_is_valid_edit_target"},
+    {"rank": 7, "location": "editing/patch_generator.py", "heuristic": "_generic_multiply_to_div_return, _generic_split_whitespace_line_return"},
+    {"rank": 8, "location": "editing/grounded_patch_generator.py", "heuristic": "_try_version_constant_align, _try_url_constant_align"},
+    {"rank": 9, "location": "agent/orchestrator/plan_resolver.py", "heuristic": "_is_docs_artifact_intent, _docs_seed_plan"},
+    {"rank": 10, "location": "editing/patch_executor.py", "heuristic": "MAX_FILES_PER_EDIT, MAX_PATCH_LINES, forbidden paths"}
+  ],
+  "leakage_report": {
+    "tests_influence_production": [],
+    "offline_live_affects_production": []
+  },
+  "immediate_cleanup_before_stage36": [
+    {"action": "refactor", "file": "agent/retrieval/target_resolution.py", "detail": "Remove guard, levels from phrases2 regex"},
+    {"action": "refactor", "file": "agent/retrieval/target_resolution.py", "detail": "Remove or generalize guard+validation branch"},
+    {"action": "fix", "file": "agent/retrieval/task_semantics.py", "detail": "Fix docstring: remove benchmark_local mention"},
+    {"action": "fix", "file": "editing/grounded_patch_generator.py", "detail": "Remove benchmark_local from comment"}
+  ],
+  "inventory_count": {
+    "production_contamination_high": 2,
+    "production_contamination_medium": 1,
+    "production_contamination_low": 3,
+    "eval_only_medium": 2,
+    "eval_only_low": 6,
+    "product_worthy": 10
+  }
+}

@@ -7,13 +7,18 @@ import json
 import os
 import re
 
+from agent.core.actions import Action
 from agent.models.model_client import call_reasoning_model
+from agent.retrieval.query_rewriter import heuristic_condense_for_retrieval
 from agent.models.model_config import get_model_call_params
 from planner.planner_prompts import PLANNER_SYSTEM_PROMPT
 from planner.planner_utils import normalize_actions, validate_plan
 
 # Env override when config has no max_tokens. Config (task_params.planner) takes precedence.
 _PLANNER_MAX_ENV = int(os.environ.get("PLANNER_MAX_TOKENS", "4096"))
+
+# Routed intent value for edit tasks (maps to CODE_EDIT / INTENT_EDIT)
+_INTENT_EDIT = "EDIT"
 
 
 def _extract_json(text: str) -> str | None:
@@ -40,7 +45,7 @@ def _extract_json(text: str) -> str | None:
     return None
 
 
-_DOCS_LANE_ACTIONS = ("SEARCH_CANDIDATES", "BUILD_CONTEXT", "EXPLAIN")
+_DOCS_LANE_ACTIONS = (Action.SEARCH_CANDIDATES.value, Action.BUILD_CONTEXT.value, Action.EXPLAIN.value)
 
 
 def _has_explicit_docs_lane_steps(plan_dict: dict) -> bool:
@@ -88,6 +93,7 @@ def _build_controlled_fallback_plan(
     parsed_plan: dict | None = None,
     error: str,
     reason: str,
+    primary_intent: str | None = None,
 ) -> dict:
     """
     Planner controlled fallback (Phase 5B.2).
@@ -96,19 +102,25 @@ def _build_controlled_fallback_plan(
     - from valid parsed steps with artifact_mode="docs" on docs-compatible actions, OR
     - from retry_context.previous_attempts containing a prior docs-lane plan.
 
+    Intent-aware: for edit tasks (primary_intent == INTENT_EDIT), return SEARCH + EDIT
+    so CODE_EDIT tasks can reach the EDIT step even under fallback.
+
     Shapes:
     - docs lane: SEARCH_CANDIDATES -> BUILD_CONTEXT -> EXPLAIN with artifact_mode='docs'
-    - code lane: single SEARCH
+    - edit intent: SEARCH -> EDIT (minimal viable path for code modification)
+    - default: single SEARCH
     """
+    # Temporary checkpoint log: confirm fallback usage (print for visibility in eval output)
+    print(f"[planner] fallback triggered (intent={primary_intent or 'unknown'})")
     docs_lane = _has_explicit_docs_lane_steps(parsed_plan or {}) or _retry_context_has_docs_lane_lineage(
         retry_context
     )
     if docs_lane:
-        return {
+        plan_dict = {
             "steps": [
                 {
                     "id": 1,
-                    "action": "SEARCH_CANDIDATES",
+                    "action": Action.SEARCH_CANDIDATES.value,
                     "artifact_mode": "docs",
                     "description": "Find README/docs artifacts",
                     "query": "readme docs",
@@ -116,35 +128,73 @@ def _build_controlled_fallback_plan(
                 },
                 {
                     "id": 2,
-                    "action": "BUILD_CONTEXT",
+                    "action": Action.BUILD_CONTEXT.value,
                     "artifact_mode": "docs",
                     "description": "Build docs context from candidates",
                     "reason": "Read top docs files",
                 },
                 {
                     "id": 3,
-                    "action": "EXPLAIN",
+                    "action": Action.EXPLAIN.value,
                     "artifact_mode": "docs",
                     "description": "Answer using docs context",
                     "reason": "Complete docs-shaped fallback plan",
                 },
             ],
             "error": error,
+            "fallback": True,
+            "degraded": True,
+            "degradation_reason": reason,
+        }
+        return plan_dict
+    condensed = heuristic_condense_for_retrieval(instruction)
+    query = condensed.strip() if condensed and condensed.strip() else (instruction or "").strip()[:200]
+    if primary_intent == _INTENT_EDIT:
+        return {
+            "steps": [
+                {
+                    "id": 1,
+                    "action": Action.SEARCH.value,
+                    "description": "Locate relevant code for modification",
+                    "query": query,
+                    "reason": reason,
+                },
+                {
+                    "id": 2,
+                    "action": Action.EDIT.value,
+                    "description": "Apply required code changes based on instruction",
+                    "reason": reason,
+                },
+            ],
+            "error": error,
+            "fallback": True,
+            "degraded": True,
+            "degradation_reason": reason,
         }
     return {
         "steps": [
             {
                 "id": 1,
-                "action": "SEARCH",
+                "action": Action.SEARCH.value,
                 "description": f"Locate items mentioned in: {instruction[:200]}{'...' if len(instruction) > 200 else ''}",
+                "query": query,
                 "reason": reason,
             }
         ],
         "error": error,
+        "fallback": True,
+        "degraded": True,
+        "degradation_reason": reason,
     }
 
 
-def plan(instruction: str, retry_context: dict | None = None) -> dict:
+def plan(
+    instruction: str,
+    retry_context: dict | None = None,
+    *,
+    primary_intent: str | None = None,
+    deep: bool = False,
+) -> dict:
     """
     Convert instruction into a structured plan: list of steps with action, description, reason.
     Each step action is one of EDIT, SEARCH, EXPLAIN, INFRA.
@@ -152,6 +202,8 @@ def plan(instruction: str, retry_context: dict | None = None) -> dict:
 
     Phase 5: retry_context may contain previous_attempts and critic_feedback; these are
     included in the prompt so the planner can produce a better plan on retry.
+
+    deep: When True, use richer reasoning (future: different prompt / more tokens). No-op for now.
     """
     print("[workflow] planner")
     prompt = instruction
@@ -204,13 +256,15 @@ Focus on actions that address the failure reason."""
             task_name="planner",
             prompt_name="planner",
         )
-    except Exception as e:
+    except RuntimeError as e:
+        # GuardrailError (and other RuntimeError) — model retry pipeline already exhausted
         return _build_controlled_fallback_plan(
             instruction,
             retry_context=retry_context,
             parsed_plan=None,
             error=str(e),
-            reason="Planner LLM call failed; controlled fallback",
+            reason=str(e),
+            primary_intent=primary_intent,
         )
 
     raw_json = _extract_json(response)
@@ -221,6 +275,7 @@ Focus on actions that address the failure reason."""
             parsed_plan=None,
             error="No JSON found in response",
             reason="Parse failed; controlled fallback",
+            primary_intent=primary_intent,
         )
 
     try:
@@ -232,6 +287,7 @@ Focus on actions that address the failure reason."""
             parsed_plan=None,
             error=str(e),
             reason="Invalid JSON from planner; controlled fallback",
+            primary_intent=primary_intent,
         )
 
     if not isinstance(data, dict) or "steps" not in data:
@@ -244,13 +300,13 @@ Focus on actions that address the failure reason."""
         if not isinstance(step, dict):
             data["steps"][i] = {
                 "id": i + 1,
-                "action": "EXPLAIN",
+                "action": Action.EXPLAIN.value,
                 "description": "Invalid step",
                 "reason": "Malformed",
             }
             continue
         step.setdefault("id", i + 1)
-        step.setdefault("action", "EXPLAIN")
+        step.setdefault("action", Action.EXPLAIN.value)
         step.setdefault("description", "")
         step.setdefault("reason", "")
 
@@ -263,5 +319,8 @@ Focus on actions that address the failure reason."""
             parsed_plan=data,
             error="Validation failed: invalid plan or invalid step fields",
             reason="Planner output validation failed; controlled fallback",
+            primary_intent=primary_intent,
         )
+    # Temporary checkpoint log: plan passed guardrail and validation (print for visibility in eval output)
+    print("[planner] plan accepted by guardrail")
     return data

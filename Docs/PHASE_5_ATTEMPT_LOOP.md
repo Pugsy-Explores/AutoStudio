@@ -1,5 +1,7 @@
 # Phase 5: Attempt-Level Learning and Retry Architecture
 
+> **Legacy (REACT_MODE=0).** The primary execution path is ReAct; see [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
+
 ## Attempt loop flow diagram
 
 ```

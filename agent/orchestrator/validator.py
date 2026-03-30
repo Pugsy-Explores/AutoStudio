@@ -103,7 +103,7 @@ def _validate_step_rules(
         if not isinstance(out, dict):
             return False, "SEARCH returned no results"
         results = out.get("results") or []
-        if not _is_valid_search_result(results):
+        if not _is_valid_search_result(results, out if isinstance(out, dict) else None):
             return False, "SEARCH returned empty or invalid results (no file/snippet)"
         # Loop-aware: next step is EXPLAIN and user wants implementation, but results are only tests
         if state:

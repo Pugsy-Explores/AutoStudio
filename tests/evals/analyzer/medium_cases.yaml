@@ -1,0 +1,35 @@
+# Partial context — expect partial evidence + concrete gap suggestions.
+- id: medium_selector_partial
+  instruction: "Describe the full batch selection pipeline including Langfuse generation metadata and symbol validation against outlines."
+  intent: explanation
+  context:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      start: 260
+      end: 340
+      content: |
+        def select_batch(self, instruction: str, intent: str, candidates: list[ExplorationCandidate], *, limit: int, ...):
+            top = candidates[:EXPLORATION_SELECTOR_TOP_K]
+            payload = [_selector_candidate_payload(c, outline_for_prompt=ol) for i, c in enumerate(top)]
+            exploration_llm_call(..., name="exploration.select", ...)
+            parsed = holder["parsed"]
+            ordered_js = _expand_js_indices(parsed_idx, len(top))
+            picked, indices = _pick_candidates_by_top_indices(ordered_js, top, limit=limit)
+  expected:
+    understanding: partial
+    gap_quality: high
+
+- id: medium_engine_snippet
+  instruction: "How does ExplorationEngineV2 decide when to call select_batch versus select single?"
+  intent: explanation
+  context:
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      start: 1580
+      end: 1620
+      content: |
+        # excerpt only: ranked = self._selector.select_batch(
+        #   instruction, intent, candidates, limit=limit, ...
+        # )
+        # (surrounding control flow not shown in this snippet)
+  expected:
+    understanding: partial
+    gap_quality: medium

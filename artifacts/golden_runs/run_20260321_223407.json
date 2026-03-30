@@ -1,0 +1,143 @@
+{
+  "results": [
+    {
+      "id": "not_found_case",
+      "passed": true,
+      "failures": [],
+      "metrics": {
+        "answer_supported": null,
+        "termination_reason": null,
+        "support_strength": null
+      },
+      "decision": "PASS_NO_JUDGE",
+      "debug": {
+        "input": {
+          "instruction": "Where is fallback guard for engine errors?",
+          "repo_path": "mini_repos/mr01_arch"
+        },
+        "raw_output": {
+          "structure": {
+            "steps": 1,
+            "search_steps": 0,
+            "has_loop": false
+          },
+          "metrics": {
+            "answer_supported": null,
+            "termination_reason": null,
+            "support_strength": null
+          },
+          "exploration": {
+            "exploration_used": true,
+            "exploration_added_count": 0,
+            "exploration_effective": false
+          },
+          "answer": "Offline stub explanation for benchmark. This satisfies the minimum length for validation."
+        }
+      }
+    },
+    {
+      "id": "simple_explain",
+      "passed": true,
+      "failures": [],
+      "metrics": {
+        "answer_supported": null,
+        "termination_reason": null,
+        "support_strength": null
+      },
+      "decision": "UNCERTAIN_PASS",
+      "debug": {
+        "input": {
+          "instruction": "Explain how Settings from settings.load reaches dispatch.handle",
+          "repo_path": "mini_repos/mr01_arch"
+        },
+        "raw_output": {
+          "structure": {
+            "steps": 1,
+            "search_steps": 0,
+            "has_loop": false
+          },
+          "metrics": {
+            "answer_supported": null,
+            "termination_reason": null,
+            "support_strength": null
+          },
+          "exploration": {
+            "exploration_used": true,
+            "exploration_added_count": 0,
+            "exploration_effective": false
+          },
+          "answer": "Offline stub explanation for benchmark. This satisfies the minimum length for validation."
+        }
+      },
+      "llm_judge": {
+        "passed": true,
+        "score": 0,
+        "reason": "disabled",
+        "confidence": "low",
+        "disagreement": false
+      },
+      "analysis": {
+        "judge_vs_structure_mismatch": false,
+        "confidence_flag": true
+      }
+    },
+    {
+      "id": "weak_signal_case",
+      "passed": true,
+      "failures": [],
+      "metrics": {
+        "answer_supported": null,
+        "termination_reason": null,
+        "support_strength": null
+      },
+      "decision": "PASS_NO_JUDGE",
+      "debug": {
+        "input": {
+          "instruction": "Explain obscure internal fallback behavior",
+          "repo_path": "mini_repos/mr01_arch"
+        },
+        "raw_output": {
+          "structure": {
+            "steps": 1,
+            "search_steps": 0,
+            "has_loop": false
+          },
+          "metrics": {
+            "answer_supported": null,
+            "termination_reason": null,
+            "support_strength": null
+          },
+          "exploration": {
+            "exploration_used": true,
+            "exploration_added_count": 0,
+            "exploration_effective": false
+          },
+          "answer": "Offline stub explanation for benchmark. This satisfies the minimum length for validation."
+        }
+      }
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "failed": 0,
+    "failure_types": {},
+    "coverage": {
+      "total_tests": 3,
+      "tests_with_structure": 3,
+      "tests_with_metrics": 2
+    },
+    "judge": {
+      "enabled_tests": 1,
+      "disagreements": 0,
+      "low_confidence": 1
+    },
+    "decisions": {
+      "PASS": 0,
+      "SOFT_FAIL": 0,
+      "HARD_FAIL": 0,
+      "UNCERTAIN_PASS": 1,
+      "PASS_NO_JUDGE": 2
+    }
+  }
+}

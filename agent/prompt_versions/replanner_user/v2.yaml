@@ -1,0 +1,161 @@
+# Frozen contract v2 — replanner_user prompt.
+# No edits. Every future change must pass tests/test_replanner_regression_suite.py
+version: v2
+role: user
+instructions: |
+  Original instruction:
+  {instruction}
+
+  Current plan (JSON):
+  {plan}
+
+  Failed step:
+  {failed_step}
+
+  Error message:
+  {error}
+
+  Failure context (JSON):
+  {failure_context}
+  {recovery_hint_block}
+
+  You MUST correct the failure using the following rules:
+
+  --------------------------------
+  1. DO NOT REPEAT FAILED SEARCHES
+  --------------------------------
+  These previous searches failed and MUST NOT be repeated or rephrased:
+
+  {recent_searches}
+
+  Avoid vague queries such as:
+  - "find entry point"
+  - "application start"
+  - "how app runs"
+
+  If a new SEARCH is semantically similar to a previous one, the plan is INVALID.
+
+  --------------------------------
+  2. UNDERSTAND THE FAILURE TYPE
+  --------------------------------
+  If reason_code = "insufficient_substantive_context":
+
+  - The system did NOT retrieve real implementation code.
+  - You MUST switch to implementation-oriented search.
+
+  This means:
+  - target real files
+  - target real functions/classes
+  - target call/import relationships
+
+  --------------------------------
+  3. SEARCH QUERY SCHEMA
+  --------------------------------
+
+  A SEARCH description must identify:
+  - WHAT to find (symbol, file, function, pattern)
+  - WHERE to look (module, package, layer)
+  - WHY (what relationship or behavior you need)
+
+  A SEARCH description must be grounded in the original instruction:
+  - It must reuse or specialize the key entities mentioned in the instruction.
+  - It must not introduce unrelated generic concepts (e.g., entrypoint, main, cli) unless explicitly relevant.
+
+  BAD (too vague or off-topic):
+  - "find entry point"
+  - "application startup"
+  - "how app starts"
+  - Generic templates like "entrypoint", "main/run/cli" when the instruction asks about something else (auth, config, retrieval, etc.)
+
+  Good descriptions are question-specific. They name the actual subject of the instruction, not a generic template.
+
+  --------------------------------
+  4. PLAN STRUCTURE IS STRICT
+  --------------------------------
+
+  EXPLAIN must NOT directly follow SEARCH.
+
+  You MUST use:
+
+  SEARCH → BUILD_CONTEXT → EXPLAIN
+
+  For architecture questions, prefer:
+
+  SEARCH → SEARCH → BUILD_CONTEXT → EXPLAIN
+
+  If BUILD_CONTEXT is missing, the plan is INVALID.
+
+  --------------------------------
+  5. REQUIRE MULTI-HOP RETRIEVAL
+  --------------------------------
+
+  For architecture or entrypoint questions:
+
+  - One SEARCH is NOT sufficient.
+  - You SHOULD include at least TWO SEARCH steps:
+    1. Find implementation (entrypoint)
+    2. Find connections (callers, imports, wiring)
+
+  Without this, the EXPLAIN step will fail again.
+
+  --------------------------------
+  6. FORCE STRATEGY CHANGE
+  --------------------------------
+
+  You MUST change the search strategy from previous attempts.
+
+  If you repeat the same pattern, the plan will fail again.
+
+  --------------------------------
+  FINAL VALIDATION (MANDATORY)
+  --------------------------------
+
+  Before returning the plan, you MUST verify:
+
+  1. Does the plan retrieve real implementation code?
+     - If not, the plan will fail.
+
+  2. Does the plan include enough information to explain connections (not just definitions)?
+     - If not, add another SEARCH step.
+
+  3. Is there at least one SEARCH for implementation AND one for relationships (calls/imports/wiring)?
+     - If not, revise the plan.
+
+  4. Will BUILD_CONTEXT have enough material to produce a grounded explanation?
+     - If unsure, add another SEARCH.
+
+  5. If the instruction is short, vague, or underspecified:
+     - Assume more context is required, not less.
+     - Prefer adding an additional SEARCH step.
+
+  6. If you are uncertain whether the current plan is sufficient:
+     - You MUST expand the plan with another SEARCH step.
+
+  7. Do NOT return a minimal plan.
+     - Return a plan that is robust to failure.
+
+  8. If the plan contains only one SEARCH:
+     - Single SEARCH is allowed when the instruction is specific and scoped (e.g. "Where is X defined?", "What does Y do?", "Where are Z configured?").
+     - You must justify why a second SEARCH is not needed.
+     - If no strong justification exists, add a second SEARCH.
+     - Do not overfit to multi-hop; compress when appropriate.
+
+  9. BUILD_CONTEXT must process the results of the most recent SEARCH.
+     - If a SEARCH occurs after BUILD_CONTEXT, another BUILD_CONTEXT is required before EXPLAIN.
+     - A plan of SEARCH → BUILD_CONTEXT → SEARCH → EXPLAIN is INVALID.
+     - The correct form is SEARCH → BUILD_CONTEXT → SEARCH → BUILD_CONTEXT → EXPLAIN.
+
+  If any of the above checks fail:
+  → Revise the plan before returning it.
+
+  --------------------------------
+
+  Before finalizing the plan, verify:
+  - Each SEARCH is specific to the instruction.
+  - No SEARCH uses a generic template unrelated to the instruction.
+
+  Produce a corrected plan.
+
+  Return ONLY valid JSON with a "steps" array.
+constraints: []
+output_schema: null

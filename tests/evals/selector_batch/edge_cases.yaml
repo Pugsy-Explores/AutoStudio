@@ -1,0 +1,158 @@
+- id: sel_edge_empty_pool
+  edge_category: empty_input
+  edge_handling: system_handled
+  trace_id: trace_empty_input_system
+  instruction: "Pick files for batch selection."
+  intent: explanation
+  limit: 2
+  allow_empty_candidates: true
+  candidates: []
+  expected:
+    must_select: []
+    should_select: []
+
+- id: sel_edge_whitespace_instruction
+  edge_category: empty_input
+  edge_handling: model_handled
+  trace_id: trace_empty_input_model_sel
+  instruction: "   "
+  intent: explanation
+  limit: 2
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "def select_batch"
+      symbol: CandidateSelector
+      source: graph
+  expected:
+    must_select:
+      - candidate_selector.py
+
+- id: sel_edge_vague_rank
+  edge_category: low_signal
+  instruction: "rank these"
+  intent: explanation
+  limit: 2
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "CandidateSelector"
+      symbol: CandidateSelector
+      source: graph
+    - file_path: agent/models/model_client.py
+      snippet: "call_reasoning_model"
+      symbol: call_reasoning_model
+      source: grep
+  expected:
+    must_select:
+      - candidate_selector.py
+
+- id: sel_edge_partial_overlap
+  edge_category: partial_context
+  instruction: "Prefer implementation of batch selection over orchestration glue."
+  intent: explanation
+  limit: 2
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "select_batch implementation"
+      symbol: CandidateSelector
+      source: graph
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      snippet: "orchestration excerpt only"
+      symbol: null
+      source: grep
+  expected:
+    must_select:
+      - candidate_selector.py
+
+- id: sel_edge_irrelevant_pool
+  edge_category: no_relevance
+  instruction: "Find the Instagram OAuth refresh token store."
+  intent: navigation
+  limit: 2
+  allow_empty_selection: true
+  candidates:
+    - file_path: repo_index/indexer.py
+      snippet: "index"
+      symbol: null
+      source: vector
+    - file_path: editing/patch_executor.py
+      snippet: "patch"
+      symbol: null
+      source: vector
+  expected:
+    must_select: []
+
+- id: sel_edge_trace_and_fix
+  edge_category: ambiguous
+  instruction: "trace and fix why select_batch returns fragmented coverage"
+  intent: debugging
+  limit: 3
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "select_batch fragmented"
+      symbol: CandidateSelector
+      source: graph
+    - file_path: agent_v2/utils/json_extractor.py
+      snippet: "JSONExtractor"
+      symbol: JSONExtractor
+      source: grep
+    - file_path: tests/test_candidate_selector.py
+      snippet: "test_select_batch"
+      symbol: null
+      source: grep
+  expected:
+    must_select:
+      - candidate_selector.py
+
+- id: sel_edge_similar_duplicates
+  edge_category: conflicting
+  instruction: "Select distinct files; avoid picking two rows that are the same module twice."
+  intent: explanation
+  limit: 3
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "row A CandidateSelector"
+      symbol: CandidateSelector
+      source: graph
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "row B CandidateSelector duplicate path"
+      symbol: CandidateSelector
+      source: grep
+    - file_path: agent_v2/exploration/exploration_scoper.py
+      snippet: "ExplorationScoper"
+      symbol: ExplorationScoper
+      source: grep
+  expected:
+    must_select:
+      - exploration_scoper.py
+    soft_max_selections: 2
+
+- id: sel_edge_many_symbols_noise
+  edge_category: over_specified
+  instruction: "Only the selector batch method matters; ignore peripheral observability."
+  intent: explanation
+  limit: 2
+  candidates:
+    - file_path: agent_v2/exploration/candidate_selector.py
+      snippet: "select_batch"
+      symbol: select_batch
+      source: graph
+    - file_path: agent_v2/observability/langfuse_helpers.py
+      snippet: "exploration_llm_call noise"
+      symbol: exploration_llm_call
+      source: grep
+    - file_path: agent/prompt_system/registry.py
+      snippet: "registry noise"
+      symbol: null
+      source: vector
+    - file_path: agent_v2/config.py
+      snippet: "config noise"
+      symbol: null
+      source: vector
+    - file_path: agent_v2/exploration/exploration_engine_v2.py
+      snippet: "engine noise"
+      symbol: null
+      source: vector
+  expected:
+    must_select:
+      - candidate_selector.py
+    soft_max_selections: 2

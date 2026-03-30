@@ -1,23 +1,28 @@
 # AutoStudio Architecture
 
-Authoritative system architecture document. Describes the full pipeline from user instruction to LLM reasoning, including hybrid retrieval, graph expansion, reference lookup, call-chain context, deduplication, and cross-encoder reranking.
+Authoritative system architecture. Describes the pipeline from user instruction to LLM reasoning, including hybrid retrieval, graph expansion, and cross-encoder reranking.
 
 See also:
+- [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md) — **Primary:** ReAct flow, tools, schema
 - [RETRIEVAL_ARCHITECTURE.md](RETRIEVAL_ARCHITECTURE.md) — detailed retrieval pipeline
-- [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md) — step dispatch and policy engine
+- [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md) — legacy step dispatch and policy engine
 - [CONFIGURATION.md](CONFIGURATION.md) — config reference
 
 ---
 
 ## System Overview
 
-AutoStudio is a repository-aware autonomous coding agent that converts natural-language instructions into executable plans, runs hybrid code search, ranks context, applies structured patches, and persists task memory. The system follows a deterministic pipeline (Mode 1) with optional autonomous retry (Mode 2).
+**Primary (ReAct, REACT_MODE=1 default):** User instruction → **run_controller** → **run_hierarchical** → **execution_loop** (ReAct). The model selects actions (search, open_file, edit, run_tests, finish) each step. No planner. No Critic/RetryPlanner. See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
 
-**Core flow (Phase 5):** User instruction → **run_attempt_loop** → per attempt: get_plan(retry_context) → Plan resolver (router + planner) → **Deterministic runner** (step loop: Dispatcher → Policy engine → Tools) → **GoalEvaluator** → if not goal_met: **Critic** → **RetryPlanner** → next attempt with retry_context. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+**Legacy (REACT_MODE=0):** run_attempt_loop, get_plan, GoalEvaluator, Critic, RetryPlanner. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
+
+ReAct pipeline diagram: [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
 
 ---
 
-## Pipeline Diagram
+## Legacy Pipeline (Design Reference — Not in Current Code)
+
+> **Note:** `run_attempt_loop` is not implemented in the current codebase. The controller always calls `run_hierarchical` (ReAct). This diagram preserves the original Phase 5 design for reference.
 
 ```mermaid
 flowchart TD
@@ -65,10 +70,14 @@ flowchart TD
 
 ## Data Flow
 
-### 1. Plan Resolution
+ReAct and legacy share the SEARCH pipeline (Section 3) and EDIT pipeline core (Section 4). Plan Resolution (1), Step Execution (2), and Attempt Loop (6) are legacy-only.
 
-- **Instruction router** classifies intent (CODE_EDIT, CODE_SEARCH, EXPLAIN, INFRA, GENERAL).
-- **Planner** (for CODE_EDIT/GENERAL) produces JSON plan: `{plan_id, steps: [{id, action, description, reason}]}` (Phase 4: every plan has plan_id).
+### 1. Plan Resolution (Legacy only)
+
+- **route_production_instruction** (Stage 38) returns `RoutedIntent`; single production entrypoint. Order: docs-artifact (DOC) → two-phase docs+code (COMPOUND) → legacy `route_instruction` (5 categories).
+- **Plan resolver** consumes `RoutedIntent`: DOC→docs_seed_plan; SEARCH/EXPLAIN/INFRA→single-step; EDIT/AMBIGUOUS/COMPOUND-flat→planner. Telemetry: `resolver_consumption` (docs_seed | short_search | short_explain | short_infra | planner).
+- **Production-emission contract** (Stage 39): VALIDATE deferred; COMPOUND production-real only for two-phase. See `agent/routing/README.md`.
+- **Planner** (for EDIT/GENERAL/AMBIGUOUS) produces JSON plan: `{plan_id, steps: [{id, action, description, reason}]}` (Phase 4: every plan has plan_id).
 - Actions: SEARCH, EDIT, EXPLAIN, INFRA.
 
 ### 2. Step Execution

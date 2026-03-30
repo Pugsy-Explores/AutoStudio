@@ -1,0 +1,270 @@
+{
+  "current_flow": {
+    "current_expansion_flow": [
+      "ModeManager._run_explore_plan_execute/_run_plan/_run_deep_plan -> ExplorationRunner.run",
+      "ExplorationRunner.run (v2 enabled) -> ExplorationEngineV2.explore -> _explore_inner",
+      "QueryIntentParser.parse (initial) -> _discovery (symbol/regex/text batched SEARCH)",
+      "Optional query retry hook: _classify_initial_failure_reason -> QueryIntentParser.parse(previous_queries, failure_reason) -> _discovery",
+      "_enqueue_ranked (optional scoper + selector) -> pending_targets queue",
+      "Loop per target: dedupe via explored_location_keys -> inspect_packet(read_snippet only) -> analyzer.analyze -> decision_mapper",
+      "Decision adjustment: _apply_gap_driven_decision + _update_utility_and_should_stop + _apply_refine_cooldown",
+      "Action branch: expand -> GraphExpander.expand(max_nodes,max_depth) OR refine -> _run_discovery_traced + _enqueue_ranked OR stop",
+      "Termination: max_steps/pending_exhausted/no_relevant_candidate/stalled/primary_symbol_sufficient/relationships_satisfied/no_improvement_streak",
+      "Result: ExplorationResult(metadata includes completion_status, termination_reason, explored_files, explored_symbols)"
+    ],
+    "entry_points": [
+      {
+        "symbol": "ModeManager._run_explore_plan_execute",
+        "role": "Primary ACT path entry into exploration; gates planner on exploration completion"
+      },
+      {
+        "symbol": "ExplorationRunner.run",
+        "role": "Routes to v2 engine when ENABLE_EXPLORATION_ENGINE_V2 is true"
+      },
+      {
+        "symbol": "ExplorationEngineV2.explore",
+        "role": "Main loop entry; owns expansion/refinement control loop"
+      }
+    ],
+    "control_paths": {
+      "analyzer_to_loop": "UnderstandingAnalyzer.analyze -> EngineDecisionMapper.to_exploration_decision -> _next_action",
+      "expand_path": "_should_expand -> GraphExpander.expand -> _enqueue_targets",
+      "refine_path": "_should_refine -> _run_discovery_traced(phase=refine) -> _enqueue_ranked",
+      "stop_path": "_should_stop_pre/_should_stop/_update_utility_and_should_stop"
+    },
+    "graph_traversal_path": {
+      "primary": "GraphExpander.expand -> fetch_graph(query=symbol, top_k=max_nodes) -> map rows to callers/callees/related targets",
+      "fallback": "If graph empty: dispatcher SEARCH for '<symbol> callers callees definition' -> _extract_targets",
+      "note": "max_depth is carried in result metadata but traversal logic is effectively 1-hop in current adapter"
+    },
+    "query_refinement_hooks": [
+      "_classify_initial_failure_reason(intent,candidates,top_score)",
+      "EXPLORATION_MAX_QUERY_RETRIES guard",
+      "QueryIntentParser.parse(previous_queries, failure_reason)",
+      "_has_retry_improvement and _emit_query_retry_telemetry"
+    ]
+  },
+  "behavioral_audit": {
+    "run_command": "python3 scripts/live_expansion_refinement_loop_eval.py",
+    "cases": [
+      {
+        "case_id": "A_partial_understanding_should_expand",
+        "mapped_live_case": "gap_driven_expansion",
+        "evidence": {
+          "expansion_actions_taken": [
+            "expand"
+          ],
+          "number_of_iterations": 1,
+          "visited_nodes_files_sample": [
+            "/Users/shang/my_work/AutoStudio/agent/agent_loop.py::run_loop",
+            "/Users/shang/my_work/AutoStudio/agent/autonomous/state_observer.py::observe",
+            "/Users/shang/my_work/AutoStudio/agent/autonomous/action_selector.py::select_next_action"
+          ],
+          "repeated_work": {
+            "dedupe_skips": 1
+          },
+          "termination_reason": "primary_symbol_sufficient"
+        },
+        "assessment": "Expected expansion behavior observed."
+      },
+      {
+        "case_id": "B_insufficient_should_refine",
+        "mapped_live_case": "refine_cooldown",
+        "evidence": {
+          "expansion_actions_taken": [
+            "refine",
+            "expand",
+            "expand"
+          ],
+          "number_of_iterations": 2,
+          "visited_nodes_files_sample": [
+            "/Users/shang/my_work/AutoStudio/agent/autonomous/state_observer.py::observe",
+            "/Users/shang/my_work/AutoStudio/agent/agent_loop.py::run_loop"
+          ],
+          "repeated_work": {
+            "dedupe_skips": 1
+          },
+          "termination_reason": "primary_symbol_sufficient",
+          "cooldown_forced_expands": 1
+        },
+        "assessment": "Refine path is reachable; cooldown then forces expand when eligible."
+      },
+      {
+        "case_id": "C_sufficient_should_stop",
+        "mapped_live_case": "gap_filtering",
+        "evidence": {
+          "expansion_actions_taken": [
+            "expand"
+          ],
+          "number_of_iterations": 1,
+          "visited_nodes_files_sample": [
+            "/Users/shang/my_work/AutoStudio/agent/autonomous/goal_manager.py::GoalManager"
+          ],
+          "repeated_work": {
+            "dedupe_skips": 1
+          },
+          "termination_reason": "primary_symbol_sufficient"
+        },
+        "assessment": "Sufficient stop behavior observed via terminal reason."
+      }
+    ],
+    "overall_run_summary": {
+      "cases": 5,
+      "no_improvement_stops": 1,
+      "cases_with_dedupe_skips": 5,
+      "stable_paths": 5
+    }
+  },
+  "validated_hypotheses": [
+    {
+      "hypothesis": "No structured expansion strategy (graph vs search vs refine unclear)",
+      "status": "false",
+      "evidence": "Expansion/refinement strategy is explicit: _should_expand/_should_refine + GraphExpander.expand + discovery refine loop. Distinct action branches are coded and live-observed."
+    },
+    {
+      "hypothesis": "Expansion not grounded in analyzer signals (gaps/findings ignored)",
+      "status": "partial",
+      "evidence": "Gap-driven bridge exists (_apply_gap_driven_decision maps knowledge_gaps to needs and forces expand), but expansion target generation still does not consume a structured gap object; GraphExpander receives only symbol/file."
+    },
+    {
+      "hypothesis": "No prioritization of expansion paths",
+      "status": "partial",
+      "evidence": "There is local heuristic prioritization (_target_priority_score: new symbol/file + expansion source bonus). Missing: analyzer-gap-weighted prioritization and graph-edge relevance scoring."
+    },
+    {
+      "hypothesis": "Risk of uncontrolled expansion (no depth/budget limits)",
+      "status": "false",
+      "evidence": "Hard controls exist in config and loop: EXPLORATION_MAX_STEPS, EXPLORATION_MAX_BACKTRACKS, EXPLORATION_EXPAND_MAX_NODES, EXPLORATION_EXPAND_MAX_DEPTH, EXPLORATION_STAGNATION_STEPS, EXPLORATION_UTILITY_NO_IMPROVEMENT_STREAK."
+    },
+    {
+      "hypothesis": "Repeated exploration of same files/symbols",
+      "status": "partial",
+      "evidence": "Core duplicate prevention exists via explored_location_keys, pending queue dedupe, and seen_relation_edges. Live runs still report dedupe_skips in all cases (work is generated then filtered, indicating upstream redundancy remains)."
+    },
+    {
+      "hypothesis": "Weak or missing stopping criteria",
+      "status": "false",
+      "evidence": "Stopping criteria are explicit and multi-layered: _should_stop_pre/_should_stop + utility stop + no_relevant_candidate + pending_exhausted + stalled + max_steps. Live utility_stop case terminated by no_improvement_streak."
+    },
+    {
+      "hypothesis": "No scoring of expansion usefulness",
+      "status": "partial",
+      "evidence": "There is utility tracking with improvement signature and no_improvement_streak. Missing: per-expansion-edge usefulness score used to rank/accept/reject future expansions."
+    }
+  ],
+  "control_state_audit": {
+    "visited_set": {
+      "present": true,
+      "evidence": [
+        "ExplorationState.explored_location_keys",
+        "ExplorationState.seen_files",
+        "ExplorationState.seen_symbols",
+        "ExplorationState.seen_relation_edges"
+      ]
+    },
+    "depth_tracking": {
+      "present": "partial",
+      "evidence": "Config carries EXPLORATION_EXPAND_MAX_DEPTH; GraphExpander accepts max_depth and echoes it, but adapter logic is not true multi-depth traversal."
+    },
+    "iteration_limit": {
+      "present": true,
+      "evidence": [
+        "EXPLORATION_MAX_STEPS",
+        "EXPLORATION_MAX_BACKTRACKS",
+        "EXPLORATION_STAGNATION_STEPS"
+      ]
+    },
+    "determinism_vs_llm": {
+      "answer": "hybrid",
+      "evidence": "Control state machine is deterministic; intent parsing, candidate selection/scoping, and analyzer are LLM-driven."
+    }
+  },
+  "output_contract_audit": {
+    "expansion_input": {
+      "receives_analyzer_output": "indirectly",
+      "receives_instruction": "yes",
+      "details": "Analyzer output affects decision.needs/next_action; GraphExpander itself receives (symbol, file_path, state, max_nodes, max_depth) without structured gap payload."
+    },
+    "expansion_output": {
+      "produces_new_queries": "not directly",
+      "produces_new_targets": "yes",
+      "produces_graph_expansions": "yes",
+      "details": "GraphExpander returns list[ExplorationTarget] + ExecutionResult; refine path regenerates discovery queries via QueryIntentParser retry/refine."
+    },
+    "missing_signals_or_schema_ambiguities": [
+      "No explicit typed schema for expansion requests (e.g., reason=callers|callees|definition with priority and budget context).",
+      "No explicit per-target provenance score in ExplorationTarget (only source string).",
+      "Gap semantics are string-based; no typed gap taxonomy/weight for deterministic prioritization."
+    ]
+  },
+  "control_gaps": [
+    "GraphExpander depth parameter is not fully realized as true multi-hop controlled traversal.",
+    "Expansion selection is weakly tied to analyzer gaps beyond keyword-to-needs mapping.",
+    "No explicit budget ledger per strategy mode (graph/search/refine) to prevent mode starvation or overuse.",
+    "Usefulness is tracked globally (streak/signature) but not attached to specific expansion edges/targets.",
+    "Fallback search expansion can blur graph-vs-search intent and reduce explainability."
+  ],
+  "failure_modes": [
+    {
+      "mode": "redundant expansion generation",
+      "evidence": "All live cases reported dedupe_skips > 0, indicating duplicate candidate generation before queue filters."
+    },
+    {
+      "mode": "premature completion under narrow sufficiency",
+      "evidence": "Frequent termination at primary_symbol_sufficient after 1 iteration can end exploration before broader dependency coverage."
+    },
+    {
+      "mode": "expansion relevance drift",
+      "evidence": "Graph fallback SEARCH query is generic ('callers callees definition') and not gap-specific, risking off-target nodes."
+    },
+    {
+      "mode": "depth under-exploration",
+      "evidence": "max_depth is configured but current expander path is effectively shallow."
+    }
+  ],
+  "recommended_design": {
+    "structured_expansion_modes": {
+      "graph_mode": "Typed request: {focus_symbol, anchor_file, direction(callers|callees|both), hop_budget}.",
+      "semantic_search_mode": "Use when analyzer indicates concept-level gaps or graph confidence low.",
+      "refinement_mode": "Use when wrong_target/low relevance with explicit failure reason classes."
+    },
+    "prioritization_strategy": {
+      "core": "Score candidates by analyzer gap alignment, novelty (unseen file/symbol), graph confidence, and recency penalty.",
+      "formula_example": "priority = 0.4*gap_match + 0.25*novelty + 0.2*graph_conf + 0.15*target_quality - revisit_penalty"
+    },
+    "budget_controls": {
+      "max_depth": "Enforce true hop depth in graph traversal, not metadata-only.",
+      "max_nodes": "Per-iteration and global node budgets, strategy-specific caps.",
+      "max_iterations": "Keep global EXPLORATION_MAX_STEPS; add per-mode step ceilings."
+    },
+    "stopping_criteria": {
+      "primary": "analyzer sufficient + required gap classes resolved",
+      "secondary": "diminishing returns using per-edge usefulness over rolling window",
+      "guardrail": "hard stop on budget exhaustion or repeated low-utility expansions"
+    },
+    "state_tracking": {
+      "visited_nodes": "Keep explored_location_keys and add structured visit metadata (first_seen_step,last_score,last_reason).",
+      "explored_paths": "Track path signatures (anchor->edge->target) with utility outcomes."
+    }
+  },
+  "implementation_plan": [
+    "Define typed contracts: ExpansionRequest, ExpansionTargetScored, GapSignal (no prompt changes).",
+    "Refactor GraphExpander to execute true bounded multi-hop traversal honoring depth budget.",
+    "Introduce deterministic expansion planner that selects mode (graph/search/refine) from analyzer + state signals.",
+    "Add per-target usefulness scoring and persist in ExplorationState path ledger.",
+    "Add strategy-level budget accounting and expose in metadata for observability.",
+    "Strengthen completion gate: require either resolved critical gaps or explicit budget exhaustion rationale.",
+    "Extend live harness to emit path-level utility metrics and mode budget consumption for regression checks."
+  ],
+  "final_assessment": {
+    "is_robust_or_naive": "moderately robust but still naive in expansion semantics",
+    "why": "Control guards and stopping logic are strong; expansion targeting and usefulness attribution remain coarse and string-driven.",
+    "required_for_production_grade": [
+      "Typed expansion contracts",
+      "True depth-aware traversal",
+      "Gap-aligned prioritization",
+      "Per-path usefulness scoring",
+      "Explicit strategy budget ledger"
+    ]
+  }
+}

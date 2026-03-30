@@ -6,17 +6,55 @@ from typing import Any, Callable
 
 from planner.planner_utils import ALLOWED_ACTIONS
 
+try:
+    from config.agent_runtime import (
+        ENABLE_MINIMAL_EDIT_PIPELINE,
+        ENABLE_ULTRA_MINIMAL_EDIT_PIPELINE,
+        REACT_MODE,
+    )
+except ImportError:
+    ENABLE_MINIMAL_EDIT_PIPELINE = False
+    ENABLE_ULTRA_MINIMAL_EDIT_PIPELINE = False
+    REACT_MODE = False
+
 from agent.execution.mutation_strategies import (
+    get_initial_search_variants,
     retry_same,
     symbol_retry,
 )
 from agent.memory.state import AgentState
 from agent.retrieval.query_rewriter import SearchAttempt
+from agent.retrieval.result_contract import RETRIEVAL_RESULT_TYPE_SYMBOL_BODY
 from agent.retrieval.retrieval_expander import normalize_file_path
 
 logger = logging.getLogger(__name__)
 
 _ALLOWED_ACTIONS_SET = set(ALLOWED_ACTIONS)
+
+# Stage 44: max LLM rewrite queries per SEARCH attempt (attempts 2+); bounds hybrid fanout per attempt.
+_MAX_REWRITE_QUERIES_PER_SEARCH_ATTEMPT = 5
+
+
+def _normalize_rewrite_query_list(raw: list[Any], max_total: int) -> list[str]:
+    """
+    Strip, drop empty, exact dedupe (first occurrence wins), hard cap. Non-str entries skipped.
+    Used for rewriter output only; attempt-1 deterministic variants do not use this.
+    """
+    if max_total < 1:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        s = item.strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= max_total:
+            break
+    return out
 
 
 class InvalidStepError(Exception):
@@ -44,16 +82,47 @@ def validate_step_input(step: dict) -> None:
         raise InvalidStepError("description/query exceeds max length (50000 chars)")
 
 
-def _is_valid_search_result(results: list | None) -> bool:
-    """True only if the first result has a non-empty file and a real snippet."""
+def _is_valid_search_result(results: list | None, raw: dict[str, Any] | None = None) -> bool:
+    """True if the first result has a file path; snippet may be empty for graph/BM25 hits."""
+    # Stage 43 / 45: directory-listing fallbacks are not semantic code retrieval; policy must retry/rewrite.
+    if raw and isinstance(raw, dict) and raw.get("retrieval_fallback") in ("file_search", "list_dir"):
+        return False
     if not results:
         return False
     r = results[0]
     if not r.get("file"):
         return False
-    if r.get("snippet") in ("", "[]", None):
+    snip = r.get("snippet")
+    if snip in ("", "[]", None):
+        f = (r.get("file") or "").lower()
+        if f.endswith((".py", ".pyi")):
+            return True
         return False
     return True
+
+
+def search_result_quality(raw: dict[str, Any] | None) -> str:
+    """
+    Soft signal for SEARCH success: does not change validity of _is_valid_search_result.
+    - strong: typed symbol-body signals or non-trivial snippet text on at least one hit
+    - weak: policy-valid but file-centric / empty-snippet style hits (e.g. .py path only)
+    """
+    if not raw or not isinstance(raw, dict):
+        return "weak"
+    results = raw.get("results") or []
+    if not results:
+        return "weak"
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        if r.get("implementation_body_present") is True:
+            return "strong"
+        if r.get("retrieval_result_type") == RETRIEVAL_RESULT_TYPE_SYMBOL_BODY:
+            return "strong"
+        snip = (r.get("snippet") or "").strip()
+        if snip and snip not in ("(no snippet)", "[]"):
+            return "strong"
+    return "weak"
 
 
 POLICIES = {
@@ -93,21 +162,70 @@ FAILURE_RECOVERY_DISPATCH = {
 }
 
 
+# Indicators that a failure is context-related (missing/weak retrieval) rather than
+# a hard unrecoverable error.  When these appear in an "exhausted retries" error the
+# failure should be RETRYABLE so the agent_loop can replan with better context rather
+# than giving up.
+_CONTEXT_RELATED_INDICATORS = (
+    "weak grounding",
+    "missing context",
+    "symbol not found",
+    "symbol_not_found",
+    "empty",
+    "low-content",
+    "insufficient",
+    "no context",
+    "patch_anchor_not_found",
+    "weakly_grounded",
+    "no_changes_planned",
+    "empty_patch",
+)
+
+# Failure reason codes that indicate the failure is context-related
+_CONTEXT_RELATED_REASON_CODES = frozenset({
+    "patch_anchor_not_found",
+    "weakly_grounded_patch",
+    "empty_patch",
+    "no_changes",
+})
+
+
+def _is_context_related_failure(error: str, output: Any) -> bool:
+    """Return True when the failure appears to be caused by missing/weak context."""
+    for indicator in _CONTEXT_RELATED_INDICATORS:
+        if indicator in error:
+            return True
+    if isinstance(output, dict):
+        frc = str(output.get("failure_reason_code") or "").lower()
+        if frc in _CONTEXT_RELATED_REASON_CODES:
+            return True
+    return False
+
+
 def classify_result(action: str, result: dict[str, Any] | None) -> ResultClassification:
     """
     Classify step result for recovery policy. Every step result must be classified.
     RETRYABLE_FAILURE: agent_loop may replan/retry. FATAL_FAILURE: stop without replan.
+
+    Context-aware: failures caused by missing/weak context are RETRYABLE even after
+    retries are exhausted, so the agent can replan with better retrieval.
     """
     if result is None or not isinstance(result, dict):
         return ResultClassification.FATAL_FAILURE
     if result.get("success") is True:
         return ResultClassification.SUCCESS
+    # Minimal / ultra-minimal pipeline: never FATAL for EDIT (isolation mode)
+    if (ENABLE_MINIMAL_EDIT_PIPELINE or ENABLE_ULTRA_MINIMAL_EDIT_PIPELINE) and action.upper() == "EDIT":
+        return ResultClassification.RETRYABLE_FAILURE
 
     error = (result.get("error") or "").lower()
     output = result.get("output") or {}
 
-    # Exhausted retries -> FATAL (policy engine already tried recovery)
+    # Exhausted retries — context-aware: if failure is due to missing context,
+    # classify as RETRYABLE so agent_loop can replan, not give up.
     if "exhausted" in error or "after retries" in error:
+        if _is_context_related_failure(error, output):
+            return ResultClassification.RETRYABLE_FAILURE
         return ResultClassification.FATAL_FAILURE
     if isinstance(output, dict) and output.get("attempt_history"):
         # Policy engine returned attempt_history; check if we exhausted
@@ -115,6 +233,8 @@ def classify_result(action: str, result: dict[str, Any] | None) -> ResultClassif
         max_attempts = policy.get("max_attempts", 1)
         history = output.get("attempt_history", [])
         if len(history) >= max_attempts:
+            if _is_context_related_failure(error, output):
+                return ResultClassification.RETRYABLE_FAILURE
             return ResultClassification.FATAL_FAILURE
 
     # Empty results (retrieval) -> RETRYABLE (query rewrite in policy engine)
@@ -137,6 +257,10 @@ def classify_result(action: str, result: dict[str, Any] | None) -> ResultClassif
     if "timeout" in error or "tool" in error or "fallback" in error:
         return ResultClassification.RETRYABLE_FAILURE
 
+    # Context-related failure codes in output -> RETRYABLE
+    if _is_context_related_failure(error, output):
+        return ResultClassification.RETRYABLE_FAILURE
+
     # Unknown/unhandled -> FATAL to avoid infinite retry loops
     return ResultClassification.FATAL_FAILURE
 
@@ -154,7 +278,7 @@ def _is_failure(action: str, retry_on: list[str], result: dict[str, Any] | None)
         return True
     if "empty_results" in retry_on:
         results = result.get("results") if isinstance(result.get("results"), list) else None
-        return not _is_valid_search_result(results)
+        return not _is_valid_search_result(results, result)
     if "symbol_not_found" in retry_on:
         return bool(result.get("error")) or result.get("success") is False
     if "non_zero_exit" in retry_on:
@@ -185,19 +309,31 @@ def _search_result_summary(raw: dict | None) -> str:
 
 
 def _build_search_memory(query: str, raw: dict) -> dict:
-    """Structured search context for EXPLAIN: query + results (file, snippet truncated)."""
+    """Structured search context for EXPLAIN: query + results (file, snippet truncated, optional typed fields)."""
     results = raw.get("results") or []
-    return {
-        "query": query,
-        "results": [
-            {
-                "file": normalize_file_path(r.get("file") or r.get("path") or ""),
-                "snippet": (r.get("snippet") or "")[: _SEARCH_MEMORY_SNIPPET_MAX],
-            }
-            for r in results
-            if r
-        ],
-    }
+    rows: list[dict] = []
+    for r in results:
+        if not r:
+            continue
+        row: dict = {
+            "file": normalize_file_path(r.get("file") or r.get("path") or ""),
+            "snippet": (r.get("snippet") or "")[: _SEARCH_MEMORY_SNIPPET_MAX],
+        }
+        if r.get("candidate_kind"):
+            row["candidate_kind"] = str(r["candidate_kind"])
+        if r.get("retrieval_result_type"):
+            row["retrieval_result_type"] = r["retrieval_result_type"]
+        if "implementation_body_present" in r:
+            row["implementation_body_present"] = r["implementation_body_present"]
+        if r.get("line") is not None:
+            try:
+                row["line"] = int(r["line"])
+            except (TypeError, ValueError):
+                row["line"] = r["line"]
+        if "line_range" in r and r["line_range"] is not None:
+            row["line_range"] = r["line_range"]
+        rows.append(row)
+    return {"query": query, "results": rows}
 
 
 def _append_tool_memory(state: AgentState, entry: dict) -> None:
@@ -245,6 +381,9 @@ class ExecutionPolicyEngine:
         # Actions that skip policy (single attempt, no retry)
         if action == "EXPLAIN" or max_attempts < 1:
             return self._run_once(step, state, action)
+        # Minimal / ultra-minimal pipeline: single attempt, no retry for EDIT
+        if (ENABLE_MINIMAL_EDIT_PIPELINE or ENABLE_ULTRA_MINIMAL_EDIT_PIPELINE) and action == "EDIT":
+            return self._run_once(step, state, action)
 
         attempt_history: list[dict[str, Any]] = []
 
@@ -261,24 +400,28 @@ class ExecutionPolicyEngine:
         """Single attempt; used for EXPLAIN or unknown. Caller should route EXPLAIN outside engine."""
         try:
             if action == "SEARCH":
-                desc = (step.get("description") or "").strip()
+                retrieval_input = (step.get("query") or step.get("description") or "").strip()
                 user_req = getattr(state, "instruction", "") or ""
                 if self._rewrite_query_fn is not None:
-                    q_ret = self._rewrite_query_fn(desc, user_req, [], state)
+                    q_ret = self._rewrite_query_fn(retrieval_input, user_req, [], state)
                     q_list = [q_ret] if isinstance(q_ret, str) else (q_ret or [])
                 else:
-                    q_list = [desc]
+                    q_list = [retrieval_input]
                 q_list = [x for x in q_list if isinstance(x, str) and (x or "").strip()]
                 if not q_list:
-                    q_list = [desc or ""]
+                    q_list = [retrieval_input or ""]
                 raw = None
                 for q in q_list:
-                    q = (q or "").strip() or desc
+                    q = (q or "").strip() or retrieval_input
                     if not q:
                         continue
                     print(f"[workflow] SEARCH (single) query={q!r}")
                     raw = self._search_fn(q, state)
                     if isinstance(raw, dict) and not _is_failure("SEARCH", ["empty_results"], raw):
+                        raw = dict(raw)
+                        sq = search_result_quality(raw)
+                        raw["search_quality"] = sq
+                        state.context["search_quality"] = sq
                         return _with_classification({"success": True, "output": raw}, "SEARCH")
                 return _with_classification(
                     {"success": False, "output": raw if isinstance(raw, dict) else {"attempt_history": []}, "error": "empty results"},
@@ -304,15 +447,28 @@ class ExecutionPolicyEngine:
         retry_on: list[str],
         attempt_history: list[dict[str, Any]],
     ) -> dict:
-        description = (step.get("description") or "").strip()
+        retrieval_input = (step.get("query") or step.get("description") or "").strip()
         user_request = getattr(state, "instruction", "") or ""
 
-        print(f"[workflow] SEARCH step description: {description[:80]}{'...' if len(description) > 80 else ''}")
+        print(f"[workflow] SEARCH step retrieval_input: {retrieval_input[:80]}{'...' if len(retrieval_input) > 80 else ''}")
         print(f"[workflow] SEARCH max_attempts={max_attempts}")
 
         for attempt_num in range(1, max_attempts + 1):
-            # Rewrite with full context: planner step, user request, previous attempts
-            if self._rewrite_query_fn is not None:
+            # Stage 42: attempt 1 only — bounded deterministic variants, no LLM rewriter
+            # REACT_MODE: disable query_variants; use model output as-is (execution decides)
+            if attempt_num == 1 and not REACT_MODE:
+                initial = get_initial_search_variants(retrieval_input, max_total=3)
+                initial = [q for q in (initial or []) if isinstance(q, str) and (q or "").strip()]
+                use_initial = bool(initial)
+            else:
+                use_initial = False
+
+            if use_initial:
+                queries_to_try = initial
+            elif REACT_MODE:
+                # REACT_MODE: no query rewriting; use model output as-is
+                queries_to_try = [retrieval_input or ""]
+            elif self._rewrite_query_fn is not None:
                 attempt_slice: list[SearchAttempt] = [
                     {
                         "tool": h.get("tool", ""),
@@ -324,20 +480,23 @@ class ExecutionPolicyEngine:
                     for h in attempt_history
                 ]
                 try:
-                    rewrite_ret = self._rewrite_query_fn(description, user_request, attempt_slice, state)
+                    rewrite_ret = self._rewrite_query_fn(retrieval_input, user_request, attempt_slice, state)
                     queries_to_try = [rewrite_ret] if isinstance(rewrite_ret, str) else (rewrite_ret or [])
                 except Exception as e:
-                    logger.warning("[policy] Rewriter failed, using description: %s", e)
-                    queries_to_try = [description or ""]
+                    logger.warning("[policy] Rewriter failed, using retrieval_input: %s", e)
+                    queries_to_try = [retrieval_input or ""]
             else:
-                queries_to_try = [description or ""]
-            queries_to_try = [q for q in queries_to_try if isinstance(q, str) and (q or "").strip()]
+                queries_to_try = [retrieval_input or ""]
+            if use_initial:
+                queries_to_try = [q for q in queries_to_try if isinstance(q, str) and (q or "").strip()]
+            else:
+                queries_to_try = _normalize_rewrite_query_list(queries_to_try, _MAX_REWRITE_QUERIES_PER_SEARCH_ATTEMPT)
             if not queries_to_try:
-                queries_to_try = [description or ""]
+                queries_to_try = [retrieval_input or ""]
 
             success_in_attempt = False
             for q_idx, query in enumerate(queries_to_try):
-                query = (query or "").strip() or description
+                query = (query or "").strip() or retrieval_input
                 if not query:
                     continue
                 print(f"[workflow] SEARCH attempt {attempt_num}/{max_attempts} query={query!r}" + (f" (variant {q_idx + 1}/{len(queries_to_try)})" if len(queries_to_try) > 1 else ""))
@@ -377,6 +536,9 @@ class ExecutionPolicyEngine:
                     if isinstance(raw, dict):
                         raw = dict(raw)
                         raw["attempt_history"] = attempt_history
+                    sq = search_result_quality(raw)
+                    raw["search_quality"] = sq
+                    state.context["search_quality"] = sq
                     state.context["search_query_rewritten"] = query
                     state.context["search_results"] = raw
                     state.context["files"] = [
@@ -422,31 +584,23 @@ class ExecutionPolicyEngine:
         mutation: str | None,
         attempt_history: list[dict[str, Any]],
     ) -> dict:
-        steps_to_try = symbol_retry(step)[:max_attempts]
-        for attempt_num, st in enumerate(steps_to_try, start=1):
-            logger.info("[policy] EDIT attempt %s", attempt_num)
-            try:
-                raw = self._edit_fn(st, state)
-            except Exception as e:
-                attempt_history.append({"attempt": attempt_num, "error": str(e)})
-                continue
-            attempt_history.append({"attempt": attempt_num, "success": raw.get("success")})
-            if not _is_failure("EDIT", retry_on, raw):
-                out = raw.get("output") if isinstance(raw.get("output"), dict) else {}
-                out = dict(out)
-                out["attempt_history"] = attempt_history
-                _append_tool_memory(
-                    state,
-                    {"tool": "edit", "path": out.get("path"), "success": True},
-                )
-                logger.info("[policy] EDIT success")
-                return _with_classification({"success": True, "output": out, "error": raw.get("error")}, "EDIT")
+        # ReAct: EDIT always executes. No conditional routing, no symbol_retry, no critic before execution.
+        # (Main dispatch bypasses policy_engine for EDIT; this path exists for any alternate callers.)
+        try:
+            raw = self._edit_fn(step, state)
+        except Exception as e:
+            attempt_history.append({"attempt": 1, "error": str(e)})
+            return _with_classification(
+                {"success": False, "output": {"attempt_history": attempt_history}, "error": str(e)},
+                "EDIT",
+            )
+        r = raw if isinstance(raw, dict) else {"success": False, "output": {}, "error": "edit failed"}
+        attempt_history.append({"attempt": 1, "success": r.get("success")})
+        out = r.get("output") if isinstance(r.get("output"), dict) else {}
+        out = dict(out)
+        out["attempt_history"] = attempt_history
         return _with_classification(
-            {
-                "success": False,
-                "output": {"attempt_history": attempt_history},
-                "error": "edit failed after retries",
-            },
+            {"success": r.get("success", False), "output": out, "error": r.get("error"), "executed": r.get("executed", True)},
             "EDIT",
         )
 

@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("tree_sitter_python", reason="tree_sitter_python required for parsing")
-
 from repo_graph.graph_query import expand_neighbors, find_symbol
 from repo_graph.graph_storage import GraphStorage
 from repo_index.indexer import index_repo, update_index_for_file

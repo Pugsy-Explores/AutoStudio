@@ -133,7 +133,7 @@ class TestDeveloperWorkflowIntegration:
 
     def test_run_controller_explain_completes(self):
         """Run a simple explain task through run_controller."""
-        from agent.orchestrator.agent_controller import run_controller
+        from tests.utils.runtime_adapter import run_controller
 
         result = run_controller("Explain what AgentState contains", project_root=str(PROJECT_ROOT))
         assert "task_id" in result

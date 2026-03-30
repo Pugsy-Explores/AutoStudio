@@ -9,6 +9,7 @@ from pathlib import Path
 
 from agent.retrieval.context_pruner import prune_context
 from agent.retrieval.retrieval_expander import normalize_file_path
+from agent.retrieval.result_contract import RETRIEVAL_RESULT_TYPE_SYMBOL_BODY
 from agent.tools import read_symbol_body
 from config.repo_graph_config import INDEX_SQLITE, SYMBOL_GRAPH_DIR
 from config.retrieval_config import (
@@ -126,17 +127,23 @@ def expand_from_anchors(
             line = start_line if start_line is not None else 0
 
             body = read_symbol_body(name or resolved, resolved, line=line if line else None)
+            body_from_source = bool(body and str(body).strip())
             if not body:
                 body = (n.get("docstring") or name or "")[:500]
 
-            candidates.append({
+            cand: dict = {
                 "file": resolved,
                 "symbol": name,
                 "snippet": body,
                 "line": line,
                 "line_range": [start_line, end_line] if start_line is not None and end_line is not None else None,
                 "type": "symbol",
-            })
+                "candidate_kind": "symbol",
+            }
+            if body_from_source:
+                cand["retrieval_result_type"] = RETRIEVAL_RESULT_TYPE_SYMBOL_BODY
+                cand["implementation_body_present"] = True
+            candidates.append(cand)
 
         if not candidates:
             return []

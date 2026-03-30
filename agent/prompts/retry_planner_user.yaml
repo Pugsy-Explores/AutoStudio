@@ -1,0 +1,8 @@
+prompt: |
+  Goal: {goal}
+  Diagnosis:
+    failure_type: {failure_type}
+    affected_step: {affected_step}
+    suggestion: {suggestion}
+
+  Produce retry hints as JSON.

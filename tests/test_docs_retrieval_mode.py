@@ -86,40 +86,54 @@ def test_docs_root_readme_ranks_above_nested_markdown(tmp_path: Path):
     assert top.endswith(str((root / "README.md").resolve())), "repo-root README should strongly outrank others"
 
 
-def test_code_mode_search_candidates_path_unchanged_when_artifact_mode_absent(monkeypatch, tmp_path: Path):
+def test_code_mode_search_candidates_normalized_to_search_when_artifact_mode_absent(monkeypatch, tmp_path: Path):
+    """In code mode, SEARCH_CANDIDATES is normalized to SEARCH; dispatcher uses policy engine path."""
     root = tmp_path
     state = _mk_state(str(root), dominant_artifact_mode="code")
 
-    called = {"n": 0}
+    def fake_policy_execute(step, s):
+        return {
+            "success": True,
+            "output": {
+                "query": "anything",
+                "results": [{"file": "x.py", "symbol": "X", "snippet": "x"}],
+            },
+        }
 
-    def fake_search_candidates(query: str, project_root=None, state=None):
-        called["n"] += 1
-        return [{"file": "x.py", "symbol": "X", "snippet": "x", "score": 1.0, "source": "fake"}]
-
-    monkeypatch.setattr("agent.retrieval.retrieval_pipeline.search_candidates", fake_search_candidates)
+    monkeypatch.setattr(
+        "agent.execution.step_dispatcher._policy_engine.execute_with_policy",
+        fake_policy_execute,
+    )
 
     out = dispatch({"action": "SEARCH_CANDIDATES", "query": "anything"}, state)
     assert out["success"] is True
-    assert called["n"] == 1
-    assert out["output"]["candidates"][0]["source"] == "fake"
+    assert "candidates" in out["output"]
+    assert len(out["output"]["candidates"]) >= 1
+    assert out["output"]["candidates"][0]["source"] == "search"
 
 
-def test_code_mode_search_candidates_same_when_artifact_mode_code_explicit(monkeypatch, tmp_path: Path):
+def test_code_mode_search_candidates_normalized_when_artifact_mode_code_explicit(monkeypatch, tmp_path: Path):
+    """In code mode with explicit artifact_mode='code', SEARCH_CANDIDATES is normalized to SEARCH."""
     root = tmp_path
     state = _mk_state(str(root), dominant_artifact_mode="code")
 
-    called = {"n": 0}
+    def fake_policy_execute(step, s):
+        return {
+            "success": True,
+            "output": {
+                "query": "anything",
+                "results": [{"file": "x.py", "symbol": "X", "snippet": "x"}],
+            },
+        }
 
-    def fake_search_candidates(query: str, project_root=None, state=None):
-        called["n"] += 1
-        return [{"file": "x.py", "symbol": "X", "snippet": "x", "score": 1.0, "source": "fake"}]
-
-    monkeypatch.setattr("agent.retrieval.retrieval_pipeline.search_candidates", fake_search_candidates)
+    monkeypatch.setattr(
+        "agent.execution.step_dispatcher._policy_engine.execute_with_policy",
+        fake_policy_execute,
+    )
 
     out = dispatch({"action": "SEARCH_CANDIDATES", "query": "anything", "artifact_mode": "code"}, state)
     assert out["success"] is True
-    assert called["n"] == 1
-    assert out["output"]["candidates"][0]["source"] == "fake"
+    assert out["output"]["candidates"][0]["source"] == "search"
 
 
 def test_invalid_artifact_mode_fails_cleanly(tmp_path: Path):

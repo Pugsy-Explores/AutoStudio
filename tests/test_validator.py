@@ -4,6 +4,7 @@ import unittest
 
 from agent.memory.state import AgentState
 from agent.memory.step_result import StepResult
+from agent.execution.policy_engine import _is_valid_search_result
 from agent.orchestrator.validator import (
     validate_step,
     _validate_step_rules,
@@ -42,6 +43,28 @@ class TestValidatorHelpers(unittest.TestCase):
         self.assertTrue(_instruction_suggests_implementation("Explain how the dispatcher routes"))
         self.assertTrue(_instruction_suggests_implementation("how does step_dispatcher work"))
         self.assertFalse(_instruction_suggests_implementation("run the tests"))
+
+
+class TestSearchValidityMatchesPolicyEngine(unittest.TestCase):
+    """Validator SEARCH rule uses policy_engine._is_valid_search_result — keep parity."""
+
+    def test_file_search_marker_invalid(self):
+        out = {
+            "results": [{"file": "a.py", "snippet": "x"}],
+            "retrieval_fallback": "file_search",
+        }
+        self.assertFalse(_is_valid_search_result(out.get("results"), out))
+
+    def test_list_dir_marker_invalid(self):
+        out = {
+            "results": [{"file": "a.py", "snippet": "x"}],
+            "retrieval_fallback": "list_dir",
+        }
+        self.assertFalse(_is_valid_search_result(out.get("results"), out))
+
+    def test_real_hit_valid(self):
+        out = {"results": [{"file": "agent/x.py", "snippet": "def f"}], "query": "q"}
+        self.assertTrue(_is_valid_search_result(out["results"], out))
 
 
 class TestValidateStepRules(unittest.TestCase):

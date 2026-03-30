@@ -51,4 +51,26 @@ None/
 
 # Runtime and generated
 logs/
-models/
+# ML weights / checkpoints at repo root only (do not use plain "models/" — it ignores agent/models/)
+/models/
+
+# Stage 12 agent eval runs (JSON artifacts; regenerate locally)
+artifacts/agent_eval/
+artifacts/agent_eval_runs/
+
+# Local A/B runs, scratch eval workspaces, and debug trees (large; regenerate locally)
+artifacts/bundle_selector_ab/
+artifacts/kind_expansion_ab/
+artifacts/_*/
+artifacts/debug_recursion_ws/
+artifacts/debug_recursion_ws2/
+artifacts/replanner_debug/
+
+# Exploration behavior eval harness local runs (JSON/text; regenerate locally)
+artifacts/exploration_eval_logs/
+
+# Temporary test and audit reports
+tmp/
+
+# Local exploration LLM eval harness logs (regenerate locally)
+.eval_logs/

@@ -7,6 +7,8 @@ import os
 from agent.memory.state import AgentState
 from config.retrieval_config import (
     ENABLE_BM25_SEARCH,
+    ENABLE_GRAPH_LOOKUP,
+    ENABLE_GREP_SEARCH,
     ENABLE_RRF_FUSION,
     ENABLE_VECTOR_SEARCH,
     MAX_SEARCH_RESULTS,
@@ -106,6 +108,8 @@ def hybrid_retrieve(query: str, state: AgentState) -> dict:
             return {"results": []}
 
     def run_graph():
+        if not ENABLE_GRAPH_LOOKUP:
+            return {"results": []}
         try:
             from agent.retrieval.graph_retriever import retrieve_symbol_context
             # Use repo_map anchor when available (confidence >= 0.9)
@@ -134,6 +138,8 @@ def hybrid_retrieve(query: str, state: AgentState) -> dict:
             return {"results": []}
 
     def run_grep():
+        if not ENABLE_GREP_SEARCH:
+            return {"results": []}
         try:
             from agent.tools import search_code
             out = search_code(query, tool_hint="search_for_pattern")

@@ -24,32 +24,38 @@ def _setup_indexed_repo(tmp_path: Path, source_root: Path) -> tuple[str, str]:
     return str(tmp_path), str(source_root)
 
 
-def _setup_indexed_subset(tmp_path: Path, project_root: Path, subdirs: tuple[str, ...]) -> tuple[str, str]:
-    """Index only subdirs of project. Returns (project_root for retrieval, source_root for path resolution)."""
+def _setup_indexed_subset(
+    tmp_path: Path,
+    project_root: Path,
+    subdirs: tuple[str, ...],
+    *,
+    build_embeddings: bool = True,
+) -> tuple[str, str]:
+    """Index only subdirs of project. Returns (project_root for retrieval, source_root for path resolution).
+    build_embeddings=False skips SentenceTransformer/ChromaDB for faster graph-only tests."""
     out_dir = tmp_path / ".symbol_graph"
     out_dir.mkdir(parents=True, exist_ok=True)
-    index_repo(str(project_root), output_dir=str(out_dir), include_dirs=subdirs)
+    index_repo(
+        str(project_root),
+        output_dir=str(out_dir),
+        include_dirs=subdirs,
+        build_embeddings=build_embeddings,
+    )
     return str(tmp_path), str(project_root)
-
-
-def _requires_tree_sitter():
-    """Skip test if tree-sitter is not installed (needed for indexing)."""
-    pytest.importorskip("tree_sitter_python")
 
 
 @pytest.fixture(scope="session")
 def indexed_autostudio(tmp_path_factory):
-    """Index agent/ and editing/ once per session; shared by all slow tests."""
-    _requires_tree_sitter()
+    """Index agent/ and editing/ once per session; shared by all slow tests.
+    Skips embeddings (SentenceTransformer/ChromaDB) for speed; tests use graph retrieval only."""
     tmp_path = tmp_path_factory.mktemp("retrieval_index")
     project_root = Path(__file__).resolve().parent.parent
-    return _setup_indexed_subset(tmp_path, project_root, _INDEX_SUBDIRS)
+    return _setup_indexed_subset(tmp_path, project_root, _INDEX_SUBDIRS, build_embeddings=False)
 
 
 @pytest.fixture
 def indexed_fixtures(tmp_path):
     """Index test fixtures into tmp_path."""
-    _requires_tree_sitter()
     fixtures_dir = Path(__file__).parent / "fixtures" / "repo"
     return _setup_indexed_repo(tmp_path, fixtures_dir)
 
@@ -349,7 +355,11 @@ def test_retrieval_pipeline_ranked_context_step_executor(indexed_autostudio):
     state = AgentState(
         instruction=query,
         current_plan={"plan_id": "retrieval_plan", "steps": []},
-        context={"project_root": project_root, "instruction": query},
+        context={
+            "project_root": project_root,
+            "source_root": source_root,
+            "instruction": query,
+        },
     )
 
     run_retrieval_pipeline(results, state, query=query)

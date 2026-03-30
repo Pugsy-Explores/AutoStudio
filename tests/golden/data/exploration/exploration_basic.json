@@ -1,0 +1,19 @@
+[
+  {
+    "id": "exploration_from_pool",
+    "input": {
+      "pool": [
+        {"candidate_id": "rc_1", "file": "src/a.py", "relations": [], "implementation_body_present": false},
+        {"candidate_id": "rc_2", "file": "src/a.py", "relations": [], "implementation_body_present": false}
+      ],
+      "candidate_id": "rc_1"
+    },
+    "expected": {
+      "metrics": {
+        "exploration_used": true,
+        "exploration_added_count": 2,
+        "exploration_effective": true
+      }
+    }
+  }
+]

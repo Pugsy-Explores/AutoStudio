@@ -9,16 +9,205 @@ Set ENABLE_PROMPT_GUARDRAILS=0 to disable (e.g. eval, tests).
 
 Retries: exponential backoff on ConnectionError, TimeoutError, and transient API errors.
 Configure via MODEL_RETRY_MAX_ATTEMPTS (default 5) and MODEL_RETRY_BASE_DELAY_SECONDS (default 1.0).
+
+Stage 28: Model call audit — record_model_call() is invoked only from _call_chat (real HTTP).
+Stubbed benchmark paths never reach _call_chat, so audit counts are trustworthy.
+
+Per-call token estimates: ``estimate_tokens`` (chars/3.8) on final message contents and on streamed
+completion (reasoning + content). Logged at INFO as ``[llm_tokens_est]``; API usage echoed when the
+server includes usage in the stream.
 """
 
+import contextvars
 import json
 import logging
 import os
+import re
 import sys
+import threading
 import time
-from typing import Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
+
+# --- Token estimation (prompt after template injection; completion from streamed text) ------------
+
+_CHARS_PER_TOKEN_EST: float = 3.8
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token count from UTF-8 character length (~3.8 chars/token for Latin-ish text)."""
+    if not text:
+        return 0
+    return int(len(text) / _CHARS_PER_TOKEN_EST)
+
+
+def _prompt_text_from_messages(messages: list[dict]) -> str:
+    """Flatten chat messages to a single string matching payload content (post-normalization)."""
+    parts: list[str] = []
+    for m in messages or []:
+        parts.append(str(m.get("content") or ""))
+    return "".join(parts)
+
+
+def _log_llm_token_estimates(
+    *,
+    task_name: str | None,
+    model_key: str | None,
+    messages: list[dict],
+    completion_text: str,
+    last_usage: dict[str, Any] | None,
+) -> None:
+    """Info log + workflow line: estimated prompt/completion tokens; API usage when server sends it."""
+    prompt_text = _prompt_text_from_messages(messages)
+    prompt_est = estimate_tokens(prompt_text)
+    completion_est = estimate_tokens(completion_text)
+    api_pt = last_usage.get("prompt_tokens") if last_usage else None
+    api_ct = last_usage.get("completion_tokens") if last_usage else None
+    logger.info(
+        "[llm_tokens_est] task=%s model_key=%s prompt_tokens_est=%s completion_tokens_est=%s "
+        "prompt_chars=%s completion_chars=%s api_prompt_tokens=%s api_completion_tokens=%s",
+        task_name or "unknown",
+        model_key or "unknown",
+        prompt_est,
+        completion_est,
+        len(prompt_text),
+        len(completion_text),
+        api_pt,
+        api_ct,
+    )
+    api_suffix = ""
+    if api_pt is not None or api_ct is not None:
+        api_suffix = f" api_prompt={api_pt} api_completion={api_ct}"
+    print(
+        "    [workflow] token estimate: "
+        f"prompt≈{prompt_est} completion≈{completion_est}{api_suffix}"
+    )
+
+
+# Last chat completion usage from `_call_chat` (for Langfuse / observability). Context-local.
+_last_chat_usage: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "_last_chat_usage", default=None
+)
+
+
+def get_last_chat_usage() -> dict[str, Any] | None:
+    """Token usage from the most recent ``_call_chat`` in this context, or ``None``."""
+    return _last_chat_usage.get()
+
+
+def _set_last_chat_usage(u: dict[str, Any] | None) -> None:
+    _last_chat_usage.set(u)
+
+
+def clear_last_chat_usage() -> None:
+    """Clear usage context before a new Langfuse generation (avoids stale token counts)."""
+    _set_last_chat_usage(None)
+
+
+def _usage_obj_to_dict(u: Any) -> dict[str, Any]:
+    """Normalize OpenAI-compatible ``usage`` to plain dict for Langfuse."""
+    if u is None:
+        return {}
+    if isinstance(u, dict):
+        raw = dict(u)
+    elif hasattr(u, "model_dump"):
+        raw = u.model_dump()
+    else:
+        raw = {
+            "prompt_tokens": getattr(u, "prompt_tokens", None),
+            "completion_tokens": getattr(u, "completion_tokens", None),
+            "total_tokens": getattr(u, "total_tokens", None),
+        }
+        ctd = getattr(u, "completion_tokens_details", None)
+        if ctd is not None:
+            if isinstance(ctd, dict):
+                raw["completion_tokens_details"] = ctd
+            elif hasattr(ctd, "model_dump"):
+                raw["completion_tokens_details"] = ctd.model_dump()
+            else:
+                rt = getattr(ctd, "reasoning_tokens", None)
+                if rt is not None:
+                    raw.setdefault("completion_tokens_details", {})["reasoning_tokens"] = rt
+    out: dict[str, Any] = {}
+    for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        if raw.get(k) is not None:
+            out[k] = raw[k]
+    ctd = raw.get("completion_tokens_details")
+    if isinstance(ctd, dict) and ctd.get("reasoning_tokens") is not None:
+        out["reasoning_tokens"] = ctd["reasoning_tokens"]
+    return out
+
+
+class GuardrailError(RuntimeError):
+    """Raised when guardrail validation fails after retries. Catch for structured handling."""
+
+
+# ---------------------------------------------------------------------------
+# Stage 28: Model call audit (thread-safe, process-local)
+# ---------------------------------------------------------------------------
+
+_MODEL_CALL_AUDIT_LOCK = threading.Lock()
+_MODEL_CALL_AUDIT: dict = {
+    "model_call_count": 0,
+    "small_model_call_count": 0,
+    "reasoning_model_call_count": 0,
+    "model_call_sites": [],  # bounded list, max 50
+    "model_provider": None,
+    "model_base_url": None,
+    "model_name_small": None,
+    "model_name_reasoning": None,
+}
+_MAX_CALL_SITES = 50
+
+
+def _record_model_call(kind: str, callsite: str, model_name: str, base_url: str) -> None:
+    """Record a real model call. Called only from _call_chat (actual HTTP)."""
+    with _MODEL_CALL_AUDIT_LOCK:
+        _MODEL_CALL_AUDIT["model_call_count"] += 1
+        if kind == "small":
+            _MODEL_CALL_AUDIT["small_model_call_count"] += 1
+        else:
+            _MODEL_CALL_AUDIT["reasoning_model_call_count"] += 1
+        if _MODEL_CALL_AUDIT["model_provider"] is None:
+            _MODEL_CALL_AUDIT["model_provider"] = "openai_compatible"
+        if _MODEL_CALL_AUDIT["model_base_url"] is None:
+            _MODEL_CALL_AUDIT["model_base_url"] = base_url
+        if kind == "small" and _MODEL_CALL_AUDIT["model_name_small"] is None:
+            _MODEL_CALL_AUDIT["model_name_small"] = model_name
+        if kind == "reasoning" and _MODEL_CALL_AUDIT["model_name_reasoning"] is None:
+            _MODEL_CALL_AUDIT["model_name_reasoning"] = model_name
+        sites = _MODEL_CALL_AUDIT["model_call_sites"]
+        if len(sites) < _MAX_CALL_SITES:
+            sites.append({"kind": kind, "callsite": callsite, "model_name": model_name})
+
+
+def reset_model_call_audit() -> None:
+    """Reset audit state. Call before each benchmark task in live_model mode."""
+    with _MODEL_CALL_AUDIT_LOCK:
+        _MODEL_CALL_AUDIT["model_call_count"] = 0
+        _MODEL_CALL_AUDIT["small_model_call_count"] = 0
+        _MODEL_CALL_AUDIT["reasoning_model_call_count"] = 0
+        _MODEL_CALL_AUDIT["model_call_sites"] = []
+        _MODEL_CALL_AUDIT["model_provider"] = None
+        _MODEL_CALL_AUDIT["model_base_url"] = None
+        _MODEL_CALL_AUDIT["model_name_small"] = None
+        _MODEL_CALL_AUDIT["model_name_reasoning"] = None
+
+
+def get_model_call_audit() -> dict:
+    """Return a copy of the current audit state."""
+    with _MODEL_CALL_AUDIT_LOCK:
+        return {
+            "model_call_count": _MODEL_CALL_AUDIT["model_call_count"],
+            "small_model_call_count": _MODEL_CALL_AUDIT["small_model_call_count"],
+            "reasoning_model_call_count": _MODEL_CALL_AUDIT["reasoning_model_call_count"],
+            "model_call_sites": list(_MODEL_CALL_AUDIT["model_call_sites"]),
+            "model_provider": _MODEL_CALL_AUDIT["model_provider"],
+            "model_base_url": _MODEL_CALL_AUDIT["model_base_url"],
+            "model_name_small": _MODEL_CALL_AUDIT["model_name_small"],
+            "model_name_reasoning": _MODEL_CALL_AUDIT["model_name_reasoning"],
+        }
 
 T = TypeVar("T")
 
@@ -69,12 +258,47 @@ def _retry_with_exponential_backoff(
         raise last_exc
     raise RuntimeError("retry loop exited unexpectedly")
 
+
+def _try_emit_llm_trace(
+    *,
+    task_name: str,
+    prompt: str,
+    system_prompt: str | None,
+    output_text: str,
+    latency_ms: int,
+    model_name: str,
+) -> None:
+    """Phase 13 — append LLM step to active TraceEmitter when ModeManager pins context."""
+    try:
+        from agent_v2.runtime.trace_context import get_active_trace_emitter
+
+        em = get_active_trace_emitter()
+        if em is None:
+            return
+        em.record_llm(
+            task_name=task_name,
+            prompt=prompt,
+            output_text=output_text,
+            latency_ms=latency_ms,
+            system_prompt=system_prompt,
+            model=model_name,
+        )
+    except Exception:
+        logger.debug("LLM trace emit skipped", exc_info=True)
+
+
 _ENABLE_GUARDRAILS = os.getenv("ENABLE_PROMPT_GUARDRAILS", "1").lower() in ("1", "true", "yes")
+_MODEL_CHAT_ROLE_SUPPORT = os.getenv("MODEL_CHAT_ROLE_SUPPORT", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # Use config from same package
 from agent.models.model_config import (
     get_endpoint_for_model,
     get_model_call_params,
+    get_model_name,
     MODEL_API_KEY,
     MODEL_MAX_TOKENS,
     MODEL_REQUEST_TIMEOUT,
@@ -87,22 +311,164 @@ _TIMEOUT = MODEL_REQUEST_TIMEOUT
 
 _MAX_PRETTY_LINES = 40
 _PRETTY_WIDTH = 72
+_MAX_CONTEXT_CHARS = 400
 
 
-def _pretty_print_request(messages: list[dict]) -> None:
-    """Pretty-print model request (messages) for workflow visibility."""
+def _dump_replanner_prompt_files(system_prompt: str | None, user_prompt: str) -> None:
+    """Write replanner system/user prompts for observability (debug_replanner)."""
+    out_dir = "artifacts/replanner_debug"
+    os.makedirs(out_dir, exist_ok=True)
+    ts = int(time.time() * 1000)
+    sys_txt = system_prompt if system_prompt is not None else ""
+    body = (
+        "=== SYSTEM PROMPT ===\n"
+        f"{sys_txt}\n\n"
+        "=== USER PROMPT ===\n"
+        f"{user_prompt or ''}"
+    )
+    last_path = os.path.join(out_dir, "last_prompt.txt")
+    ts_path = os.path.join(out_dir, f"prompt_{ts}.txt")
+    with open(last_path, "w", encoding="utf-8") as f:
+        f.write(body)
+    with open(ts_path, "w", encoding="utf-8") as f:
+        f.write(body)
+    logger.info("[DEBUG] replanner prompts written to %s and %s", last_path, ts_path)
+
+
+# Task names that use replanner-style prompts (debug_replanner dump).
+_REPLANNER_LLM_DEBUG_TASK_NAMES = frozenset({
+    "PLANNER_REPLAN_PLAN",
+    "PLANNER_REPLAN_ACT",
+    "PLANNER_REPLAN_ORCHESTRATOR",
+})
+
+
+def _truncate_for_log(text: str, max_chars: int = _MAX_CONTEXT_CHARS) -> str:
+    clean = " ".join((text or "").split())
+    if len(clean) <= max_chars:
+        return clean
+    return clean[:max_chars] + "..."
+
+
+def _extract_section_value(text: str, section_name: str) -> str:
+    lines = (text or "").splitlines()
+    for i, line in enumerate(lines):
+        normalized = line.strip().lower()
+        if normalized.startswith(section_name.lower() + ":"):
+            tail = line.split(":", 1)[1].strip()
+            if tail:
+                return _truncate_for_log(tail)
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            out: list[str] = []
+            while j < len(lines):
+                cur = lines[j].strip()
+                if not cur:
+                    break
+                if cur.endswith(":") and len(cur) < 60:
+                    break
+                out.append(cur)
+                j += 1
+            return _truncate_for_log(" ".join(out))
+    return ""
+
+
+def _extract_json_objects(text: str) -> list[dict[str, Any]]:
+    objs: list[dict[str, Any]] = []
+    if not text:
+        return objs
+    for m in re.finditer(r"\{[\s\S]*?\}", text):
+        frag = m.group(0)
+        try:
+            parsed = json.loads(frag)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            objs.append(parsed)
+    return objs
+
+
+def _extract_prompt_context(messages: list[dict]) -> dict[str, str]:
+    user_content = "\n\n".join(
+        str(m.get("content") or "")
+        for m in (messages or [])
+        if str(m.get("role") or "").lower() == "user"
+    )
+    system_content = "\n\n".join(
+        str(m.get("content") or "")
+        for m in (messages or [])
+        if str(m.get("role") or "").lower() == "system"
+    )
+    src = user_content or system_content or ""
+    context: dict[str, str] = {}
+    instruction = _extract_section_value(src, "Instruction") or _extract_section_value(system_content, "Instruction")
+    if instruction:
+        context["instruction"] = instruction
+    expected = _extract_section_value(src, "Expected Behavior") or _extract_section_value(system_content, "Expected Behavior")
+    if expected:
+        context["expected_behavior"] = expected
+    trace = _extract_section_value(src, "Trace") or _extract_section_value(system_content, "Trace")
+    if trace:
+        context["trace"] = trace
+    previous = _extract_section_value(src, "Previous queries (optional)") or _extract_section_value(
+        system_content, "Previous queries (optional)"
+    )
+    if previous:
+        context["previous_queries"] = previous
+    failure = _extract_section_value(src, "Failure reason (optional)") or _extract_section_value(
+        system_content, "Failure reason (optional)"
+    )
+    if failure:
+        context["failure_reason"] = failure
+
+    # Parse embedded JSON payloads (common in exploration/scoper/selector prompts).
+    for blob in _extract_json_objects(src) + _extract_json_objects(system_content):
+        for key in (
+            "instruction",
+            "expected_behavior",
+            "context_feedback",
+            "previous_queries",
+            "failure_reason",
+            "step_summaries",
+            "final_outcome",
+            "candidates",
+            "selected_indices",
+            "selected",
+            "query_intent",
+        ):
+            if key in blob and key not in context:
+                try:
+                    context[key] = _truncate_for_log(json.dumps(blob[key], ensure_ascii=False))
+                except Exception:
+                    context[key] = _truncate_for_log(str(blob[key]))
+        if "candidates" in blob:
+            try:
+                context.setdefault("candidates_count", str(len(blob["candidates"])))
+            except Exception:
+                pass
+
+    # Fallback when prompt template has no section markers.
+    if not context:
+        first_non_empty = next((ln.strip() for ln in (user_content or system_content).splitlines() if ln.strip()), "")
+        if first_non_empty:
+            context["context"] = _truncate_for_log(first_non_empty)
+    return context
+
+
+def _pretty_print_request(task_name: str | None, context_fields: dict[str, str], *, model_key: str | None = None) -> None:
+    """Print sanitized, centralized LLM request log (no raw prompt)."""
     print("    [workflow] model request:")
     print("    " + "─" * _PRETTY_WIDTH)
-    for m in messages:
-        role = (m.get("role") or "user").upper()
-        content = (m.get("content") or "").strip()
-        lines = content.splitlines()
-        if len(lines) > _MAX_PRETTY_LINES:
-            lines = lines[:_MAX_PRETTY_LINES] + [f"... ({len(lines) - _MAX_PRETTY_LINES} more lines)"]
-        print(f"    [{role}]")
-        for line in lines:
-            print("    " + line)
-        print("    " + "·" * min(_PRETTY_WIDTH, 40))
+    print(f"    step: {task_name or 'unknown'}")
+    if model_key:
+        print(f"    model_key: {model_key}")
+    if context_fields:
+        for k, v in context_fields.items():
+            if v:
+                print(f"    {k}: {v}")
+    else:
+        print("    context: (none)")
     print("    " + "─" * _PRETTY_WIDTH)
 
 
@@ -237,9 +603,44 @@ def _stream_chunk_to_terminal(text: str) -> None:
         sys.stdout.flush()
 
 
+def _flatten_messages_with_role_tags(messages: list[dict]) -> str:
+    """
+    Deterministic fallback serialization for backends that do not support role messages.
+    Uses strict tags to reduce role confusion on small models.
+    """
+    system_parts: list[str] = []
+    user_parts: list[str] = []
+    other_parts: list[str] = []
+    for m in messages or []:
+        role = str(m.get("role") or "").strip().lower()
+        content = str(m.get("content") or "")
+        if role == "system":
+            system_parts.append(content)
+        elif role == "user":
+            user_parts.append(content)
+        else:
+            other_parts.append(content)
+    system_text = "\n\n".join(x for x in system_parts if x.strip()).strip()
+    user_text = "\n\n".join(x for x in user_parts if x.strip()).strip()
+    if other_parts:
+        user_text = (user_text + "\n\n" if user_text else "") + "\n\n".join(
+            x for x in other_parts if x.strip()
+        ).strip()
+    return f"[SYSTEM]\n{system_text}\n\n---\n\n[USER]\n{user_text}".strip()
+
+
+def _normalize_messages_for_backend(messages: list[dict]) -> list[dict]:
+    if _MODEL_CHAT_ROLE_SUPPORT:
+        return messages
+    return [{"role": "user", "content": _flatten_messages_with_role_tags(messages)}]
+
+
 def _call_chat(
     endpoint: str,
     messages: list[dict],
+    *,
+    task_name: str | None = None,
+    model_key: str | None = None,
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     request_timeout: Optional[int] = None,
@@ -264,17 +665,20 @@ def _call_chat(
         payload["frequency_penalty"] = frequency_penalty
     if presence_penalty is not None:
         payload["presence_penalty"] = presence_penalty
+    context_fields = _extract_prompt_context(messages)
     logger.info(
-        "model call: endpoint=%s max_tokens=%s temperature=%s timeout=%s messages=%s",
+        "model call: endpoint=%s task=%s model_key=%s max_tokens=%s temperature=%s timeout=%s",
         endpoint,
+        task_name,
+        model_key,
         max_tokens,
         payload["temperature"],
         timeout,
-        messages,
     )
-    _pretty_print_request(messages)
+    _pretty_print_request(task_name, context_fields, model_key=model_key)
 
     def _do_call() -> str:
+        _set_last_chat_usage(None)
         try:
             from openai import OpenAI
         except ImportError:
@@ -291,6 +695,8 @@ def _call_chat(
                 method="POST",
             )
             content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            last_usage: dict[str, Any] | None = None
             print("    [workflow] model response (streaming):")
             print("    " + "─" * _PRETTY_WIDTH)
             done = False
@@ -312,6 +718,9 @@ def _call_chat(
                                 chunk = json.loads(data)
                             except json.JSONDecodeError:
                                 continue
+                            u = chunk.get("usage")
+                            if u:
+                                last_usage = _usage_obj_to_dict(u)
                             choices = chunk.get("choices", [])
                             if not choices:
                                 continue
@@ -319,14 +728,24 @@ def _call_chat(
                             reasoning = d.get("reasoning_content")
                             delta = d.get("content")
                             if reasoning:
+                                reasoning_parts.append(reasoning)
                                 _stream_chunk_to_terminal(reasoning)
                             if delta:
                                 content_parts.append(delta)
                                 _stream_chunk_to_terminal(delta)
             print()
             print("    " + "─" * _PRETTY_WIDTH)
+            full_out = "".join(reasoning_parts) + "".join(content_parts)
+            _log_llm_token_estimates(
+                task_name=task_name,
+                model_key=model_key,
+                messages=messages,
+                completion_text=full_out,
+                last_usage=last_usage,
+            )
+            _set_last_chat_usage(last_usage)
             content = "".join(content_parts).strip()
-            if not content:
+            if not content and not reasoning_parts:
                 _debug_empty_response(None)
             return content
 
@@ -352,13 +771,22 @@ def _call_chat(
             create_kwargs["frequency_penalty"] = frequency_penalty
         if presence_penalty is not None:
             create_kwargs["presence_penalty"] = presence_penalty
-        stream = client.chat.completions.create(**create_kwargs)
+        try:
+            stream = client.chat.completions.create(
+                **create_kwargs, stream_options={"include_usage": True}
+            )
+        except TypeError:
+            stream = client.chat.completions.create(**create_kwargs)
         content_parts = []
         reasoning_parts: list[str] = []
         finish_reason = None
+        last_usage: dict[str, Any] | None = None
         print("    [workflow] model response (streaming):")
         print("    " + "─" * _PRETTY_WIDTH)
         for chunk in stream:
+            u = getattr(chunk, "usage", None)
+            if u is not None:
+                last_usage = _usage_obj_to_dict(u)
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -383,15 +811,54 @@ def _call_chat(
             finish_reason = getattr(chunk.choices[0], "finish_reason", None)
         print()
         print("    " + "─" * _PRETTY_WIDTH)
+        full_out = "".join(reasoning_parts) + "".join(content_parts)
+        _log_llm_token_estimates(
+            task_name=task_name,
+            model_key=model_key,
+            messages=messages,
+            completion_text=full_out,
+            last_usage=last_usage,
+        )
         content = "".join(content_parts).strip()
         if finish_reason == "length" and content:
             content = content + "\n[Response truncated - consider increasing max_tokens]"
             logger.warning("[model_client] finish_reason=length; response truncated")
         if not content and not reasoning_parts:
             _debug_empty_response(None)
+        _set_last_chat_usage(last_usage)
         return content
 
     return _retry_with_exponential_backoff(_do_call)
+
+
+def _log_bound_prompt_for_llm_call(
+    task_name: Optional[str], *, _exploration_suppress_duplicate: bool = False
+) -> None:
+    """
+    If :meth:`PromptRegistry.render_prompt_parts` ran in this context, log the resolved
+    prompt file (version + absolute path) for the upcoming HTTP call.
+
+    When ``_exploration_suppress_duplicate`` is True and exploration wrapped this call in
+    :func:`agent.prompt_system.prompt_call_context.exploration_suppress_inner_call_reasoning_prompt_log`,
+    skip (exploration already logged via :func:`agent.prompt_system.prompt_call_context.log_exploration_llm_prompt_line`).
+
+    Mirrors other workflow diagnostics: ``print`` lines use the ``[workflow]`` prefix so they
+    show under ``pytest -s`` without ``--log-cli-level``; ``logger.info`` remains for log aggregation.
+    """
+    if _exploration_suppress_duplicate:
+        try:
+            from agent.prompt_system.prompt_call_context import peek_exploration_suppress_inner_prompt_log
+
+            if peek_exploration_suppress_inner_prompt_log():
+                return
+        except Exception:
+            pass
+    try:
+        from agent.prompt_system.prompt_call_context import log_bound_prompt_resolution
+
+        log_bound_prompt_resolution(task_name)
+    except Exception:
+        return
 
 
 def _run_guardrails_pre(user_content: str) -> None:
@@ -406,18 +873,28 @@ def _run_guardrails_pre(user_content: str) -> None:
         pass  # guardrails not available
 
 
-def _run_guardrails_post(prompt_name: Optional[str], response: str, user_content: Optional[str]) -> None:
-    """Run constraint validation on response after LLM call. Logs on failure."""
+_GUARDRAIL_MAX_ATTEMPTS = 3
+
+
+def _run_guardrails_post(
+    prompt_name: Optional[str],
+    response: str,
+    user_content: Optional[str],
+    *,
+    relax_actions: bool = False,
+) -> tuple[bool, str]:
+    """Run constraint validation on response after LLM call. Returns (valid, msg)."""
     if not _ENABLE_GUARDRAILS or not prompt_name:
-        return
+        return (True, "")
     try:
         from agent.prompt_system import get_registry
 
-        valid, msg = get_registry().validate_response(prompt_name, response, user_content)
-        if not valid:
-            logger.warning("[model_client] guardrail validation failed for %s: %s", prompt_name, msg)
+        valid, msg = get_registry().validate_response(
+            prompt_name, response, user_content, relax_actions=relax_actions
+        )
+        return (valid, msg or "")
     except ImportError:
-        pass
+        return (True, "")
 
 
 def call_small_model(
@@ -426,6 +903,7 @@ def call_small_model(
     task_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
     prompt_name: Optional[str] = None,
+    debug_replanner: bool = False,
 ) -> str:
     """Call the model for the given task. Returns model output text.
     When task_name is set, uses params and endpoint from models_config (task_params, task_models).
@@ -434,6 +912,7 @@ def call_small_model(
     When prompt_name is set, runs post-call constraint validation (logs on failure).
     Guardrails: injection check on prompt before call (always when ENABLE_PROMPT_GUARDRAILS=1)."""
     _run_guardrails_pre(prompt)
+    _log_bound_prompt_for_llm_call(task_name)
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
     # Resolve endpoint from task_models: task_name -> model_key (SMALL, REASONING, etc.)
@@ -457,19 +936,71 @@ def call_small_model(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
+        _sys_for_dump = system_prompt
+        _user_for_dump = prompt
     else:
         messages = [{"role": "user", "content": prompt}]
-    response = _call_chat(
-        endpoint,
-        messages,
-        max_tokens=limit,
-        temperature=params.get("temperature"),
-        request_timeout=params.get("request_timeout_seconds"),
-        frequency_penalty=params.get("frequency_penalty"),
-        presence_penalty=params.get("presence_penalty"),
-    )
-    _run_guardrails_post(prompt_name, response, prompt)
-    return response
+        _sys_for_dump = ""
+        _user_for_dump = prompt
+    if task_name in _REPLANNER_LLM_DEBUG_TASK_NAMES and debug_replanner:
+        _dump_replanner_prompt_files(_sys_for_dump or None, _user_for_dump or "")
+    # Stage 28: record real model call (stubs never reach here)
+    model_name = get_model_name(model_key)
+    base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
+    _record_model_call("small", callsite=task_name or "call_small_model", model_name=model_name, base_url=base_url)
+    last_msg = ""
+    tn = task_name or "SMALL_MODEL"
+    for attempt in range(_GUARDRAIL_MAX_ATTEMPTS):
+        temperature = 0 if attempt > 0 else params.get("temperature")
+        t0 = time.perf_counter()
+        response = _call_chat(
+            endpoint,
+            _normalize_messages_for_backend(messages),
+            task_name=task_name,
+            model_key=model_key,
+            max_tokens=limit,
+            temperature=temperature,
+            request_timeout=params.get("request_timeout_seconds"),
+            frequency_penalty=params.get("frequency_penalty"),
+            presence_penalty=params.get("presence_penalty"),
+        )
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        valid, msg = _run_guardrails_post(prompt_name, response, prompt)
+        if valid:
+            _try_emit_llm_trace(
+                task_name=tn,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                output_text=response,
+                latency_ms=latency_ms,
+                model_name=model_name,
+            )
+            return response
+        last_msg = msg or "unknown"
+        logger.warning(
+            "[guardrail] failure: prompt=%s attempt=%d reason=%s",
+            prompt_name,
+            attempt + 1,
+            last_msg,
+        )
+        if attempt == 1 and prompt_name == "planner":
+            valid, _ = _run_guardrails_post(prompt_name, response, prompt, relax_actions=True)
+            if valid:
+                logger.info("[guardrail] recovered via relaxed policy: prompt=%s", prompt_name)
+                _try_emit_llm_trace(
+                    task_name=tn,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    output_text=response,
+                    latency_ms=latency_ms,
+                    model_name=model_name,
+                )
+                return response
+        if attempt >= _GUARDRAIL_MAX_ATTEMPTS - 1:
+            logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
+            raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
+    logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
+    raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
 
 
 def call_reasoning_model(
@@ -479,6 +1010,7 @@ def call_reasoning_model(
     task_name: Optional[str] = None,
     model_type: Optional[str] = None,
     prompt_name: Optional[str] = None,
+    debug_replanner: bool = False,
 ) -> str:
     """
     Call the reasoning model. If system_prompt is given, send as chat with system + user;
@@ -490,14 +1022,15 @@ def call_reasoning_model(
     Guardrails: injection check on prompt before call (always when ENABLE_PROMPT_GUARDRAILS=1).
     """
     _run_guardrails_pre(prompt)
-    from agent.models.model_config import TASK_MODELS
+    _log_bound_prompt_for_llm_call(task_name, _exploration_suppress_duplicate=True)
+    from agent.models.model_config import get_model_for_task
 
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
-    model_key = model_type or (TASK_MODELS.get(task_name or "") if task_name else None) or "REASONING"
+    model_key = model_type or get_model_for_task(task_name or "")
     endpoint = get_endpoint_for_model(model_key)
     _sys = None if system_prompt is None else (system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt)
-    logger.info(
+    logger.debug(
         "call_reasoning_model: endpoint=%s model=%s task=%r prompt=%r system_prompt=%s max_tokens=%s",
         endpoint,
         model_key,
@@ -511,16 +1044,135 @@ def call_reasoning_model(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
+        _sys_for_dump = system_prompt
+        _user_for_dump = prompt
     else:
         messages = [{"role": "user", "content": prompt}]
-    response = _call_chat(
-        endpoint,
-        messages,
-        max_tokens=limit,
-        temperature=params.get("temperature"),
-        request_timeout=params.get("request_timeout_seconds"),
-        frequency_penalty=params.get("frequency_penalty"),
-        presence_penalty=params.get("presence_penalty"),
+        _sys_for_dump = ""
+        _user_for_dump = prompt
+    if task_name in _REPLANNER_LLM_DEBUG_TASK_NAMES and debug_replanner:
+        _dump_replanner_prompt_files(_sys_for_dump or None, _user_for_dump or "")
+    # Stage 28: record real model call (stubs never reach here)
+    model_name = get_model_name(model_key)
+    base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
+    _record_model_call("reasoning", callsite=task_name or "call_reasoning_model", model_name=model_name, base_url=base_url)
+    last_msg = ""
+    tn = task_name or "REASONING"
+    for attempt in range(_GUARDRAIL_MAX_ATTEMPTS):
+        temperature = 0 if attempt > 0 else params.get("temperature")
+        t0 = time.perf_counter()
+        response = _call_chat(
+            endpoint,
+            _normalize_messages_for_backend(messages),
+            task_name=task_name,
+            model_key=model_key,
+            max_tokens=limit,
+            temperature=temperature,
+            request_timeout=params.get("request_timeout_seconds"),
+            frequency_penalty=params.get("frequency_penalty"),
+            presence_penalty=params.get("presence_penalty"),
+        )
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        valid, msg = _run_guardrails_post(prompt_name, response, prompt)
+        if valid:
+            _try_emit_llm_trace(
+                task_name=tn,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                output_text=response,
+                latency_ms=latency_ms,
+                model_name=model_name,
+            )
+            return response
+        last_msg = msg or "unknown"
+        logger.warning(
+            "[guardrail] failure: prompt=%s attempt=%d reason=%s",
+            prompt_name,
+            attempt + 1,
+            last_msg,
+        )
+        if attempt == 1 and prompt_name == "planner":
+            valid, _ = _run_guardrails_post(prompt_name, response, prompt, relax_actions=True)
+            if valid:
+                logger.info("[guardrail] recovered via relaxed policy: prompt=%s", prompt_name)
+                _try_emit_llm_trace(
+                    task_name=tn,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    output_text=response,
+                    latency_ms=latency_ms,
+                    model_name=model_name,
+                )
+                return response
+        if attempt >= _GUARDRAIL_MAX_ATTEMPTS - 1:
+            logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
+            raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
+    logger.error("[guardrail] unrecoverable failure: prompt=%s reason=%s", prompt_name, last_msg)
+    raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
+
+
+def call_reasoning_model_messages(
+    messages: list[dict],
+    *,
+    task_name: Optional[str] = None,
+    model_type: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    prompt_name: Optional[str] = None,
+) -> str:
+    """
+    Message-native reasoning model call. Keeps legacy wrappers untouched.
+    """
+    user_prompt = "\n\n".join(
+        str(m.get("content") or "")
+        for m in (messages or [])
+        if str(m.get("role") or "").lower() == "user"
     )
-    _run_guardrails_post(prompt_name, response, prompt)
-    return response
+    system_prompt = "\n\n".join(
+        str(m.get("content") or "")
+        for m in (messages or [])
+        if str(m.get("role") or "").lower() == "system"
+    )
+    _run_guardrails_pre(user_prompt)
+    _log_bound_prompt_for_llm_call(task_name, _exploration_suppress_duplicate=True)
+    from agent.models.model_config import get_model_for_task
+
+    params = get_model_call_params(task_name)
+    limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
+    model_key = model_type or get_model_for_task(task_name or "")
+    endpoint = get_endpoint_for_model(model_key)
+    model_name = get_model_name(model_key)
+    base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
+    _record_model_call("reasoning", callsite=task_name or "call_reasoning_model_messages", model_name=model_name, base_url=base_url)
+    last_msg = ""
+    tn = task_name or "REASONING"
+    backend_messages = _normalize_messages_for_backend(messages)
+    for attempt in range(_GUARDRAIL_MAX_ATTEMPTS):
+        temperature = 0 if attempt > 0 else params.get("temperature")
+        t0 = time.perf_counter()
+        response = _call_chat(
+            endpoint,
+            backend_messages,
+            task_name=task_name,
+            model_key=model_key,
+            max_tokens=limit,
+            temperature=temperature,
+            request_timeout=params.get("request_timeout_seconds"),
+            frequency_penalty=params.get("frequency_penalty"),
+            presence_penalty=params.get("presence_penalty"),
+        )
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        valid, msg = _run_guardrails_post(prompt_name, response, user_prompt)
+        if valid:
+            _try_emit_llm_trace(
+                task_name=tn,
+                prompt=user_prompt,
+                system_prompt=system_prompt or None,
+                output_text=response,
+                latency_ms=latency_ms,
+                model_name=model_name,
+            )
+            return response
+        last_msg = msg or "unknown"
+        if attempt >= _GUARDRAIL_MAX_ATTEMPTS - 1:
+            raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")
+    raise GuardrailError(f"Guardrail validation failed after retries: {last_msg}")

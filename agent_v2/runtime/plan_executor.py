@@ -1,0 +1,1090 @@
+"""
+Phase 5–7 — Plan executor: plan-driven execution, per-step retry (Phase 6), replan loop (Phase 7).
+
+Replanner is optional; when injected, exhausted step retries trigger a structured ReplanRequest,
+a new PlanDocument (validated via PlanValidator), and an iterative continue (no unbounded recursion).
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Any, Optional, Protocol, Union
+
+from agent_v2.schemas.execution import (
+    ErrorType,
+    ExecutionError,
+    ExecutionMetadata,
+    ExecutionOutput,
+    ExecutionResult,
+)
+from agent_v2.schemas.plan import PlanDocument, PlanStep, PlanStepLastResult
+from agent_v2.schemas.policies import ExecutionPolicy
+from agent_v2.runtime.replanner import Replanner, merge_preserved_completed_steps
+from agent_v2.runtime.session_memory import SessionMemory
+from agent_v2.runtime.tool_mapper import coerce_to_tool_result, map_tool_result_to_execution_result
+from agent_v2.runtime.trace_emitter import TraceEmitter, TraceEmitterFactory
+from agent_v2.runtime.phase1_tool_exposure import (
+    PLAN_STEP_ACTION_TO_PLANNER_TOOL,
+    PLAN_STEP_TO_LEGACY_REACT_ACTION,
+)
+from agent_v2.runtime.tool_policy import plan_safe_shell_command_allowed
+from agent_v2.validation.plan_validator import PlanValidator
+
+_LOG = logging.getLogger(__name__)
+
+
+def _plan_safe_execution_active(state: Any) -> bool:
+    """True when executor must enforce plan-safe invariants (edit deny + plan-mode shell rules)."""
+    ctx = getattr(state, "context", None)
+    if isinstance(ctx, dict) and ctx.get("plan_safe_execute"):
+        return True
+    md = getattr(state, "metadata", None)
+    if isinstance(md, dict) and md.get("mode") == "plan":
+        return True
+    return False
+
+
+def _tool_execution_log_tool_id(plan_step_action: str) -> str:
+    return PLAN_STEP_ACTION_TO_PLANNER_TOOL.get(plan_step_action, plan_step_action)
+
+
+def _emit_tool_execution_log(
+    *,
+    step: PlanStep,
+    success: bool,
+    latency_ms: int,
+    error: str | None,
+    input_summary: str = "",
+    tool_input: dict[str, Any] | None = None,
+    output_summary: str = "",
+    mode: str | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "component": "tool_execution",
+        "tool": _tool_execution_log_tool_id(step.action),
+        "action": step.action,
+        "step_id": step.step_id,
+        "success": success,
+        "latency_ms": int(latency_ms),
+        "error": error,
+        "input_summary": input_summary,
+    }
+    if output_summary:
+        cap = _TOOL_EXECUTION_OUTPUT_SUMMARY_MAX
+        payload["output_summary"] = output_summary if len(output_summary) <= cap else output_summary[: cap - 1] + "…"
+    if tool_input:
+        payload["tool_input"] = tool_input
+    if mode is not None and str(mode).strip():
+        payload["mode"] = str(mode).strip()
+    _LOG.info("tool_execution %s", json.dumps(payload, default=str))
+
+
+def _planner_session_memory_from_state(state: Any) -> SessionMemory:
+    """
+    Session for Replanner → Planner must always be wired (correctness).
+
+    If the ACT path never created memory, attach a new SessionMemory on state.context.
+    """
+    ctx = getattr(state, "context", None)
+    if not isinstance(ctx, dict):
+        try:
+            state.context = {}
+            ctx = state.context
+        except Exception:
+            return SessionMemory()
+    key = "planner_session_memory"
+    existing = ctx.get(key)
+    if isinstance(existing, SessionMemory):
+        return existing
+    mem = SessionMemory()
+    ctx[key] = mem
+    return mem
+
+
+_LANGFUSE_TOOL_ARG_STR_MAX = 4000
+_LANGFUSE_TOOL_ARG_LIST_MAX = 50
+# Whole JSON line cap for logs (after per-field truncation via _tool_args_for_langfuse_input).
+_TOOL_EXECUTION_INPUT_SUMMARY_MAX = 512
+_TOOL_EXECUTION_OUTPUT_SUMMARY_MAX = 1200
+
+
+def _tool_args_for_langfuse_input(args: dict[str, Any]) -> dict[str, Any]:
+    """JSON-friendly view of merged tool args for Langfuse ``executor.dispatch`` input."""
+    out: dict[str, Any] = {}
+    for k, v in (args or {}).items():
+        if isinstance(v, str) and len(v) > _LANGFUSE_TOOL_ARG_STR_MAX:
+            out[k] = v[:_LANGFUSE_TOOL_ARG_STR_MAX] + f"... ({len(v)} chars total)"
+        elif isinstance(v, (list, tuple)) and len(v) > _LANGFUSE_TOOL_ARG_LIST_MAX:
+            out[k] = list(v[:_LANGFUSE_TOOL_ARG_LIST_MAX]) + [f"... ({len(v)} items total)"]
+        else:
+            try:
+                json.dumps(v, default=str)
+                out[k] = v
+            except Exception:
+                out[k] = repr(v)[:_LANGFUSE_TOOL_ARG_STR_MAX]
+    return out
+
+
+def _tool_execution_input_summary(merged_args: dict[str, Any] | None) -> str:
+    """Truncated, JSON-safe summary of dispatch args (not full payload)."""
+    if not merged_args:
+        return ""
+    safe = _tool_args_for_langfuse_input(merged_args)
+    try:
+        s = json.dumps(safe, sort_keys=True, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        s = repr(safe)
+    cap = _TOOL_EXECUTION_INPUT_SUMMARY_MAX
+    if len(s) > cap:
+        return s[: cap - 1] + "…"
+    return s
+
+
+def _tool_policy_mode_from_state(state: Any) -> str | None:
+    md = getattr(state, "metadata", None)
+    if isinstance(md, dict):
+        m = md.get("tool_policy_mode")
+        if m is not None and str(m).strip():
+            return str(m).strip()
+    ctx = getattr(state, "context", None)
+    if isinstance(ctx, dict):
+        m = ctx.get("tool_policy_mode")
+        if m is not None and str(m).strip():
+            return str(m).strip()
+    return None
+
+
+def _execution_error_payload(err: ExecutionError | None) -> Any:
+    if err is None:
+        return None
+    if hasattr(err, "model_dump"):
+        return err.model_dump(mode="json")
+    return str(err)
+
+
+def _span_event(span: Any, name: str, metadata: dict[str, Any] | None = None) -> None:
+    if span is None or not hasattr(span, "event"):
+        return
+    try:
+        span.event(name=name, metadata=metadata or {})
+    except Exception:
+        pass
+
+
+def _end_langfuse_step_span(span: Any, result: ExecutionResult | None) -> None:
+    if span is None or result is None:
+        return
+    try:
+        if result.metadata is not None:
+            span.update(
+                metadata={
+                    "tool_name": result.metadata.tool_name,
+                    "duration_ms": result.metadata.duration_ms,
+                }
+            )
+        span.end(
+            output={
+                "success": result.success,
+                "summary": result.output.summary if result.output else None,
+                "error": _execution_error_payload(result.error),
+            }
+        )
+    except Exception:
+        pass
+
+
+def _lf_executor_dispatch_span(parent: Any, step: PlanStep, tool_args: dict | None = None) -> Any:
+    """Child span under executor.step for tool/shell dispatch (I/O), not argument LLM."""
+    if parent is None or not hasattr(parent, "span"):
+        return None
+    try:
+        inp: dict[str, Any] = {
+            "action": step.action,
+            "step_index": step.index,
+            "step_id": step.step_id,
+        }
+        if tool_args is not None:
+            inp["tool_args"] = _tool_args_for_langfuse_input(tool_args)
+        return parent.span(
+            name="executor.dispatch",
+            input=inp,
+        )
+    except Exception:
+        return None
+
+
+def _lf_end_dispatch_span(span: Any, result: ExecutionResult | None) -> None:
+    if span is None:
+        return
+    try:
+        if result is not None and result.metadata is not None:
+            span.update(
+                metadata={
+                    "tool_name": result.metadata.tool_name,
+                    "duration_ms": result.metadata.duration_ms,
+                }
+            )
+            span.end(
+                output={
+                    "success": result.success,
+                    "summary": result.output.summary if result.output else None,
+                    "error": _execution_error_payload(result.error),
+                }
+            )
+        elif result is not None:
+            span.end(
+                output={
+                    "success": result.success,
+                    "summary": result.output.summary if result.output else None,
+                    "error": _execution_error_payload(result.error),
+                }
+            )
+        else:
+            span.end(output={"success": False, "error": "no_result"})
+    except Exception:
+        try:
+            span.end()
+        except Exception:
+            pass
+
+
+_DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
+
+
+class PlanArgumentGeneratorProtocol(Protocol):
+    def generate(self, step: PlanStep, state: Any) -> dict:
+        ...
+
+
+RunEvent = Union[
+    tuple[str],  # ("completed",) | ("deadlock",) | ("aborted",) | ("progress",)
+    tuple[str, PlanStep, ExecutionResult],  # ("failed", step, result)
+]
+
+
+class PlanExecutor:
+    """
+    Controlled execution engine. PlanStep.action is fixed; argument_generator
+    supplies tool arguments only.
+    """
+
+    def __init__(
+        self,
+        dispatcher: Any,
+        argument_generator: PlanArgumentGeneratorProtocol,
+        replanner: Optional[Replanner] = None,
+        policy: Optional[ExecutionPolicy] = None,
+        trace_emitter_factory: Optional[TraceEmitterFactory] = None,
+    ):
+        self.dispatcher = dispatcher
+        self.argument_generator = argument_generator
+        self.replanner = replanner
+        self._policy = policy or _DEFAULT_POLICY
+        self._trace_emitter_factory: TraceEmitterFactory = trace_emitter_factory or TraceEmitter
+        self.trace_emitter: TraceEmitter = self._trace_emitter_factory()
+
+    def run(
+        self,
+        plan: PlanDocument,
+        state: Any,
+        *,
+        trace_emitter: TraceEmitter | None = None,
+    ) -> dict[str, Any]:
+        """
+        Execute until finish, deadlock, terminal failure, or replan budget exhausted.
+
+        When a replanner is configured, a step failure after retries may produce a new
+        validated PlanDocument; preserve_completed copies completed step execution state
+        onto matching step_ids in the new plan.
+
+        Returns ``{"status": "success"|"failed", "trace": Trace, "state": state}``.
+        One TraceStep is recorded per plan step after final retry outcome (Phase 9).
+
+        When ``trace_emitter`` is provided (Phase 13), reuse it so exploration/planner LLM
+        steps already on the emitter stay in one timeline with tool steps.
+        """
+        if not isinstance(plan, PlanDocument):
+            raise TypeError(f"PlanExecutor.run expected PlanDocument, got {type(plan).__name__}")
+        if getattr(state, "current_plan", None) is None:
+            raise ValueError(
+                "PlanExecutor.run requires state.current_plan before execution "
+                "(ModeManager must attach the plan first)."
+            )
+
+        self._run_start_mono = time.perf_counter()
+        md0 = self._metadata_dict(state)
+        md0["executor_dispatch_count"] = 0
+        md0.pop("plan_executor_abort", None)
+
+        self.trace_emitter = trace_emitter if trace_emitter is not None else self._trace_emitter_factory()
+        self._pin_active_plan(state, plan)
+        work_plan = plan
+
+        while True:
+            work_plan = self._get_active_plan(state, work_plan)
+            event = self._execute_scheduled_steps(work_plan, state)
+
+            if event[0] == "completed":
+                return self._finalize_run(state, plan, "success")
+            if event[0] in ("deadlock", "aborted"):
+                return self._finalize_run(state, plan, "failed")
+
+            assert event[0] == "failed"
+            _, failed_step, result = event
+            self._record_failure_streak(state, result)
+
+            if self.replanner is None:
+                return self._finalize_run(state, plan, "failed")
+
+            md = self._metadata_dict(state)
+            max_r = self._max_replans(state)
+            if int(md.get("replan_attempt", 0)) >= max_r:
+                md["plan_executor_status"] = "failed_final"
+                return self._finalize_run(state, plan, "failed")
+
+            req = self.replanner.build_replan_request(state, work_plan, failed_step, result)
+            md = self._metadata_dict(state)
+            lf = md.get("langfuse_trace")
+            session = _planner_session_memory_from_state(state)
+            vtm_raw = md.get("plan_validation_task_mode")
+            vtm = (
+                str(vtm_raw).strip()
+                if isinstance(vtm_raw, str) and str(vtm_raw).strip()
+                else None
+            )
+            replan_res, new_plan = self.replanner.replan(
+                req,
+                langfuse_trace=lf,
+                obs=md.get("obs"),
+                session=session,
+                validation_task_mode=vtm,
+            )
+
+            if replan_res.status != "success" or new_plan is None:
+                md["plan_executor_status"] = "failed_final"
+                if replan_res.validation.issues:
+                    md["last_replan_issues"] = list(replan_res.validation.issues)
+                self._emit_replan_failed_on_step(state, failed_step)
+                return self._finalize_run(state, plan, "failed")
+
+            md["replan_attempt"] = replan_res.metadata.replan_attempt
+
+            if req.constraints.preserve_completed:
+                new_plan = merge_preserved_completed_steps(work_plan, new_plan)
+            PlanValidator.validate_plan(new_plan, policy=self._policy, task_mode=vtm)
+
+            work_plan = new_plan
+            self._pin_active_plan(state, work_plan)
+
+    def _finalize_run(self, state: Any, plan_for_id: PlanDocument, run_status: str) -> dict[str, Any]:
+        active = self._get_active_plan(state, plan_for_id)
+        trace = self.trace_emitter.build_trace(state.instruction, active.plan_id)
+        md = self._metadata_dict(state)
+        md["execution_trace_id"] = trace.trace_id
+        md["plan_executor_run_status"] = run_status
+        return {"status": run_status, "trace": trace, "state": state}
+
+    def _max_replans(self, state: Any) -> int:
+        pol = getattr(state, "execution_policy", None)
+        if pol is not None and getattr(pol, "max_replans", None) is not None:
+            return int(pol.max_replans)
+        return int(self._policy.max_replans)
+
+    @staticmethod
+    def _metadata_dict(state: Any) -> dict:
+        md = getattr(state, "metadata", None)
+        if not isinstance(md, dict):
+            return {}
+        return md
+
+    @staticmethod
+    def _pin_active_plan(state: Any, plan: PlanDocument) -> None:
+        ctx = getattr(state, "context", None)
+        if isinstance(ctx, dict):
+            ctx["active_plan_document"] = plan
+
+    @staticmethod
+    def _get_active_plan(state: Any, fallback: PlanDocument) -> PlanDocument:
+        ctx = getattr(state, "context", None)
+        if isinstance(ctx, dict):
+            p = ctx.get("active_plan_document")
+            if isinstance(p, PlanDocument):
+                return p
+        return fallback
+
+    def _execute_scheduled_steps(self, plan: PlanDocument, state: Any) -> RunEvent:
+        """
+        One scheduling pass: dependency-gated rounds over steps until finish, failure, or no progress.
+        """
+        max_rounds = len(plan.steps) + 3
+        ordered = sorted(plan.steps, key=lambda s: s.index)
+        for _ in range(max_rounds):
+            abort = self._guard_executor_limits(state)
+            if abort:
+                _LOG.error("PlanExecutor scheduling abort: %s", abort)
+                self._metadata_dict(state)["plan_executor_abort"] = abort
+                self._emit_executor_abort_observation(state, abort)
+                return ("aborted",)
+
+            progressed = False
+            for step in ordered:
+                if step.execution.status == "completed":
+                    continue
+                if not self._can_execute(step, plan):
+                    continue
+
+                if not isinstance(step, PlanStep):
+                    raise TypeError(f"Expected PlanStep, got {type(step).__name__}")
+
+                state.plan_index = step.index
+
+                if step.action == "finish":
+                    lf_fin = self._metadata_dict(state).get("langfuse_trace")
+                    if lf_fin is not None and hasattr(lf_fin, "span"):
+                        try:
+                            sp = lf_fin.span(
+                                name="executor.step",
+                                input={
+                                    "step_index": step.index,
+                                    "action": step.action,
+                                    "step_id": step.step_id,
+                                    "goal": step.goal,
+                                },
+                            )
+                            sp.end(
+                                output={
+                                    "success": True,
+                                    "summary": "Finished per plan.",
+                                    "error": None,
+                                }
+                            )
+                        except Exception:
+                            pass
+                    self._mark_step_completed_no_dispatch(step, success=True, summary="Finished per plan.")
+                    fin = ExecutionResult(
+                        step_id=step.step_id,
+                        success=True,
+                        status="success",
+                        output=ExecutionOutput(summary="Finished per plan.", data={}),
+                        error=None,
+                        metadata=ExecutionMetadata(tool_name="finish", duration_ms=0, timestamp=self._utc_now()),
+                    )
+                    self._ensure_execution_result_contract(fin, step.step_id)
+                    self.trace_emitter.record_step(step, fin, step.index)
+                    self._update_state(state, step, "Finished per plan.")
+                    return ("completed",)
+
+                result = self._run_with_retry(step, state)
+                self._ensure_execution_result_contract(result, step.step_id)
+                self.trace_emitter.record_step(step, result, step.index)
+
+                obs = ""
+                if result.output is not None:
+                    obs = str(result.output.summary or "")
+                self._update_state(state, step, obs)
+                progressed = True
+
+                if not result.success:
+                    return ("failed", step, result)
+
+            if not progressed:
+                break
+
+        self._emit_deadlock_observation(state)
+        return ("deadlock",)
+
+    def _execute_next_single_step(self, plan: PlanDocument, state: Any) -> RunEvent:
+        """
+        Run at most one runnable non-completed step (or finish). Returns ("progress",) after
+        a successful non-terminal tool step. No Replanner — failures surface to ModeManager.
+        """
+        ordered = sorted(plan.steps, key=lambda s: s.index)
+        abort = self._guard_executor_limits(state)
+        if abort:
+            _LOG.error("PlanExecutor scheduling abort: %s", abort)
+            self._metadata_dict(state)["plan_executor_abort"] = abort
+            self._emit_executor_abort_observation(state, abort)
+            return ("aborted",)
+
+        for step in ordered:
+            if step.execution.status == "completed":
+                continue
+            if not self._can_execute(step, plan):
+                continue
+
+            if not isinstance(step, PlanStep):
+                raise TypeError(f"Expected PlanStep, got {type(step).__name__}")
+
+            state.plan_index = step.index
+
+            if step.action == "finish":
+                lf_fin = self._metadata_dict(state).get("langfuse_trace")
+                if lf_fin is not None and hasattr(lf_fin, "span"):
+                    try:
+                        sp = lf_fin.span(
+                            name="executor.step",
+                            input={
+                                "step_index": step.index,
+                                "action": step.action,
+                                "step_id": step.step_id,
+                                "goal": step.goal,
+                            },
+                        )
+                        sp.end(
+                            output={
+                                "success": True,
+                                "summary": "Finished per plan.",
+                                "error": None,
+                            }
+                        )
+                    except Exception:
+                        pass
+                self._mark_step_completed_no_dispatch(step, success=True, summary="Finished per plan.")
+                fin = ExecutionResult(
+                    step_id=step.step_id,
+                    success=True,
+                    status="success",
+                    output=ExecutionOutput(summary="Finished per plan.", data={}),
+                    error=None,
+                    metadata=ExecutionMetadata(
+                        tool_name="finish", duration_ms=0, timestamp=self._utc_now()
+                    ),
+                )
+                self._ensure_execution_result_contract(fin, step.step_id)
+                self.trace_emitter.record_step(step, fin, step.index)
+                self._update_state(state, step, "Finished per plan.")
+                return ("completed",)
+
+            result = self._run_with_retry(step, state)
+            self._ensure_execution_result_contract(result, step.step_id)
+            self.trace_emitter.record_step(step, result, step.index)
+
+            obs = ""
+            if result.output is not None:
+                obs = str(result.output.summary or "")
+            self._update_state(state, step, obs)
+
+            if not result.success:
+                return ("failed", step, result)
+            return ("progress",)
+
+        self._emit_deadlock_observation(state)
+        return ("deadlock",)
+
+    def run_one_step(
+        self,
+        plan: PlanDocument,
+        state: Any,
+        *,
+        trace_emitter: TraceEmitter | None = None,
+    ) -> dict[str, Any]:
+        """
+        Execute exactly one next runnable plan step (including per-step retries).
+        Does not invoke Replanner — ModeManager owns closed-loop replanning.
+        """
+        if not isinstance(plan, PlanDocument):
+            raise TypeError(f"PlanExecutor.run_one_step expected PlanDocument, got {type(plan).__name__}")
+        if getattr(state, "current_plan", None) is None:
+            raise ValueError(
+                "PlanExecutor.run_one_step requires state.current_plan before execution "
+                "(ModeManager must attach the plan first)."
+            )
+
+        self.trace_emitter = trace_emitter if trace_emitter is not None else self._trace_emitter_factory()
+        self._pin_active_plan(state, plan)
+        self._run_start_mono = time.perf_counter()
+        md0 = self._metadata_dict(state)
+        md0["executor_dispatch_count"] = int(md0.get("executor_dispatch_count") or 0)
+        md0.pop("plan_executor_abort", None)
+
+        event = self._execute_next_single_step(plan, state)
+        if event[0] == "completed":
+            return self._finalize_run(state, plan, "success")
+        if event[0] in ("deadlock", "aborted"):
+            return self._finalize_run(state, plan, "failed")
+        if event[0] == "failed":
+            _, failed_step, result = event
+            md = self._metadata_dict(state)
+            md["plan_executor_status"] = "failed_step"
+            md["last_failed_step_id"] = failed_step.step_id
+            return {
+                "status": "failed_step",
+                "failed_step": failed_step,
+                "result": result,
+                "state": state,
+            }
+        if event[0] == "progress":
+            return {"status": "progress", "state": state}
+        raise RuntimeError(f"Unexpected run_one_step event: {event!r}")
+
+    def _emit_deadlock_observation(self, state: Any) -> None:
+        md = self._metadata_dict(state)
+        lf = md.get("langfuse_trace")
+        if lf is None or not hasattr(lf, "span"):
+            return
+        try:
+            sp = lf.span(
+                "executor.step",
+                input={"step_index": -1, "action": "deadlock"},
+            )
+            _span_event(sp, "deadlock", {"reason": "scheduling_no_progress"})
+            sp.end()
+        except Exception:
+            pass
+
+    def _emit_executor_abort_observation(self, state: Any, reason: str) -> None:
+        md = self._metadata_dict(state)
+        lf = md.get("langfuse_trace")
+        if lf is None or not hasattr(lf, "span"):
+            return
+        try:
+            sp = lf.span(
+                "executor.step",
+                input={"step_index": -1, "action": "abort"},
+            )
+            _span_event(sp, "executor_aborted", {"reason": reason})
+            sp.end()
+        except Exception:
+            pass
+
+    def _emit_replan_failed_on_step(self, state: Any, failed_step: PlanStep) -> None:
+        md = self._metadata_dict(state)
+        lf = md.get("langfuse_trace")
+        if lf is None or not hasattr(lf, "span"):
+            return
+        try:
+            sp = lf.span(
+                "executor.step",
+                input={
+                    "step_index": failed_step.index,
+                    "action": failed_step.action,
+                    "step_id": failed_step.step_id,
+                },
+            )
+            _span_event(sp, "replan_failed", {})
+            sp.end()
+        except Exception:
+            pass
+
+    def _can_execute(self, step: PlanStep, plan: PlanDocument) -> bool:
+        completed = {s.step_id for s in plan.steps if s.execution.status == "completed"}
+        return all(dep in completed for dep in (step.dependencies or []))
+
+    def _run_with_retry(self, step: PlanStep, state: Any) -> ExecutionResult:
+        """
+        Dispatch the step up to max_attempts times. Owns execution.attempts increments
+        (one per dispatch try). Semantics: attempts counts completed tries in this cycle.
+        """
+        max_attempts = max(1, int(step.execution.max_attempts))
+        result: ExecutionResult | None = None
+        md = self._metadata_dict(state)
+        lf = md.get("langfuse_trace")
+        obs = md.get("obs")
+        step_span = None
+        if lf is not None and hasattr(lf, "span"):
+            try:
+                step_span = lf.span(
+                    name="executor.step",
+                    input={
+                        "step_index": step.index,
+                        "action": step.action,
+                        "step_id": step.step_id,
+                        "goal": step.goal,
+                    },
+                )
+                md["_current_langfuse_span"] = step_span
+                if obs is not None:
+                    obs.current_span = step_span
+            except Exception:
+                step_span = None
+
+        while step.execution.attempts < max_attempts:
+            abort = self._guard_executor_limits(state)
+            if abort is not None:
+                _LOG.error("PlanExecutor dispatch abort: %s", abort)
+                self._metadata_dict(state)["plan_executor_abort"] = abort
+                now = self._utc_now()
+                step.execution = step.execution.model_copy(
+                    update={"status": "failed", "completed_at": now}
+                )
+                abort_res = ExecutionResult(
+                    step_id=step.step_id,
+                    success=False,
+                    status="failure",
+                    output=ExecutionOutput(summary=abort, data={}),
+                    error=ExecutionError(type=ErrorType.unknown, message=abort),
+                    metadata=ExecutionMetadata(
+                        tool_name="plan_executor",
+                        duration_ms=0,
+                        timestamp=self._utc_now(),
+                    ),
+                )
+                _span_event(step_span, "executor_aborted", {"reason": abort})
+                _end_langfuse_step_span(step_span, abort_res)
+                md.pop("_current_langfuse_span", None)
+                if obs is not None:
+                    obs.current_span = None
+                return abort_res
+
+            now = self._utc_now()
+            step.execution = step.execution.model_copy(
+                update={
+                    "started_at": step.execution.started_at or now,
+                    "status": "in_progress",
+                }
+            )
+
+            result = self._execute_step(step, state)
+            self._ensure_execution_result_contract(result, step.step_id)
+            step.execution = step.execution.model_copy(
+                update={"attempts": step.execution.attempts + 1}
+            )
+
+            if result.success:
+                completed_at = self._utc_now()
+                summary = ""
+                if result.output is not None:
+                    summary = str(result.output.summary or "")
+                lr = PlanStepLastResult(success=True, error=None, output_summary=summary)
+                step.execution = step.execution.model_copy(
+                    update={
+                        "status": "completed",
+                        "completed_at": completed_at,
+                        "last_result": lr,
+                    }
+                )
+                _end_langfuse_step_span(step_span, result)
+                md.pop("_current_langfuse_span", None)
+                if obs is not None:
+                    obs.current_span = None
+                return result
+
+            if step.execution.attempts < max_attempts:
+                _span_event(
+                    step_span,
+                    "retry",
+                    {
+                        "step_id": step.step_id,
+                        "attempt": step.execution.attempts,
+                        "error": _execution_error_payload(result.error),
+                    },
+                )
+
+            self._handle_failure(step, result)
+
+            if step.execution.attempts > step.execution.max_attempts:
+                raise RuntimeError(
+                    f"Invariant violated: attempts {step.execution.attempts} > max_attempts "
+                    f"{step.execution.max_attempts} for step {step.step_id}"
+                )
+
+        if result is None:
+            nr = ExecutionResult(
+                step_id=step.step_id,
+                success=False,
+                status="failure",
+                output=ExecutionOutput(summary="no dispatch attempts executed", data={}),
+                error=ExecutionError(type=ErrorType.unknown, message="exhausted attempts before dispatch"),
+                metadata=ExecutionMetadata(tool_name="plan_executor", duration_ms=0, timestamp=self._utc_now()),
+            )
+            _end_langfuse_step_span(step_span, nr)
+            md.pop("_current_langfuse_span", None)
+            if obs is not None:
+                obs.current_span = None
+            return nr
+        completed_at = self._utc_now()
+        step.execution = step.execution.model_copy(
+            update={
+                "status": "failed",
+                "completed_at": completed_at,
+            }
+        )
+        step.failure = step.failure.model_copy(update={"replan_required": True})
+        if self.replanner is not None and int(md.get("replan_attempt", 0)) < self._max_replans(state):
+            _span_event(
+                step_span,
+                "replan_triggered",
+                {
+                    "failed_step_id": step.step_id,
+                    "action": step.action,
+                },
+            )
+        _end_langfuse_step_span(step_span, result)
+        md.pop("_current_langfuse_span", None)
+        if obs is not None:
+            obs.current_span = None
+        return result
+
+    def _handle_failure(self, step: PlanStep, result: ExecutionResult) -> None:
+        """
+        Record failure from ExecutionResult; does not set terminal status (retry may follow).
+        Recoverability is policy-driven later; today default True (not hardcoded error branches).
+        """
+        err = result.error
+        err_type: ErrorType = err.type if err is not None else ErrorType.unknown
+        summary = ""
+        if result.output is not None:
+            summary = str(result.output.summary or "")
+
+        step.failure = step.failure.model_copy(
+            update={
+                "failure_type": err_type,
+                "is_recoverable": True,
+            }
+        )
+        lr = PlanStepLastResult(
+            success=False,
+            error=err_type.value,
+            output_summary=summary,
+        )
+        step.execution = step.execution.model_copy(update={"last_result": lr})
+
+    def _record_failure_streak(self, state: Any, result: ExecutionResult) -> None:
+        """Optional metadata for replanner / diagnostics."""
+        md = getattr(state, "metadata", None)
+        if not isinstance(md, dict):
+            return
+        err = result.error
+        err_type = err.type if err is not None else ErrorType.unknown
+        md["failure_streak"] = int(md.get("failure_streak", 0)) + 1
+        md["last_error"] = err_type.value
+
+    @staticmethod
+    def _utc_now() -> str:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _guard_executor_limits(self, state: Any) -> str | None:
+        """Return abort reason string or None if within policy limits."""
+        md = self._metadata_dict(state)
+        cap = int(self._policy.max_executor_dispatches)
+        n = int(md.get("executor_dispatch_count", 0))
+        if n >= cap:
+            return f"max_executor_dispatches ({cap}) reached"
+        elapsed = time.perf_counter() - self._run_start_mono
+        if elapsed > float(self._policy.max_runtime_seconds):
+            return (
+                f"max_runtime_seconds ({self._policy.max_runtime_seconds}s) exceeded "
+                f"(elapsed {elapsed:.1f}s)"
+            )
+        return None
+
+    @staticmethod
+    def _ensure_execution_result_contract(result: ExecutionResult, step_id: str) -> None:
+        if not isinstance(result, ExecutionResult):
+            raise TypeError(f"Expected ExecutionResult for step {step_id}, got {type(result).__name__}")
+        if result.output is None or not str(result.output.summary or "").strip():
+            raise ValueError(f"ExecutionResult for step {step_id} must include output.summary")
+
+    def _execute_step(self, step: PlanStep, state: Any) -> ExecutionResult:
+        if not isinstance(step, PlanStep):
+            raise TypeError(f"PlanExecutor._execute_step requires PlanStep, got {type(step).__name__}")
+
+        md = self._metadata_dict(state)
+        md["executor_dispatch_count"] = int(md.get("executor_dispatch_count", 0)) + 1
+
+        t0 = time.perf_counter()
+        result: ExecutionResult | None = None
+        exc: BaseException | None = None
+        merged: dict[str, Any] | None = None
+        try:
+            args = self.argument_generator.generate(step, state)
+            merged = self._merge_args(step, args)
+
+            guard_res = self._plan_safe_guard_dispatch(state, step, merged)
+            if guard_res is not None:
+                self._ensure_execution_result_contract(guard_res, step.step_id)
+                return guard_res
+
+            parent = md.get("_current_langfuse_span")
+            dispatch_span = _lf_executor_dispatch_span(parent, step, merged)
+            try:
+                if step.action == "shell":
+                    result = self._dispatch_shell(step.step_id, merged, state)
+                else:
+                    dispatch_dict = self._to_dispatch_step(step, merged)
+                    result = self.dispatcher.execute(dispatch_dict, state)
+                self._ensure_execution_result_contract(result, step.step_id)
+                return result
+            finally:
+                _lf_end_dispatch_span(dispatch_span, result)
+        except BaseException as e:
+            exc = e
+            raise
+        finally:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            err_msg: str | None = None
+            ok = False
+            if exc is not None:
+                err_msg = str(exc)[:800]
+            elif result is not None:
+                ok = bool(result.success)
+                if not ok and result.error is not None:
+                    em = str(result.error.message or "").strip()
+                    err_msg = em or str(result.error.type.value)
+            structured_in = _tool_args_for_langfuse_input(merged) if merged else {}
+            out_sum = ""
+            if result is not None and result.output is not None:
+                out_sum = str(result.output.summary or "").strip()
+            _emit_tool_execution_log(
+                step=step,
+                success=ok,
+                latency_ms=latency_ms,
+                error=err_msg,
+                input_summary=_tool_execution_input_summary(merged),
+                tool_input=structured_in or None,
+                output_summary=out_sum,
+                mode=_tool_policy_mode_from_state(state),
+            )
+
+    def _plan_safe_guard_dispatch(
+        self, state: Any, step: PlanStep, merged: dict[str, Any]
+    ) -> ExecutionResult | None:
+        if not _plan_safe_execution_active(state):
+            return None
+        if step.action == "edit":
+            return ExecutionResult(
+                step_id=step.step_id,
+                success=False,
+                status="failure",
+                output=ExecutionOutput(
+                    summary="plan_safe guard: edit is not allowed in this runtime mode",
+                    data={},
+                ),
+                error=ExecutionError(
+                    type=ErrorType.unknown,
+                    message="plan_safe_guard: edit blocked at executor",
+                ),
+                metadata=ExecutionMetadata(
+                    tool_name="plan_executor",
+                    duration_ms=0,
+                    timestamp=self._utc_now(),
+                ),
+            )
+        if step.action == "shell":
+            cmd = str(merged.get("command") or "").strip()
+            if cmd and not plan_safe_shell_command_allowed(cmd):
+                return ExecutionResult(
+                    step_id=step.step_id,
+                    success=False,
+                    status="failure",
+                    output=ExecutionOutput(
+                        summary="plan_safe guard: shell command violates plan-mode policy "
+                        "(allowed first tokens: ls, rg, grep, cat; no && ; | `)",
+                        data={},
+                    ),
+                    error=ExecutionError(
+                        type=ErrorType.unknown,
+                        message="plan_safe_guard: shell blocked at executor",
+                    ),
+                    metadata=ExecutionMetadata(
+                        tool_name="plan_executor",
+                        duration_ms=0,
+                        timestamp=self._utc_now(),
+                    ),
+                )
+        return None
+
+    def _merge_args(self, step: PlanStep, generated: dict) -> dict:
+        base: dict = {}
+        if isinstance(step.inputs, dict):
+            for key in ("path", "query", "instruction", "command", "file"):
+                val = step.inputs.get(key)
+                if val is not None and str(val).strip():
+                    base[key] = val
+        out = {**base}
+        if isinstance(generated, dict):
+            out.update(generated)
+        return out
+
+    def _to_dispatch_step(self, step: PlanStep, args: dict) -> dict:
+        """Build the legacy ReAct step dict expected by _dispatch_react + Dispatcher."""
+        pa = step.action
+        legacy = PLAN_STEP_TO_LEGACY_REACT_ACTION.get(pa)
+        if legacy is None:
+            raise ValueError(f"Unsupported plan action for ReAct dispatch: {pa!r}")
+
+        row: dict[str, Any] = {
+            "id": step.index,
+            "step_id": step.step_id,
+            "action": legacy,
+            "artifact_mode": "code",
+            "_react_thought": "",
+            "_react_action_raw": pa,
+            "_react_args": args,
+        }
+        if pa == "search":
+            row["query"] = args.get("query", "")
+            row["description"] = row["query"]
+        elif pa == "open_file":
+            row["path"] = args.get("path", "")
+            row["description"] = row["path"]
+        elif pa == "edit":
+            row["path"] = args.get("path", "")
+            row["edit_target_path"] = args.get("path", "")
+            row["description"] = args.get("instruction", "")
+        elif pa == "run_tests":
+            row["description"] = ""
+        return row
+
+    def _dispatch_shell(self, step_id: str, args: dict, state: Any) -> ExecutionResult:
+        """Shell is not in the ReAct registry; run via injected Shell primitive."""
+        cmd = str(args.get("command") or "").strip()
+        if not cmd:
+            tr = coerce_to_tool_result(
+                {"success": False, "output": {}, "error": "shell requires non-empty command"},
+                tool_name="shell",
+            )
+            return map_tool_result_to_execution_result(tr, step_id=step_id)
+
+        shell = None
+        if getattr(state, "context", None) is not None:
+            shell = state.context.get("shell")
+        if shell is None:
+            from agent_v2.primitives.shell import Shell  # noqa: PLC0415
+
+            shell = Shell()
+            if getattr(state, "context", None) is not None:
+                state.context["shell"] = shell
+
+        raw = shell.run(cmd)
+        tool_result = coerce_to_tool_result(raw, tool_name="shell")
+        return map_tool_result_to_execution_result(tool_result, step_id=step_id)
+
+    def _mark_step_completed_no_dispatch(self, step: PlanStep, *, success: bool, summary: str) -> None:
+        now = self._utc_now()
+        lr = PlanStepLastResult(success=success, error=None, output_summary=summary)
+        step.execution = step.execution.model_copy(
+            update={
+                "attempts": step.execution.attempts + 1,
+                "status": "completed",
+                "started_at": step.execution.started_at or now,
+                "completed_at": now,
+                "last_result": lr,
+            }
+        )
+
+    def _update_state(self, state: Any, step: PlanStep, summary: str) -> None:
+        if not hasattr(state, "history"):
+            return
+        state.history.append(
+            {
+                "step_id": step.step_id,
+                "plan_action": step.action,
+                "action": step.action,
+                "observation": summary,
+            }
+        )
+        if hasattr(state, "step_results"):
+            state.step_results.append(
+                {
+                    "step_id": step.step_id,
+                    "action": step.action,
+                    "result_summary": summary,
+                }
+            )
+        if len(state.history) != len(state.step_results):
+            raise RuntimeError(
+                "AgentState invariant violated: len(history) must equal len(step_results)"
+            )

@@ -7,7 +7,7 @@ import pytest
 
 from agent.execution.step_dispatcher import dispatch, _search_fn
 from agent.memory.state import AgentState
-from agent.orchestrator.agent_controller import run_controller
+from tests.utils.runtime_adapter import run_controller
 
 
 # --- 1. Nonexistent symbol search ---
@@ -211,7 +211,7 @@ def test_agent_replans_on_edit_failure(tmp_path):
 
     with patch("repo_graph.repo_map_builder.build_repo_map", lambda *a, **k: None):
         with patch("agent.memory.task_index.search_similar_tasks", lambda *a, **k: []):
-            with patch("agent.orchestrator.deterministic_runner.get_plan") as mock_plan:
+            with patch("planner.planner.plan") as mock_plan:
                 mock_plan.return_value = {
                     "steps": [
                         {"id": 1, "action": "SEARCH", "description": "find foo", "reason": "r1"},
@@ -235,7 +235,7 @@ def test_agent_replans_on_edit_failure(tmp_path):
                         return {"success": True, "output": {}}
 
                     mock_dispatch.side_effect = mock_dispatch_fn
-                    with patch("agent.orchestrator.deterministic_runner.replan", side_effect=mock_replan):
+                    with patch("agent.orchestrator.replanner.replan", side_effect=mock_replan):
                         result = run_controller("Edit foo", project_root=str(tmp_path))
 
     assert "task_id" in result

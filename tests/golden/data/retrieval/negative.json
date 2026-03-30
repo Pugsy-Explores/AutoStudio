@@ -1,0 +1,13 @@
+[
+  {
+    "id": "missing_symbol",
+    "input": {
+      "instruction": "Where is ZZZNonExistent defined?"
+    },
+    "expected": {
+      "metrics": {
+        "has_impl": false
+      }
+    }
+  }
+]

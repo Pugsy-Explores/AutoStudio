@@ -75,7 +75,8 @@ Used by `agent/runtime/execution_loop.py`. Snapshot-based rollback (no git), syn
 
 | Variable | Default | Env Override | Description |
 |----------|---------|--------------|-------------|
-| MAX_EDIT_ATTEMPTS | 3 | MAX_EDIT_ATTEMPTS | Max attempts in edit→test→fix loop |
+| REACT_MODE | 1 | REACT_MODE | **1** = ReAct (default): model chooses actions; run_hierarchical → execution_loop. **0** = legacy: run_attempt_loop, planner, GoalEvaluator, Critic, RetryPlanner. See [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md). |
+| MAX_EDIT_ATTEMPTS | 3 | MAX_EDIT_ATTEMPTS | Max attempts in edit→test→fix loop (legacy path) |
 | MAX_PATCH_LINES | 300 | MAX_PATCH_LINES | Max total patch lines per attempt (reject before apply) |
 | MAX_PATCH_FILES | 5 | MAX_PATCH_FILES | Max files per patch (reject before apply) |
 | MAX_SAME_ERROR_RETRIES | 2 | MAX_SAME_ERROR_RETRIES | Stop after this many consecutive identical failure types |

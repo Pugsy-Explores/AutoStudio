@@ -114,7 +114,14 @@ def build_bm25_index(project_root: str | None = None) -> bool:
         logger.info("[bm25] indexed %d symbols", len(symbols))
         return True
     except ImportError:
-        logger.warning("[bm25] rank_bm25 not installed; pip install rank_bm25")
+        logger.warning("[bm25] rank_bm25 not installed; pip install rank-bm25")
+        return False
+    except RecursionError:
+        # rank_bm25->numpy can raise RecursionError in some import loader contexts (installed but unusable)
+        logger.warning(
+            "[bm25] rank_bm25 import failed with RecursionError (numpy/loader); bm25 unavailable. "
+            "Try: pip install numpy --upgrade && pip install rank-bm25 --force-reinstall"
+        )
         return False
 
 
@@ -128,16 +135,30 @@ def search_bm25(query: str, project_root: str | None = None, top_k: int = 30) ->
     if not query or not query.strip():
         return []
 
-    root = project_root or _PROJECT_ROOT or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
-    if not _BM25_INDEX or not _REPO_SYMBOLS:
-        build_bm25_index(root)
+    try:
+        from agent.retrieval.daemon_retrieval_client import remote_retrieval_enabled, try_daemon_bm25_search
+
+        if remote_retrieval_enabled():
+            remote = try_daemon_bm25_search(query, project_root, top_k)
+            if remote is not None:
+                return remote
+    except Exception:
+        pass
+
+    root_path = Path(
+        project_root or _PROJECT_ROOT or os.environ.get("SERENA_PROJECT_DIR") or os.getcwd()
+    ).resolve()
+    root_s = str(root_path)
+    # Rebuild when switching workspaces in the same process (agent_eval arms, multi-task runs).
+    if not _BM25_INDEX or not _REPO_SYMBOLS or _PROJECT_ROOT != root_s:
+        build_bm25_index(root_s)
 
     if not _BM25_INDEX or not _REPO_SYMBOLS:
         return []
 
     try:
         from rank_bm25 import BM25Okapi  # noqa: PLC0415
-    except ImportError:
+    except (ImportError, RecursionError):
         return []
 
     tokenized_query = _tokenize(query)

@@ -71,6 +71,8 @@ def test_planner_code_fallback_shape_when_no_docs_lineage():
     steps = out.get("steps") or []
     assert len(steps) == 1
     assert steps[0].get("action") == "SEARCH"
+    assert "query" in steps[0]
+    assert steps[0].get("query")
 
 
 def test_planner_no_json_fallback_is_docs_shaped_with_docs_lineage():

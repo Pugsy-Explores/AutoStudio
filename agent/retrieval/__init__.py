@@ -6,6 +6,7 @@ from agent.retrieval.context_pruner import prune_context
 from agent.retrieval.context_ranker import rank_context
 from agent.retrieval.query_rewriter import (
     SearchAttempt,
+    heuristic_condense_for_retrieval,
     rewrite_query,
     rewrite_query_with_context,
 )
@@ -16,6 +17,7 @@ from agent.retrieval.symbol_graph import get_symbol_dependencies
 from agent.retrieval.vector_retriever import search_batch, search_by_embedding
 
 __all__ = [
+    "heuristic_condense_for_retrieval",
     "rewrite_query",
     "rewrite_query_with_context",
     "SearchAttempt",
