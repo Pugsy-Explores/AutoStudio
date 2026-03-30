@@ -15,9 +15,9 @@ Repository-aware coding agent: **exploration → structured plan → tool execut
 | [Prerequisites](#prerequisites) | [Testing](#testing) |
 | [Quickstart](#quickstart) | [Observability](#observability-langfuse) |
 | [Installation](#installation) | [Architecture](#1-overview) |
-| [Configuration](#configuration) | [Diagrams](#4-diagrams) |
-| [CLI](#cli) | [Project structure](#5-project-structure) |
-| | [Known limitations](#8-known-issues--legacy-parts) |
+| [Configuration](#configuration) | [System architecture](#system-architecture) |
+| [CLI](#cli) | [Tools by mode](#tools-by-runtime-mode) |
+| | [Project structure](#4-project-structure) · [Known limitations](#7-known-issues--legacy-parts) |
 
 ---
 
@@ -58,6 +58,120 @@ autostudio edit "List the main entrypoints in this codebase"
 ```
 
 Smoke-check imports: `python -c "from agent_v2.runtime.bootstrap import create_runtime; print('ok')"`
+
+## System architecture
+
+**Context:** `agent_v2` is the default product path: bounded exploration, optional synthesis, **`PlannerTaskRuntime`** (outer loop), **gated PlannerV2** (plan materialization), **`PlanExecutor`** → shared **`Dispatcher`** / `step_dispatcher`. TaskPlanner is optional authority (`AGENT_V2_TASK_PLANNER_AUTHORITATIVE_LOOP`).
+
+### End-to-end control and retrieval
+
+```mermaid
+flowchart TB
+    subgraph Entry["Entry"]
+        User[User / CLI]
+    end
+
+    subgraph AV2["agent_v2 — planner-centric pipeline"]
+        AR[AgentRuntime]
+        MM[ModeManager]
+        PTR[PlannerTaskRuntime]
+        ER[ExplorationRunner / EngineV2]
+        TP[TaskPlannerService optional]
+        PV2[PlannerV2 gated]
+        PE[PlanExecutor]
+        D2[Dispatcher → step_dispatcher]
+    end
+
+    subgraph Retrieval["Shared retrieval stack"]
+        RM[Repo map + hybrid retrieve]
+        RP[run_retrieval_pipeline]
+    end
+
+    User --> AR
+    AR --> MM
+    MM --> PTR
+    PTR --> ER
+    ER --> PTR
+    PTR --> TP
+    TP -.->|authoritative / shadow| PTR
+    PTR --> PV2
+    PV2 --> PTR
+    PTR --> PE
+    PE --> D2
+    D2 --> RM
+    D2 --> RP
+```
+
+### ACT path (controller loop)
+
+```mermaid
+sequenceDiagram
+  participant MM as ModeManager
+  participant PTR as PlannerTaskRuntime
+  participant ER as ExplorationRunner
+  participant TP as TaskPlanner optional
+  participant PV2 as PlannerV2
+  participant PE as PlanExecutor
+  MM->>PTR: run_explore_plan_execute
+  PTR->>ER: run initial exploration
+  ER-->>PTR: FinalExplorationSchema
+  PTR->>PV2: bootstrap PlanDocument
+  PV2-->>PTR: PlanDocument
+  loop ACT controller
+    PTR->>TP: decide snapshot
+    TP-->>PTR: PlannerDecision
+    alt act
+      PTR->>PE: run_one_step
+    else explore / plan / replan / progress
+      PTR->>PV2: gated call_planner_with_context
+      PV2-->>PTR: PlanDocument merged
+    else synthesize
+      PTR->>PTR: maybe_synthesize_to_state
+    else stop
+      PTR-->>MM: return
+    end
+  end
+```
+
+### Exploration engine (data plane)
+
+```mermaid
+flowchart LR
+  QIP[QIP] --> DISC[Discovery]
+  DISC --> SCP[Scoper]
+  SCP --> SEL[Selector]
+  SEL --> ANA[Analyzer]
+  ANA --> FE[FinalExplorationSchema]
+```
+
+Further narrative: [§2 Architecture](#2-architecture), [§3 Execution flow](#3-execution-flow-lifecycle).
+
+---
+
+## Tools by runtime mode
+
+Plan steps use lowercase **`PlanStep.action`** values; planner **`engine.tool`** ids map via `agent_v2/runtime/phase1_tool_exposure.py`. Validator allowlists come from **`get_config().planner`** in `agent_v2/config.py` (`read_only` vs `plan_safe` vs full ACT policy).
+
+### `agent_v2` — plan step actions (`PlanDocument` → `PlanExecutor`)
+
+| `PlanStep.action` | Planner `engine.tool` | Role |
+|-------------------|----------------------|------|
+| `search` | `search_code` | Retrieval / search |
+| `open_file` | `open_file` | Read file regions |
+| `shell` | `run_shell` | Shell (policy-gated) |
+| `run_tests` | `run_tests` | Test runner |
+| `edit` | `edit` | Edits (**excluded** in plan-safe / `PLAN_MODE_TOOL_POLICY`) |
+| `finish` | `none` | Terminal |
+
+### `agent_v2` — `ModeManager` modes
+
+| Mode | Exploration | Plan / execute | Tool policy |
+|------|-------------|-----------------|-------------|
+| `act`, `plan_execute` | Yes | Controller loop + `PlanExecutor` (unless controller off) | ACT — includes **`edit`** where allowed |
+| `plan`, `deep_plan` | Yes | Same; **`deep_plan`** uses `deep=True` on planner | Plan-safe — **no `edit`** |
+| `plan_legacy` | Yes | Single PlannerV2 call, **no** `PlanExecutor` | Plan-only trace |
+
+Exploration-only tools inside **ExplorationEngineV2** are read-only (search / open / inspect paths); they are separate from post-planner `edit` / `run_tests` unless a later plan step invokes them.
 
 ---
 
@@ -255,72 +369,7 @@ When configured, runs emit structured traces (generations, tool spans). Executio
 
 ---
 
-## 4. Diagrams
-
-### a) System architecture (control plane)
-
-```mermaid
-flowchart TD
-  User[User / CLI] --> TP[TaskPlannerService optional]
-  PTR[PlannerTaskRuntime]
-  User --> AR[AgentRuntime]
-  AR --> MM[ModeManager]
-  MM --> PTR
-  PTR --> ER[ExplorationRunner / EngineV2]
-  ER --> PTR
-  PTR --> PV2[PlannerV2 gated]
-  PV2 --> PTR
-  PTR --> PE[PlanExecutor]
-  PE --> DISP[Dispatcher]
-  DISP --> LEG[step_dispatcher]
-  TP -.->|decide when authoritative| PTR
-```
-
-### b) ACT path with controller loop
-
-```mermaid
-sequenceDiagram
-  participant MM as ModeManager
-  participant PTR as PlannerTaskRuntime
-  participant ER as ExplorationRunner
-  participant TP as TaskPlanner optional
-  participant PV2 as PlannerV2
-  participant PE as PlanExecutor
-  MM->>PTR: run_explore_plan_execute
-  PTR->>ER: run initial exploration
-  ER-->>PTR: FinalExplorationSchema
-  PTR->>PV2: bootstrap PlanDocument
-  PV2-->>PTR: PlanDocument
-  loop ACT controller
-    PTR->>TP: decide snapshot
-    TP-->>PTR: PlannerDecision
-    alt act
-      PTR->>PE: run_one_step
-    else explore / plan / replan / progress
-      PTR->>PV2: gated call_planner_with_context
-      PV2-->>PTR: PlanDocument merged
-    else synthesize
-      PTR->>PTR: maybe_synthesize_to_state
-    else stop
-      PTR-->>MM: return
-    end
-  end
-```
-
-### c) Exploration engine (data plane)
-
-```mermaid
-flowchart LR
-  QIP[QIP] --> DISC[Discovery]
-  DISC --> SCP[Scoper]
-  SCP --> SEL[Selector]
-  SEL --> ANA[Analyzer]
-  ANA --> FE[FinalExplorationSchema]
-```
-
----
-
-## 5. Project structure
+## 4. Project structure
 
 | Path | Purpose |
 |------|---------|
@@ -337,7 +386,7 @@ flowchart LR
 
 ---
 
-## 6. End-to-end example
+## 5. End-to-end example
 
 1. `export SERENA_PROJECT_DIR=/path/to/repo` (or rely on cwd).
 2. `autostudio edit "Add a unit test for foo"` (or call `create_runtime().run("...", mode="act")`).
@@ -347,7 +396,7 @@ flowchart LR
 
 ---
 
-## 7. Development guide
+## 6. Development guide
 
 - **New tool behavior:** Extend **`agent/execution/step_dispatcher.py`** dispatch paths; keep policy + trace hooks. Plan steps must map to allowed `PlanStep.action` values (`planner_v2.py` / schemas).
 - **Tune exploration / controller:** `agent_v2/config.py` — e.g. `AGENT_V2_EXPLORATION_MAX_STEPS`, `AGENT_V2_PLANNER_CONTROLLER_LOOP`, `AGENT_V2_TASK_PLANNER_AUTHORITATIVE_LOOP`, `AGENT_V2_MAX_PLANNER_CONTROLLER_CALLS`.
@@ -356,7 +405,7 @@ flowchart LR
 
 ---
 
-## 8. Known issues / legacy parts
+## 7. Known issues / legacy parts
 
 | Item | Status |
 |------|--------|
