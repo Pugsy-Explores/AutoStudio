@@ -23,9 +23,10 @@ ModeManager
    ↓
 Exploration Phase
    ↓
-Planner (creates structured plan doc)
-   ↓
-Plan Executor (controlled loop)
+ACT loop (PlannerTaskRuntime)
+   → optional: answer synthesis → answer validation (model client)
+   → PlannerV2 (plan materialize / refresh)
+   → Plan Executor (controlled loop)
    ↓
 Tools (search / open_file / edit / shell)
    ↓
@@ -58,7 +59,14 @@ Trace + Output
 +----------+----------+
            ↓
 +---------------------+
-| Planner             |
+| PlannerTaskRuntime  |
+| (ACT: decide → act / |
+|  explore / plan /    |
+|  synthesize+validate)|
++----------+----------+
+           ↓
++---------------------+
+| PlannerV2           |
 | (Plan Document)     |
 +----------+----------+
            ↓
@@ -269,7 +277,13 @@ User Input
    ↓
 Exploration Phase
    ↓
-Planner → Plan Document
+ACT controller (TaskPlanner decisions)
+   ↓
+[optional] Synthesize compressed answer into state.context
+   ↓
+[optional] Validate answer (rules + LLM via model client); on fail → replan / explore / cap rounds
+   ↓
+PlannerV2 → Plan Document (bootstrap or refresh)
    ↓
 Executor:
    step 1 → tool → result
@@ -444,6 +458,8 @@ Action
 Result
 ```
 
+**ACT extensions (same trace channel):** synthesis events, `answer_validation` payloads in `state.context`, and eval **`PipelineCapture`** (`eval/`) for benchmark runs — all observable; no parallel execution engine.
+
 **Example:**
 
 ```text
@@ -488,6 +504,8 @@ Tier 1: ReAct (what you had)
 Tier 2: Plan-Execute (what you move to)
 Tier 3: Devin-class (future: multi-agent + replanning)
 ```
+
+**Naming note:** The lines above are **control-plane maturity**, not the **`eval/` tiered harness** (Tiers 1–4: component vs pipeline benchmarks, `PipelineCapture`, live executor). The two “tier” vocabularies are orthogonal.
 
 ---
 

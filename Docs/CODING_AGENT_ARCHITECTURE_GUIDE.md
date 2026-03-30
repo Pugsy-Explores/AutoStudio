@@ -241,6 +241,8 @@ task memory
 agent controller
 ```
 
+**AutoStudio product path (`agent_v2`):** the same retrieval and editing columns apply; control flow is **exploration (read-only)** → **PlannerTaskRuntime** ACT loop (**TaskPlanner** decisions → **PlannerV2** / **PlanExecutor** → **Dispatcher**) with optional **answer synthesis** and **answer validation** on the synthesize branch. See root **README.md** (mermaid) and **Docs/architecture_freeze/ARCHITECTURE_FREEZE.md**. **Eval:** `eval/` tiered harness wraps `create_runtime` and records **`PipelineCapture`** without forking the engine.
+
 This matches modern agentic development systems where AI agents **plan**, **execute tasks through tools**, **observe results**, and **iteratively improve outputs** until the goal is achieved.
 
 ---

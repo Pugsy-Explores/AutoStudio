@@ -7,6 +7,8 @@ See also:
 - [RETRIEVAL_ARCHITECTURE.md](RETRIEVAL_ARCHITECTURE.md) — detailed retrieval pipeline
 - [AGENT_LOOP_WORKFLOW.md](AGENT_LOOP_WORKFLOW.md) — legacy step dispatch and policy engine
 - [CONFIGURATION.md](CONFIGURATION.md) — config reference
+- [architecture_freeze/ARCHITECTURE_FREEZE.md](architecture_freeze/ARCHITECTURE_FREEZE.md) — planner-centric freeze narrative
+- Repository root **[README.md](../README.md)** — **agent_v2** mermaid diagrams (ACT loop, exploration data plane, tiered eval plane)
 
 ---
 
@@ -17,6 +19,12 @@ See also:
 **Legacy (REACT_MODE=0):** run_attempt_loop, get_plan, GoalEvaluator, Critic, RetryPlanner. See [PHASE_5_ATTEMPT_LOOP.md](PHASE_5_ATTEMPT_LOOP.md).
 
 ReAct pipeline diagram: [REACT_ARCHITECTURE.md](REACT_ARCHITECTURE.md).
+
+### Product path: agent_v2 (planner-centric)
+
+Default pipeline: **AgentRuntime** → **ModeManager** → **PlannerTaskRuntime** (ACT: TaskPlanner decisions → **PlannerV2** when gated → **PlanExecutor** → shared **Dispatcher**). After exploration, the controller may run **answer synthesis** and, when configured, **answer validation** (`agent_v2/validation/answer_validator.py` via model client) before further plan refresh or stop. Shared **retrieval** and **editing** stacks are unchanged in ordering (Rules 11 / editing pipeline).
+
+Benchmarking uses **`eval/`** (`live_executor`, **`PipelineCapture`**, tier definitions) as an observability harness around the same runtime — not a second engine.
 
 ---
 

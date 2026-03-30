@@ -80,6 +80,8 @@ flowchart TB
         PV2[PlannerV2 gated]
         PE[PlanExecutor]
         D2[Dispatcher → step_dispatcher]
+        AS[Answer synthesis optional]
+        AV[Answer validation optional]
     end
 
     subgraph Retrieval["Shared retrieval stack"]
@@ -100,6 +102,8 @@ flowchart TB
     PE --> D2
     D2 --> RM
     D2 --> RP
+    PTR -.->|synthesize branch| AS
+    AS -.->|when enabled| AV
 ```
 
 ### ACT path (controller loop)
@@ -112,6 +116,7 @@ sequenceDiagram
   participant TP as TaskPlanner optional
   participant PV2 as PlannerV2
   participant PE as PlanExecutor
+  participant AV as AnswerValidator
   MM->>PTR: run_explore_plan_execute
   PTR->>ER: run initial exploration
   ER-->>PTR: FinalExplorationSchema
@@ -127,6 +132,11 @@ sequenceDiagram
       PV2-->>PTR: PlanDocument merged
     else synthesize
       PTR->>PTR: maybe_synthesize_to_state
+      opt enable_answer_validation
+        PTR->>AV: validate_answer
+        AV-->>PTR: AnswerValidationResult
+        Note over PTR: fail may coerce explore or block repeat synthesize
+      end
     else stop
       PTR-->>MM: return
     end
@@ -142,6 +152,28 @@ flowchart LR
   SCP --> SEL[Selector]
   SEL --> ANA[Analyzer]
   ANA --> FE[FinalExplorationSchema]
+```
+
+### Tiered evaluation (benchmark plane)
+
+Observability-only: does not replace the execution engine. `tiered-eval` / `eval.runner` drives `create_runtime` → exploration → ACT loop; **`PipelineCapture`** records loop metadata, state snapshots, and aggregate metrics (see `eval/LIVE_EVAL_AUDIT.md`).
+
+```mermaid
+flowchart TB
+  subgraph Bench["eval/ — tiered harness"]
+    DS[datasets + tier_definitions]
+    RU[runner]
+    LE[live_executor]
+    PC[PipelineCapture + metrics]
+  end
+  subgraph Prod["agent_v2 runtime"]
+    RT[create_runtime → ACT]
+  end
+  DS --> RU
+  RU --> LE
+  LE --> RT
+  LE -.->|structured run record| PC
+  RU -->|tier scores aggregates| PC
 ```
 
 Further narrative: [§2 Architecture](#2-architecture), [§3 Execution flow](#3-execution-flow-lifecycle).
