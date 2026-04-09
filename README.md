@@ -349,7 +349,8 @@ When configured, runs emit structured traces (generations, tool spans). Executio
 3. **Exploration** — `ExplorationEngineV2`: QIP → discovery → scoper → selector → analyzer → `FinalExplorationSchema` (bounded; read-only tools).
 4. **PlannerV2** — LLM emits **`PlanDocument`** + `engine` controller fields; invocation is **gated** by `should_call_planner_v2` when TaskPlanner is authoritative (`agent_v2/planning/planner_v2_invocation.py`).
 5. **TaskPlanner** — `TaskPlannerService.decide(PlannerDecisionSnapshot) → PlannerDecision` (rule-based default: `RuleBasedTaskPlannerService`).
-6. **PlanExecutor** — runs the next plan step or returns status to the outer loop; **`PlannerTaskRuntime._run_act_controller_loop`** schedules PlannerV2 and exploration re-runs.
+6. **PlanExecutor** — compiles `PlanDocument` → **`ExecutionTask`** DAG, runs via **`DagScheduler`** (ordering) + **`DagExecutor`** (execution semantics), with retry logic per `ExecutionPolicy`.
+7. **DAG execution** — Two-component system: `DagScheduler` handles dependency-based ordering and lifecycle; `DagExecutor` manages task execution, attempt counters, and retry decisions.
 
 ### Key concepts
 

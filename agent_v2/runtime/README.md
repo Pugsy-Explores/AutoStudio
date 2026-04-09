@@ -16,7 +16,7 @@
 ✔ owns
   ModeManager → PlannerTaskRuntime entrypoints
   _run_act_controller_loop: iteration counting, decision resolution, PlannerV2 invocation scheduling
-  PlanExecutor: step execution, run_one_step for controller loop, retry/replan integration
+  PlanExecutor: step execution, DAG compilation, DagScheduler, DagExecutor, retry/replan integration
   Dispatcher + tool_mapper + tool_policy: allowed tools per mode
   SessionMemory attachment on state.context
 
@@ -38,6 +38,8 @@ sequenceDiagram
   participant TP as TaskPlannerService
   participant PV2 as PlannerV2
   participant PE as PlanExecutor
+  participant DS as DagScheduler
+  participant DE as DagExecutor
   participant D as Dispatcher
 
   MM->>PTR: run_explore_plan_execute / run_plan_explore_execute_safe
@@ -49,8 +51,12 @@ sequenceDiagram
     PTR->>TP: decide(snapshot) if authoritative/shadow
     alt decision act
       PTR->>PE: run_one_step
-      PE->>D: dispatch step
-      D-->>PE: ExecutionResult
+      PE->>DS: compile + schedule
+      DS->>DE: execute one task
+      DE->>D: dispatch step
+      D-->>DE: ExecutionResult
+      DE-->>PE: task result
+      PE-->>PTR: step status
     else decision explore / plan / replan / progress
       PTR->>PV2: call_planner_with_context (gated)
       PV2-->>PTR: PlanDocument merged
@@ -64,20 +70,71 @@ sequenceDiagram
 
 ---
 
-## 4. Loop behavior
+## 4. DAG execution
 
-| Component | Loop? | Bounds |
-|-----------|--------|--------|
-| **PlannerTaskRuntime._run_act_controller_loop** | Yes | `act_controller_iteration_count` increments each iteration; soft cap `max_act_controller_iterations`; hard PlannerV2 budget `max_planner_controller_calls`; sub-explore cap `max_sub_explorations_per_task`. |
-| **PlanExecutor.run** | Yes (steps) | `ExecutionPolicy` max steps, retries, replans, dispatches, runtime seconds. |
-| **PlanExecutor.run_one_step** | Single-pass | Returns `success`, `failed_step`, `progress`, or other terminal dict. |
-| **ModeManager.run_plan_only (plan_legacy)** | No controller loop | Single exploration + single planner call. |
+`PlanExecutor` uses a two-component DAG system: **`DagScheduler`** (ordering) and **`DagExecutor`** (execution semantics).
+
+### Architecture
+
+```mermaid
+flowchart LR
+  PD[PlanDocument] --> PC[plan_compiler]
+  PC --> ET[ExecutionTask dict]
+  ET --> DS[DagScheduler]
+  DS --> DE[DagExecutor]
+  DE --> DISP[Dispatcher]
+  DISP --> DE
+  DE --> DS
+  DS --> PR[PlanExecutor result]
+```
+
+### Key components
+
+| Module | Role |
+|--------|------|
+| `plan_compiler.py` | Compiles `PlanDocument` → `ExecutionTask` dict with dependency edges |
+| `dag_scheduler.py` | Dependency-based ordering, lifecycle state transitions, ready queue management |
+| `dag_executor.py` | Task execution, retry logic, attempt counter management, termination |
+| `plan_argument_generator.py` | Snapshot and freeze arguments for tasks |
+
+### Execution flow
+
+1. **Compile:** `PlanDocument` → `ExecutionTask` dict (each step becomes a task with dependencies).
+2. **Schedule:** `DagScheduler` builds dependency graph, finds ready tasks (dependencies completed).
+3. **Execute:** `DagExecutor` runs one task via `Dispatcher`, handles retries per `ExecutionPolicy`.
+4. **Update:** Scheduler updates task status; repeats until all tasks completed or failed.
+
+### Retry behavior
+
+- **Schema:** `ExecutionTask.attempt` counts executions; `ExecutionTask.status` ∈ `pending`, `running`, `completed`, `failed`.
+- **Policy:** `ExecutionPolicy` defines `max_retries_per_step`, `max_steps`, `max_replans`.
+- **Decision:** `DagExecutor._should_retry` uses context-aware logic (error type, policy caps).
+- **Replan:** On exhausted retries, `Replanner` may generate new plan (or fetch original plan with completed steps preserved).
+
+### State management
+
+- **No `PlanStep` references:** DAG layer works only with `ExecutionTask`.
+- **Immutability:** Arguments are deep-frozen on task creation (snapshot + copy).
+- **Single source of truth:** Attempt counters live in `ExecutionTask.attempt`.
+
+---
+
+## 5. Loop behavior
+
+|| Component | Loop? | Bounds |
+||-----------|--------|--------|
+|| **DagScheduler** | Yes (per execution) | Runs until all tasks completed/failed or `ExecutionPolicy` exhausted. |
+|| **DagExecutor** | Per task | Executes via `Dispatcher`; manages attempts and retries within policy. |
+|| **PlannerTaskRuntime._run_act_controller_loop** | Yes | `act_controller_iteration_count` increments each iteration; soft cap `max_act_controller_iterations`; hard PlannerV2 budget `max_planner_controller_calls`; sub-explore cap `max_sub_explorations_per_task`. |
+|| **PlanExecutor.run** | Yes (steps) | Delegates to `DagScheduler`; governed by `ExecutionPolicy` (max steps, retries, replans). |
+|| **PlanExecutor.run_one_step** | Single-pass | Returns `success`, `failed_step`, `progress`, or other terminal dict. |
+|| **ModeManager.run_plan_only (plan_legacy)** | No controller loop | Single exploration + single planner call. |
 
 **Stopping (controller):** `PlannerDecision.type == stop` → exit; `run_one_step` → `success` → exit; synthesize path sets `task_planner_last_loop_outcome` and **continues** until TaskPlanner returns non-synthesize or snapshot consumes completion.
 
 ---
 
-## 5. Inputs / outputs
+## 6. Inputs / outputs
 
 - **`PlannerTaskRuntime.run_*`:** `state` (must have `context: dict`, `metadata: dict`), `deep: bool` where applicable.
 - **`PlanExecutor.run(plan_doc, state)`:** returns executor result dict (often includes trace).
@@ -96,7 +153,7 @@ sequenceDiagram
 
 ---
 
-## 6. State / memory interaction
+## 7. State / memory interaction
 
 **Reads**
 
@@ -117,7 +174,7 @@ sequenceDiagram
 
 ---
 
-## 7. Edge cases
+## 8. Edge cases
 
 - **`PLANNER_CONTROLLER_LOOP=0`:** Skips `_run_act_controller_loop`; single PlannerV2 + `PlanExecutor.run` — TaskPlanner authoritative path **not** used for multi-step control.
 - **Budget exhaustion:** `_exit_budget_exhausted` — no partial silent success; abort metadata set.
@@ -126,7 +183,7 @@ sequenceDiagram
 
 ---
 
-## 8. Integration points
+## 9. Integration points
 
 - **Upstream:** `bootstrap.create_runtime()` constructs `ModeManager` + `PlannerTaskRuntime`.
 - **Downstream:** `agent.execution.step_dispatcher._dispatch_react`, `Replanner`, `PlanValidator`.
@@ -134,49 +191,55 @@ sequenceDiagram
 
 ---
 
-## 9. Design principles
+## 10. Design principles
 
 - **Single loop owner:** Only `PlannerTaskRuntime` increments `act_controller_iteration_count` and schedules PlannerV2.
 - **Executor purity:** `PlanExecutor` does not choose the next high-level action; it runs the next pending step or returns status for the runtime.
-- **Tool policy by mode:** Planner’s `_tool_policy` swapped for ACT vs PLAN before exploration/planning.
+- **Tool policy by mode:** Planner's `_tool_policy` swapped for ACT vs PLAN before exploration/planning.
+- **DAG separation:** Scheduler handles ordering; executor handles retry semantics and termination.
 
 ---
 
-## 10. Anti-patterns
+## 11. Anti-patterns
 
 - Calling `PlannerV2.plan` directly from application code bypassing `call_planner_with_context` and gating.
 - Using `AgentLoop` for `act` mode production paths — conflicts with `PlannerTaskRuntime` ownership.
 - Adding tool execution that skips `Dispatcher` (violates repo execution policy).
+- Mixing `PlanStep` into DAG layer — DAG layer uses only `ExecutionTask`.
 
 ---
 
 ## Tooling surface (no `agent_v2/tools/` package)
 
-| Module | Role |
-|--------|------|
-| `dispatcher.py` | Central dispatch for plan steps. |
-| `tool_mapper.py` | Map raw tool results → `ExecutionResult`. |
-| `tool_policy.py` | Allowlists / mode for planner tools vs executor. |
-| `phase1_tool_exposure.py` | `PlanStep.action` → legacy react action mapping. |
+|| Module | Role |
+||--------|------|
+|| `dispatcher.py` | Central dispatch for plan steps. |
+|| `tool_mapper.py` | Map raw tool results → `ExecutionResult`. |
+|| `tool_policy.py` | Allowlists / mode for planner tools vs executor. |
+|| `phase1_tool_exposure.py` | `PlanStep.action` → legacy react action mapping. |
+|| `plan_compiler.py` | Compile `PlanDocument` → `ExecutionTask` dict. |
+|| `dag_scheduler.py` | Dependency-based task ordering. |
+|| `dag_executor.py` | Task execution and retry semantics. |
+|| `plan_argument_generator.py` | Argument snapshot and freeze. |
 
 ---
 
 ## Runtime metadata keys (reference)
 
-| Key | Set where | Consumed where | Lifecycle |
-|-----|-----------|----------------|-----------|
-| `planner_controller_calls` | `_run_act_controller_loop` init + `_budget_planner` | Budget checks | Whole run |
-| `sub_explorations_used` | After sub-exploration | Explore gate | Whole run |
-| `act_controller_iteration_count` | Start of each controller iteration | `build_planner_decision_snapshot` | Whole run |
-| `task_planner_last_loop_outcome` | Synthesize / explore gates | `decision_snapshot` **pops** when building snapshot | Consume-once |
-| `decision_source` | `task_planner` or `shadow` | Observability | Whole run |
-| `task_planner_decision` | Authoritative/shadow | Debug | Whole run |
-| `decision_snapshot_hash` | Snapshot hash | Debug | Whole run |
-| `task_planner_shadow_mismatch` | Shadow compare | Debug | Whole run |
-| `explore_gate` | Gate reason string | Debug | Per event |
-| `planner_loop_abort` | Budget exhausted | Finalize | Terminal |
-| `tool_policy_mode` | After planner attach | Logs | Whole run |
-| `stop_reason` | `should_stop_after_exploration` | Optional gating | Whole run |
-| `thin_planner_decision` | Thin task planner observability | Debug only | Whole run |
-| `task_working_memory_version` | `_sync_chat_planning_metadata` | Observability | Whole run |
-| `conversation_memory_turns` | `_sync_chat_planning_metadata` | Observability | Whole run |
+|| Key | Set where | Consumed where | Lifecycle |
+||-----|-----------|----------------|-----------|
+|| `planner_controller_calls` | `_run_act_controller_loop` init + `_budget_planner` | Budget checks | Whole run |
+|| `sub_explorations_used` | After sub-exploration | Explore gate | Whole run |
+|| `act_controller_iteration_count` | Start of each controller iteration | `build_planner_decision_snapshot` | Whole run |
+|| `task_planner_last_loop_outcome` | Synthesize / explore gates | `decision_snapshot` **pops** when building snapshot | Consume-once |
+|| `decision_source` | `task_planner` or `shadow` | Observability | Whole run |
+|| `task_planner_decision` | Authoritative/shadow | Debug | Whole run |
+|| `decision_snapshot_hash` | Snapshot hash | Debug | Whole run |
+|| `task_planner_shadow_mismatch` | Shadow compare | Debug | Whole run |
+|| `explore_gate` | Gate reason string | Debug | Per event |
+|| `planner_loop_abort` | Budget exhausted | Finalize | Terminal |
+|| `tool_policy_mode` | After planner attach | Logs | Whole run |
+|| `stop_reason` | `should_stop_after_exploration` | Optional gating | Whole run |
+|| `thin_planner_decision` | Thin task planner observability | Debug only | Whole run |
+|| `task_working_memory_version` | `_sync_chat_planning_metadata` | Observability | Whole run |
+|| `conversation_memory_turns` | `_sync_chat_planning_metadata` | Observability | Whole run |
