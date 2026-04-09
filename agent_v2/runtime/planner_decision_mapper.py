@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_v2.planning.planner_v2_invocation import plan_document_has_runnable_work
 from agent_v2.schemas.plan import PlanDocument, PlannerControllerOutput
 from agent_v2.schemas.planner_decision import PlannerDecision
 
@@ -52,19 +53,23 @@ def _decision_from_engine(plan_doc: PlanDocument) -> PlannerDecision | None:
     return None
 
 
-def plan_document_has_no_pending_work(plan_doc: PlanDocument) -> bool:
+def plan_document_has_no_pending_work(plan_doc: PlanDocument, *, state: Any | None = None) -> bool:
     """
-    True when no executor step should run: empty plan or all steps completed.
+    True when no executor step should run: empty plan or DAG shows all tasks successfully completed.
 
     Used so the runtime emits explicit STOP instead of calling the executor with nothing to do.
     """
     steps = plan_doc.steps or []
     if not steps:
         return True
-    return all(s.execution.status == "completed" for s in steps)
+    return not plan_document_has_runnable_work(plan_doc, state=state)
 
 
-def planner_decision_from_plan_document(plan_doc: PlanDocument) -> PlannerDecision:
+def planner_decision_from_plan_document(
+    plan_doc: PlanDocument,
+    *,
+    state: Any | None = None,
+) -> PlannerDecision:
     """
     Deterministic mapping from planner JSON (already validated as PlanDocument).
 
@@ -77,7 +82,7 @@ def planner_decision_from_plan_document(plan_doc: PlanDocument) -> PlannerDecisi
     if from_engine is not None:
         return from_engine
 
-    if plan_document_has_no_pending_work(plan_doc):
+    if plan_document_has_no_pending_work(plan_doc, state=state):
         return PlannerDecision(type="stop", step=None, query=None)
 
     ctrl: PlannerControllerOutput | None = plan_doc.controller

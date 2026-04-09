@@ -10,7 +10,7 @@ from agent_v2.runtime.dispatcher import Dispatcher
 from agent_v2.runtime.exploration_runner import ExplorationRunner
 from agent_v2.runtime.mode_manager import ModeManager
 from agent_v2.runtime.observation_builder import ObservationBuilder
-from agent_v2.runtime.plan_executor import PlanExecutor
+from agent_v2.runtime.dag_executor import DagExecutor
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.runtime.validator import Validator
 from agent_v2.state.agent_state import AgentState
@@ -87,7 +87,7 @@ class AgentRuntime:
 
         self.plan_executor = None
         if plan_argument_generator is not None:
-            self.plan_executor = PlanExecutor(
+            self.plan_executor = DagExecutor(
                 dispatcher,
                 plan_argument_generator,
                 replanner=replanner,

@@ -1,10 +1,8 @@
 """
 Plan schemas — Schema 1 (PlanDocument) and Schema 2 (PlanStep).
 
-PlanDocument is the control plane of the entire system.
-PlanStep carries both planner-owned fields (type, action, goal, I/O, dependencies)
-and runtime-owned blocks (execution, failure) initialized by the planner but mutated
-exclusively by the executor during a run.
+PlanDocument is the planner-owned control plane. PlanStep is immutable at execution time;
+runtime lives on ExecutionTask (see execution_task.py) after compile_plan_document.
 """
 from __future__ import annotations
 
@@ -23,38 +21,6 @@ PlannerPlannerTool = Literal[
     "none",
 ]
 
-from .execution import ErrorType
-
-
-class PlanStepLastResult(BaseModel):
-    success: Optional[bool] = None
-    error: Optional[str] = None
-    output_summary: Optional[str] = None
-
-
-class PlanStepExecution(BaseModel):
-    """
-    Runtime-owned block. Planner sets initial values (status=pending, attempts=0,
-    max_attempts from policy). Only PlanExecutor mutates status/attempts during a run.
-    """
-    status: Literal["pending", "in_progress", "completed", "failed"] = "pending"
-    attempts: int = 0
-    max_attempts: int = 2
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    last_result: PlanStepLastResult = PlanStepLastResult()
-
-
-class PlanStepFailure(BaseModel):
-    """
-    Shared by planner (sets initial strategy/recoverability) and executor
-    (sets failure_type and replan_required after exhaustion).
-    """
-    is_recoverable: bool = True
-    failure_type: Optional[ErrorType] = None
-    retry_strategy: Literal["retry_same", "adjust_inputs", "abort"] = "retry_same"
-    replan_required: bool = False
-
 
 class PlanStep(BaseModel):
     step_id: str
@@ -65,8 +31,6 @@ class PlanStep(BaseModel):
     inputs: dict = {}
     outputs: dict = {}
     dependencies: list[str] = []
-    execution: PlanStepExecution = PlanStepExecution()
-    failure: PlanStepFailure = PlanStepFailure()
 
 
 class PlanSource(BaseModel):
@@ -142,7 +106,7 @@ class PlannerEngineOutput(BaseModel):
     """
     Decision-first planner output (replaces multi-step JSON from the LLM).
 
-    Executor-facing PlanStep rows are synthesized from this for PlanExecutor compatibility.
+    Executor-facing PlanStep rows are synthesized from this for the compile phase.
     """
 
     decision: Literal["act", "explore", "replan", "stop", "synthesize", "plan"]

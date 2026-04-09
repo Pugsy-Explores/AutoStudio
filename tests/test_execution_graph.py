@@ -19,7 +19,6 @@ from agent_v2.schemas.execution import ErrorType
 from agent_v2.schemas.plan import (
     PlanDocument,
     PlanStep,
-    PlanStepExecution,
     PlanSource,
     PlanRisk,
     PlanMetadata,
@@ -242,7 +241,6 @@ class TestGraphBuilderRetryEdges:
                     type="modify",
                     goal="edit file",
                     action="edit",
-                    execution=PlanStepExecution(attempts=3, status="completed"),
                 )
             ],
             risks=[PlanRisk(risk="test", impact="low", mitigation="test")],
@@ -263,6 +261,7 @@ class TestGraphBuilderRetryEdges:
                     success=True,
                     error=None,
                     duration_ms=200,
+                    metadata={"attempts": 3},
                 )
             ],
             status="success",
@@ -296,7 +295,6 @@ class TestGraphBuilderRetryEdges:
                     type="explore",
                     goal="search",
                     action="search",
-                    execution=PlanStepExecution(attempts=1, status="completed"),
                 )
             ],
             risks=[PlanRisk(risk="test", impact="low", mitigation="test")],
@@ -490,7 +488,6 @@ class TestGraphBuilderEdgeCases:
                     type="explore",
                     goal="search",
                     action="search",
-                    execution=PlanStepExecution(attempts=2, status="completed"),
                 ),
                 PlanStep(
                     step_id="s2",
@@ -498,7 +495,6 @@ class TestGraphBuilderEdgeCases:
                     type="modify",
                     goal="edit",
                     action="edit",
-                    execution=PlanStepExecution(attempts=3, status="completed"),
                 ),
             ],
             risks=[PlanRisk(risk="test", impact="low", mitigation="test")],
@@ -519,6 +515,7 @@ class TestGraphBuilderEdgeCases:
                     success=True,
                     error=None,
                     duration_ms=100,
+                    metadata={"attempts": 2},
                 ),
                 TraceStep(
                     step_id="s2",
@@ -528,6 +525,7 @@ class TestGraphBuilderEdgeCases:
                     success=True,
                     error=None,
                     duration_ms=200,
+                    metadata={"attempts": 3},
                 ),
             ],
             status="success",
@@ -562,15 +560,13 @@ class TestGraphBuilderComplexFlow:
                     type="modify",
                     goal="edit",
                     action="edit",
-                    execution=PlanStepExecution(attempts=3, status="failed"),
                 ),
                 PlanStep(
                     step_id="s2",
-                    index=1,
+                    index=2,
                     type="explore",
                     goal="search again",
                     action="search",
-                    execution=PlanStepExecution(attempts=1, status="completed"),
                 ),
             ],
             risks=[PlanRisk(risk="test", impact="low", mitigation="test")],
@@ -591,6 +587,7 @@ class TestGraphBuilderComplexFlow:
                     success=False,
                     error=TraceError(type=ErrorType.tool_error, message="patch failed"),
                     duration_ms=200,
+                    metadata={"attempts": 3},
                 ),
                 TraceStep(
                     step_id="s2",
@@ -684,7 +681,6 @@ class TestGraphStatusColors:
                     type="modify",
                     goal="edit",
                     action="edit",
-                    execution=PlanStepExecution(attempts=2, status="completed"),
                 )
             ],
             risks=[PlanRisk(risk="test", impact="low", mitigation="test")],
@@ -705,6 +701,7 @@ class TestGraphStatusColors:
                     success=True,
                     error=None,
                     duration_ms=200,
+                    metadata={"attempts": 3},
                 )
             ],
             status="success",

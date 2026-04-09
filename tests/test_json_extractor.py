@@ -42,3 +42,21 @@ def test_extract_final_json_with_validate_fn():
 def test_extract_final_json_raises_when_no_valid_object():
     with pytest.raises(ValueError, match="No valid JSON object found"):
         JSONExtractor.extract_final_json("no json here")
+
+
+def test_extract_final_json_with_fenced_json_block():
+    text = "analysis...\n```json\n{\"selected_indices\": [0]}\n```\n"
+    out = JSONExtractor.extract_final_json(text)
+    assert out == {"selected_indices": [0]}
+
+
+def test_extract_final_json_with_uppercase_fenced_json_block():
+    text = "notes\n```JSON\n{\"decision\":\"stop\",\"tool\":\"none\"}\n```\n"
+    out = JSONExtractor.extract_final_json(text)
+    assert out == {"decision": "stop", "tool": "none"}
+
+
+def test_extract_final_json_accepts_kv_style_selector_output():
+    text = "analysis...\nselected_indices: [0]\nselection_confidence: \"high\"\n"
+    out = JSONExtractor.extract_final_json(text)
+    assert out == {"selected_indices": [0], "selection_confidence": "high"}

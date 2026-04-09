@@ -23,9 +23,12 @@ from .plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
-    PlanStepFailure,
-    PlanStepLastResult,
+)
+from .execution_task import (
+    CompiledExecutionGraph,
+    ExecutionTask,
+    TaskRuntimeState,
+    TaskScheduler,
 )
 from .answer_validation import AnswerValidationResult
 from .plan_state import PlanState, plan_state_from_plan_document
@@ -111,9 +114,10 @@ __all__ = [
     "PlanRisk",
     "PlanSource",
     "PlanStep",
-    "PlanStepExecution",
-    "PlanStepFailure",
-    "PlanStepLastResult",
+    "CompiledExecutionGraph",
+    "ExecutionTask",
+    "TaskRuntimeState",
+    "TaskScheduler",
     "PlanState",
     "plan_state_from_plan_document",
     "AnswerValidationResult",

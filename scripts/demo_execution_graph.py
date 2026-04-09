@@ -9,7 +9,6 @@ from agent_v2.schemas.execution import ErrorType
 from agent_v2.schemas.plan import (
     PlanDocument,
     PlanStep,
-    PlanStepExecution,
     PlanSource,
     PlanRisk,
     PlanMetadata,
@@ -42,7 +41,7 @@ def main():
                 step_id="s2",
                 plan_step_index=2,
                 action="open_file",
-                target="agent_v2/runtime/plan_executor.py",
+                target="agent_v2/runtime/dag_executor.py",
                 success=True,
                 error=None,
                 duration_ms=50,
@@ -51,7 +50,7 @@ def main():
                 step_id="s3",
                 plan_step_index=3,
                 action="edit",
-                target="agent_v2/runtime/plan_executor.py",
+                target="agent_v2/runtime/dag_executor.py",
                 success=True,
                 error=None,
                 duration_ms=250,
@@ -79,7 +78,7 @@ def main():
         plan_id="plan_001",
         instruction="Add logging with retry",
         understanding="Add logging to execute_step with retry",
-        sources=[PlanSource(type="file", ref="plan_executor.py", summary="executor")],
+        sources=[PlanSource(type="file", ref="dag_executor.py", summary="executor")],
         steps=[
             PlanStep(
                 step_id="s1",
@@ -87,7 +86,7 @@ def main():
                 type="explore",
                 goal="search",
                 action="search",
-                execution=PlanStepExecution(attempts=1, status="completed"),
+                inputs={},
             ),
             PlanStep(
                 step_id="s2",
@@ -95,7 +94,7 @@ def main():
                 type="analyze",
                 goal="read",
                 action="open_file",
-                execution=PlanStepExecution(attempts=1, status="completed"),
+                inputs={"path": "agent_v2/runtime/dag_executor.py"},
             ),
             PlanStep(
                 step_id="s3",
@@ -103,7 +102,7 @@ def main():
                 type="modify",
                 goal="edit",
                 action="edit",
-                execution=PlanStepExecution(attempts=3, status="completed"),
+                inputs={"path": "agent_v2/runtime/dag_executor.py", "instruction": "log"},
             ),
         ],
         risks=[PlanRisk(risk="test", impact="low", mitigation="retry")],

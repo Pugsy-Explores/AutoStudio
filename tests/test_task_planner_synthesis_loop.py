@@ -24,8 +24,7 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
-)
+    )
 from agent_v2.schemas.planner_action import PlannerDecisionSnapshot
 
 
@@ -209,7 +208,6 @@ def test_build_planner_decision_snapshot_includes_last_plan_hash_when_plan_doc_g
         goal="g",
         action="finish",
         inputs={},
-        execution=PlanStepExecution(),
     )
     pd = PlanDocument(
         plan_id="p1",
@@ -233,7 +231,6 @@ def test_plan_fingerprint_detects_identical_plans():
         goal="g",
         action="finish",
         inputs={},
-        execution=PlanStepExecution(),
     )
     pd = PlanDocument(
         plan_id="p1",
@@ -256,7 +253,6 @@ def test_insufficiency_replan_context_includes_explore_block_from_metadata():
         goal="g",
         action="finish",
         inputs={},
-        execution=PlanStepExecution(),
     )
     pd = PlanDocument(
         plan_id="p1",

@@ -1,6 +1,7 @@
 """Unit tests: PlanDocument → PlannerDecision (single control boundary)."""
 
 import unittest
+from unittest.mock import MagicMock
 
 from agent_v2.runtime.planner_decision_mapper import (
     plan_document_has_no_pending_work,
@@ -12,7 +13,6 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
     PlannerControllerOutput,
     PlannerEngineOutput,
 )
@@ -32,7 +32,6 @@ def _doc(controller: PlannerControllerOutput | None, engine: PlannerEngineOutput
                 goal="g",
                 action="search",
                 inputs={},
-                execution=PlanStepExecution(),
             ),
         ],
         risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
@@ -82,10 +81,13 @@ class TestPlannerDecisionMapper(unittest.TestCase):
 
     def test_all_steps_completed_maps_to_stop(self):
         doc = _doc(PlannerControllerOutput(action="continue"))
-        s = doc.steps[0]
-        s.execution = PlanStepExecution(status="completed")
-        self.assertTrue(plan_document_has_no_pending_work(doc))
-        d = planner_decision_from_plan_document(doc)
+        st = MagicMock()
+        st.context = {
+            "dag_graph_tasks": {"s1": {}},
+            "dag_completed_step_ids": ["s1"],
+        }
+        self.assertTrue(plan_document_has_no_pending_work(doc, state=st))
+        d = planner_decision_from_plan_document(doc, state=st)
         self.assertEqual(d.type, "stop")
 
     def test_engine_explore_overrides_controller(self):

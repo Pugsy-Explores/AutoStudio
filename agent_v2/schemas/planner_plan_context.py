@@ -46,6 +46,9 @@ class PlannerPlanContext(BaseModel):
     exploration_budget: Optional[int] = None
     # First-class post-synthesis validation; when incomplete, runtime blocks immediate re-synthesize.
     validation_feedback: Optional[AnswerValidationResult] = None
+    # Structured exploration symbol inventory for decision grounding.
+    available_symbols: list[str] = Field(default_factory=list)
+    missing_symbols: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _one_primary_mode(self) -> "PlannerPlanContext":

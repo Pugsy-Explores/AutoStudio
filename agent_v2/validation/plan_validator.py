@@ -33,7 +33,7 @@ class PlanValidator:
 
         Args:
             plan: Planner output to validate.
-            policy: When set, enforces PlanStep.execution.max_attempts == max_retries_per_step.
+            policy: When set, enforces max step count (and related policy limits).
             task_mode: Optional validator mode:
                 - "read_only": only ``allowed_actions_read_only`` (no run_tests/shell).
                 - "plan_safe": only ``allowed_actions_plan_safe`` (no edit; run_tests/shell ok).
@@ -101,15 +101,6 @@ class PlanValidator:
             raise PlanValidationError(
                 f"Step indices must be exactly 1..{len(steps)} once each, got {indices}"
             )
-
-        if policy is not None:
-            for step in steps:
-                if step.execution.max_attempts != policy.max_retries_per_step:
-                    raise PlanValidationError(
-                        "PlanStep.execution.max_attempts must match "
-                        f"ExecutionPolicy.max_retries_per_step ({policy.max_retries_per_step}), "
-                        f"got {step.execution.max_attempts} for step {step.step_id}"
-                    )
 
     @staticmethod
     def _validate_decision_engine_plan(
@@ -184,15 +175,6 @@ class PlanValidator:
             raise PlanValidationError(
                 f"Step indices must be exactly 1..{len(steps)} once each, got {indices}"
             )
-
-        if policy is not None:
-            for step in steps:
-                if step.execution.max_attempts != policy.max_retries_per_step:
-                    raise PlanValidationError(
-                        "PlanStep.execution.max_attempts must match "
-                        f"ExecutionPolicy.max_retries_per_step ({policy.max_retries_per_step}), "
-                        f"got {step.execution.max_attempts} for step {step.step_id}"
-                    )
 
     @staticmethod
     def _validate_step(step: PlanStep, step_ids: set[str], task_mode: Optional[str] = None) -> None:

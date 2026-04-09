@@ -15,10 +15,9 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
 )
 from agent_v2.schemas.policies import ExecutionPolicy
-from agent_v2.runtime.plan_executor import PlanExecutor
+from agent_v2.runtime.dag_executor import DagExecutor
 from agent_v2.state.agent_state import AgentState
 
 
@@ -47,7 +46,6 @@ def _plan_two_step() -> PlanDocument:
                 goal="g",
                 action="search",
                 inputs={"query": "q"},
-                execution=PlanStepExecution(max_attempts=1),
             ),
             PlanStep(
                 step_id="s2",
@@ -56,7 +54,6 @@ def _plan_two_step() -> PlanDocument:
                 goal="d",
                 action="finish",
                 dependencies=["s1"],
-                execution=PlanStepExecution(max_attempts=1),
             ),
         ],
         risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
@@ -91,7 +88,7 @@ class TestExecutorDispatchCap(unittest.TestCase):
         )
         mock_dispatch = MagicMock()
         arg_gen = MagicMock()
-        ex = PlanExecutor(mock_dispatch, arg_gen, policy=policy)
+        ex = DagExecutor(mock_dispatch, arg_gen, policy=policy)
         plan = _plan_two_step()
         state = AgentState(instruction="x")
         state.current_plan = plan.model_dump(mode="json")
@@ -101,13 +98,13 @@ class TestExecutorDispatchCap(unittest.TestCase):
         mock_dispatch.execute.assert_not_called()
 
 
-class TestPlanExecutorRequiresCurrentPlan(unittest.TestCase):
+class TestDagExecutorRequiresCurrentPlan(unittest.TestCase):
     def test_raises_without_current_plan(self):
         mock_dispatch = MagicMock()
         mock_dispatch.execute.return_value = _ok("s1")
         arg_gen = MagicMock()
         arg_gen.generate.return_value = {"query": "q"}
-        ex = PlanExecutor(mock_dispatch, arg_gen)
+        ex = DagExecutor(mock_dispatch, arg_gen)
         plan = _plan_two_step()
         state = AgentState(instruction="x")
         with self.assertRaises(ValueError) as ctx:

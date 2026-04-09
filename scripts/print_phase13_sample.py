@@ -24,7 +24,6 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
 )
 
 
@@ -52,7 +51,6 @@ def main() -> None:
                 goal="find code",
                 action="search",
                 inputs={"query": "auth"},
-                execution=PlanStepExecution(),
             ),
         ],
         risks=[PlanRisk(risk="r", impact="low", mitigation="m")],

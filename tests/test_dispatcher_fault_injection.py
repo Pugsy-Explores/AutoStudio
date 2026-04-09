@@ -13,7 +13,7 @@ from agent_v2.runtime.fault_hooks import (
     maybe_inject_open_file_fault_raw,
     synthetic_open_file_failure,
 )
-from agent_v2.runtime.plan_executor import PlanExecutor
+from agent_v2.runtime.dag_executor import DagExecutor
 from agent_v2.runtime.replanner import Replanner
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.plan import (
@@ -22,7 +22,6 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
 )
 from agent_v2.state.agent_state import AgentState
 
@@ -139,7 +138,7 @@ def test_hard_second_step_id_succeeds_when_first_bound(monkeypatch):
     assert calls == ["second"]
 
 
-def test_plan_executor_retries_open_file_after_once_fault(monkeypatch):
+def test_dag_executor_retries_open_file_after_once_fault(monkeypatch):
     monkeypatch.setenv("AGENT_V2_FAULT_OPEN_FILE_ONCE", "1")
     monkeypatch.delenv("AGENT_V2_FAULT_OPEN_FILE_HARD_UNTIL_REPLAN", raising=False)
 
@@ -171,7 +170,6 @@ def test_plan_executor_retries_open_file_after_once_fault(monkeypatch):
                 goal="g",
                 action="search",
                 inputs={"query": "q"},
-                execution=PlanStepExecution(),
             ),
             PlanStep(
                 step_id="s2",
@@ -181,7 +179,6 @@ def test_plan_executor_retries_open_file_after_once_fault(monkeypatch):
                 action="open_file",
                 dependencies=["s1"],
                 inputs={"path": "a.py"},
-                execution=PlanStepExecution(),
             ),
             PlanStep(
                 step_id="s3",
@@ -190,7 +187,6 @@ def test_plan_executor_retries_open_file_after_once_fault(monkeypatch):
                 goal="done",
                 action="finish",
                 dependencies=["s2"],
-                execution=PlanStepExecution(),
             ),
         ],
         risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
@@ -199,15 +195,14 @@ def test_plan_executor_retries_open_file_after_once_fault(monkeypatch):
     )
     state = AgentState(instruction="i")
     state.current_plan = plan.model_dump(mode="json")
-    ex = PlanExecutor(dispatch, arg_gen)
+    ex = DagExecutor(dispatch, arg_gen)
     out = ex.run(plan, state)
     assert out["status"] == "success"
-    open_step = next(s for s in plan.steps if s.action == "open_file")
-    assert open_step.execution.attempts >= 2
+    assert int(state.context["dag_graph_tasks"]["s2"]["runtime"]["attempts"]) >= 2
     assert int(state.metadata.get(_META_INJECT_COUNT, 0)) >= 1
 
 
-def test_plan_executor_hard_open_triggers_replan_then_succeeds(monkeypatch):
+def test_dag_executor_hard_open_triggers_replan_then_succeeds(monkeypatch):
     monkeypatch.setenv("AGENT_V2_FAULT_OPEN_FILE_HARD_UNTIL_REPLAN", "1")
     monkeypatch.delenv("AGENT_V2_FAULT_OPEN_FILE_ONCE", raising=False)
 
@@ -244,7 +239,6 @@ def test_plan_executor_hard_open_triggers_replan_then_succeeds(monkeypatch):
                 goal="g",
                 action="search",
                 inputs={"query": "q"},
-                execution=PlanStepExecution(max_attempts=policy.max_retries_per_step),
             ),
             PlanStep(
                 step_id="xo",
@@ -254,7 +248,6 @@ def test_plan_executor_hard_open_triggers_replan_then_succeeds(monkeypatch):
                 action="open_file",
                 dependencies=["xs"],
                 inputs={"path": "a.py"},
-                execution=PlanStepExecution(max_attempts=policy.max_retries_per_step),
             ),
             PlanStep(
                 step_id="xf",
@@ -263,7 +256,6 @@ def test_plan_executor_hard_open_triggers_replan_then_succeeds(monkeypatch):
                 goal="done",
                 action="finish",
                 dependencies=["xo"],
-                execution=PlanStepExecution(max_attempts=policy.max_retries_per_step),
             ),
         ],
         risks=[risk],
@@ -283,7 +275,6 @@ def test_plan_executor_hard_open_triggers_replan_then_succeeds(monkeypatch):
                 goal="g",
                 action="search",
                 inputs={"query": "q"},
-                execution=PlanStepExecution(max_attempts=policy.max_retries_per_step),
             ),
             PlanStep(
                 step_id="rf",
@@ -292,7 +283,6 @@ def test_plan_executor_hard_open_triggers_replan_then_succeeds(monkeypatch):
                 goal="done",
                 action="finish",
                 dependencies=["rs"],
-                execution=PlanStepExecution(max_attempts=policy.max_retries_per_step),
             ),
         ],
         risks=[risk],
@@ -303,7 +293,7 @@ def test_plan_executor_hard_open_triggers_replan_then_succeeds(monkeypatch):
     mock_planner = MagicMock()
     mock_planner.plan.return_value = recovery
     replanner = Replanner(mock_planner, policy=policy)
-    ex = PlanExecutor(dispatch, arg_gen, replanner=replanner, policy=policy)
+    ex = DagExecutor(dispatch, arg_gen, replanner=replanner, policy=policy)
 
     state = AgentState(instruction="task")
     state.current_plan = initial.model_dump(mode="json")

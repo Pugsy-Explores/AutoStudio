@@ -40,7 +40,14 @@ class TraceEmitter:
         self._steps: list[TraceStep] = []
         self._start_mono: float = time.perf_counter()
 
-    def record_step(self, step: PlanStep, result: ExecutionResult, plan_step_index: int) -> None:
+    def record_step(
+        self,
+        step: PlanStep,
+        result: ExecutionResult,
+        plan_step_index: int,
+        *,
+        execution_attempts: int | None = None,
+    ) -> None:
         """
         Append a TraceStep after the plan step's final outcome (post-retry).
 
@@ -66,6 +73,8 @@ class TraceEmitter:
             tool_name = str(result.metadata.tool_name or "")
         if tool_name:
             meta["tool_name"] = tool_name
+        if execution_attempts is not None and execution_attempts >= 1:
+            meta["attempts"] = int(execution_attempts)
         # Phase 12.6.R5: visibility into bounded-read provenance (facts only).
         if tool_name == "read_snippet":
             data = result.output.data if result.output else {}

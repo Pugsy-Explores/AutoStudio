@@ -6,7 +6,7 @@ See pugsy_ai/task-planner-as-main-runtime-plan.md §0.2.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from agent_v2.schemas.plan import PlanDocument
 from agent_v2.schemas.planner_decision import PlannerDecision
@@ -34,12 +34,29 @@ def plan_document_valid_for_v2_gate(plan_doc: PlanDocument | None) -> bool:
     return True
 
 
-def plan_document_has_runnable_work(plan_doc: PlanDocument | None) -> bool:
-    """True when there is at least one step not yet completed (executor may run)."""
+def plan_document_has_runnable_work(
+    plan_doc: PlanDocument | None,
+    *,
+    state: Any | None = None,
+) -> bool:
+    """True when executor work may remain (DAG in context) or plan exists but graph not yet materialized."""
     if plan_doc is None:
         return False
     steps = plan_doc.steps or []
-    return any(s.execution.status != "completed" for s in steps)
+    if not steps:
+        return False
+    ctx = getattr(state, "context", None) if state is not None else None
+    if not isinstance(ctx, dict):
+        return True
+    raw = ctx.get("dag_graph_tasks")
+    if not isinstance(raw, dict) or len(raw) == 0:
+        return True
+    n = len(raw)
+    completed = ctx.get("dag_completed_step_ids")
+    if not isinstance(completed, (list, set, tuple)):
+        completed = []
+    completed_set = {str(x) for x in completed}
+    return len(completed_set) < n
 
 
 def should_call_planner_v2(

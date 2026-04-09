@@ -12,7 +12,7 @@ def test_task_planner_module_does_not_import_runtime_loops():
     forbidden = (
         "PlannerTaskRuntime",
         "ExplorationRunner",
-        "PlanExecutor",
+        "DagExecutor",
         "planner_task_runtime",
         "exploration_runner",
     )

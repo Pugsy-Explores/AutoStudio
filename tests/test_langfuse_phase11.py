@@ -5,7 +5,7 @@ Verifies:
   - Singleton client initialization
   - No-op facades when SDK unavailable or keys missing
   - Trace/span/generation/event hierarchy
-  - Integration with runtime, plan_executor, planner, arg generator, exploration
+  - Integration with runtime, dag_executor, planner, arg generator, exploration
 """
 from __future__ import annotations
 
@@ -25,14 +25,15 @@ from agent_v2.observability.langfuse_client import (
     finalize_agent_trace,
     langfuse,
 )
+from agent_v2.runtime.dag_executor import DagExecutor
 from agent_v2.schemas.plan import (
     PlanDocument,
     PlanStep,
     PlanSource,
     PlanRisk,
     PlanMetadata,
-    PlanStepExecution,
 )
+from agent_v2.state.agent_state import AgentState
 from agent_v2.schemas.execution import ExecutionResult, ExecutionOutput, ExecutionMetadata
 from agent_v2.schemas.exploration import (
     ExplorationSummary,
@@ -44,6 +45,7 @@ from agent_v2.schemas.exploration import (
     ExplorationItemMetadata,
 )
 from agent_v2.schemas.final_exploration import ExplorationAdapterTrace, FinalExplorationSchema
+from agent_v2.schemas.policies import ExecutionPolicy
 
 
 def _make_plan_document(plan_id: str, steps: list[PlanStep]) -> PlanDocument:
@@ -252,9 +254,6 @@ class TestLangfusePlanExecutorIntegration:
 
     def test_plan_executor_creates_span_per_step(self):
         """PlanExecutor._run_with_retry creates span for each plan step."""
-        from agent_v2.runtime.plan_executor import PlanExecutor
-        from agent_v2.state.agent_state import AgentState
-
         mock_dispatcher = MagicMock()
         mock_dispatcher.execute.return_value = ExecutionResult(
             step_id="s1",
@@ -266,7 +265,7 @@ class TestLangfusePlanExecutorIntegration:
         )
         mock_arg_gen = MagicMock(generate=MagicMock(return_value={"query": "test"}))
 
-        ex = PlanExecutor(mock_dispatcher, mock_arg_gen)
+        ex = DagExecutor(mock_dispatcher, mock_arg_gen)
         plan = _make_plan_document(
             "test_plan",
             [
@@ -280,7 +279,7 @@ class TestLangfusePlanExecutorIntegration:
             ],
         )
         state = AgentState(instruction="test")
-        state.current_plan = plan
+        state.current_plan = plan.model_dump(mode="json")
         trace = create_agent_trace(instruction="test", mode="act")
         state.metadata["langfuse_trace"] = trace
 
@@ -288,9 +287,7 @@ class TestLangfusePlanExecutorIntegration:
 
     def test_retry_event_emitted(self):
         """PlanExecutor emits retry event on step failure before retry."""
-        from agent_v2.runtime.plan_executor import PlanExecutor
         from agent_v2.schemas.execution import ErrorType, ExecutionError
-        from agent_v2.state.agent_state import AgentState
 
         attempt_count = 0
 
@@ -323,7 +320,7 @@ class TestLangfusePlanExecutorIntegration:
         mock_dispatcher.execute.side_effect = failing_then_success
         mock_arg_gen = MagicMock(generate=MagicMock(return_value={"query": "test"}))
 
-        ex = PlanExecutor(mock_dispatcher, mock_arg_gen)
+        ex = DagExecutor(mock_dispatcher, mock_arg_gen)
         plan = _make_plan_document(
             "test_plan",
             [
@@ -337,7 +334,7 @@ class TestLangfusePlanExecutorIntegration:
             ],
         )
         state = AgentState(instruction="test")
-        state.current_plan = plan
+        state.current_plan = plan.model_dump(mode="json")
         trace = create_agent_trace(instruction="test", mode="act")
         state.metadata["langfuse_trace"] = trace
 
@@ -350,10 +347,8 @@ class TestLangfuseReplanEvent:
 
     def test_replan_event_emitted_on_failure(self):
         """PlanExecutor emits replan_triggered event when step exhausts retries."""
-        from agent_v2.runtime.plan_executor import PlanExecutor
         from agent_v2.runtime.replanner import Replanner
         from agent_v2.schemas.execution import ErrorType, ExecutionError
-        from agent_v2.state.agent_state import AgentState
 
         mock_dispatcher = MagicMock()
         mock_dispatcher.execute.return_value = ExecutionResult(
@@ -374,9 +369,10 @@ class TestLangfuseReplanEvent:
             ],
         )
         mock_planner = MagicMock(plan=MagicMock(return_value=new_plan))
-        replanner = Replanner(mock_planner)
+        policy = ExecutionPolicy(max_steps=8, max_retries_per_step=1, max_replans=2)
+        replanner = Replanner(mock_planner, policy=policy)
 
-        ex = PlanExecutor(mock_dispatcher, mock_arg_gen, replanner=replanner)
+        ex = DagExecutor(mock_dispatcher, mock_arg_gen, replanner=replanner, policy=policy)
         plan = _make_plan_document(
             "test_plan",
             [
@@ -386,12 +382,12 @@ class TestLangfuseReplanEvent:
                     type="explore",
                     action="search",
                     goal="find files",
-                    execution=PlanStepExecution(max_attempts=1),
                 )
             ],
         )
         state = AgentState(instruction="test")
-        state.current_plan = plan
+        state.current_plan = plan.model_dump(mode="json")
+        state.context["exploration_result"] = {"summary": {"key_findings": [], "knowledge_gaps": []}}
         trace = create_agent_trace(instruction="test", mode="act")
         state.metadata["langfuse_trace"] = trace
 

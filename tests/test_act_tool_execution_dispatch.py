@@ -1,10 +1,10 @@
 """
-ACT-mode tool execution wiring: Planner output shape → PlanExecutor → Dispatcher → _dispatch_react.
+ACT-mode tool execution wiring: Planner output shape → DagExecutor → Dispatcher → _dispatch_react.
 
 Uses a mock argument generator (fixed args) so no PLANNER_TOOL_ARGS_* / planner LLM is required.
 Mirrors production path: ``AgentRuntime`` wires ``Dispatcher(execute_fn=_dispatch_react)``.
 
-See also: ``tests/test_plan_executor.py`` (mock dispatcher) and ``agent_v2/runtime/plan_executor.py``.
+See also: ``tests/test_replanner.py`` (DagExecutor + mock dispatcher).
 """
 
 from __future__ import annotations
@@ -18,18 +18,26 @@ import pytest
 from agent.execution import react_schema  # noqa: F401 — initializes tool registry
 from agent.execution.step_dispatcher import _dispatch_react
 from agent_v2.runtime.dispatcher import Dispatcher
-from agent_v2.runtime.plan_executor import PlanExecutor
+from agent_v2.runtime.dag_executor import DagExecutor
 from agent_v2.schemas.plan import (
     PlanDocument,
     PlanMetadata,
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
 )
 from agent_v2.state.agent_state import AgentState
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _dag_last_summary(state: AgentState, step_id: str) -> str:
+    raw = (state.context or {}).get("dag_graph_tasks") or {}
+    cell = raw.get(step_id) or {}
+    lr = (cell.get("runtime") or {}).get("last_result") or {}
+    out = lr.get("output") or {}
+    return str(out.get("summary") or "")
+
 
 _SANDBOX_EDIT_FILE = "tweak_me.py"
 _SANDBOX_EDIT_BEFORE = (
@@ -86,7 +94,6 @@ def _work_then_finish(
                 goal="probe",
                 action=action,  # type: ignore[arg-type]
                 inputs=inputs,
-                execution=PlanStepExecution(max_attempts=1),
             ),
             PlanStep(
                 step_id="fin",
@@ -95,7 +102,6 @@ def _work_then_finish(
                 goal="done",
                 action="finish",
                 dependencies=[step_id],
-                execution=PlanStepExecution(),
             ),
         ]
     )
@@ -115,11 +121,11 @@ def _act_state(**extra_ctx) -> AgentState:
 
 
 @pytest.fixture
-def executor() -> PlanExecutor:
-    return PlanExecutor(Dispatcher(execute_fn=_dispatch_react), MagicMock())
+def executor() -> DagExecutor:
+    return DagExecutor(Dispatcher(execute_fn=_dispatch_react), MagicMock())
 
 
-def test_open_file_returns_content(executor: PlanExecutor):
+def test_open_file_returns_content(executor: DagExecutor):
     plan, arg_gen = _work_then_finish(
         step_id="s_open",
         index=1,
@@ -132,28 +138,28 @@ def test_open_file_returns_content(executor: PlanExecutor):
     state.current_plan = plan.model_dump(mode="json")
     out = executor.run(plan, state)
     assert out["status"] == "success"
-    summary = plan.steps[0].execution.last_result.output_summary or ""
+    summary = _dag_last_summary(state, plan.steps[0].step_id)
     assert "ExplorationRunner" in summary or "exploration" in summary.lower()
 
 
-def test_search_returns_results(executor: PlanExecutor):
+def test_search_returns_results(executor: DagExecutor):
     plan, arg_gen = _work_then_finish(
         step_id="s_search",
         index=1,
         action="search",
-        inputs={"query": "PlanExecutor class"},
-        arg_gen_return={"query": "PlanExecutor class"},
+        inputs={"query": "DagExecutor class"},
+        arg_gen_return={"query": "DagExecutor class"},
     )
     executor.argument_generator = arg_gen
     state = _act_state()
     state.current_plan = plan.model_dump(mode="json")
     out = executor.run(plan, state)
     assert out["status"] == "success"
-    summary = plan.steps[0].execution.last_result.output_summary or ""
-    assert "plan_executor" in summary.lower() or "PlanExecutor" in summary
+    summary = _dag_last_summary(state, plan.steps[0].step_id)
+    assert "dag_executor" in summary.lower() or "DagExecutor" in summary
 
 
-def test_shell_lists_files(executor: PlanExecutor):
+def test_shell_lists_files(executor: DagExecutor):
     plan, arg_gen = _work_then_finish(
         step_id="s_sh",
         index=1,
@@ -166,11 +172,11 @@ def test_shell_lists_files(executor: PlanExecutor):
     state.current_plan = plan.model_dump(mode="json")
     out = executor.run(plan, state)
     assert out["status"] == "success"
-    summary = plan.steps[0].execution.last_result.output_summary or ""
-    assert "plan_executor.py" in summary
+    summary = _dag_last_summary(state, plan.steps[0].step_id)
+    assert "dag_executor.py" in summary
 
 
-def test_run_tests_produces_pytest_output(executor: PlanExecutor):
+def test_run_tests_produces_pytest_output(executor: DagExecutor):
     plan, arg_gen = _work_then_finish(
         step_id="s_test",
         index=1,
@@ -183,15 +189,15 @@ def test_run_tests_produces_pytest_output(executor: PlanExecutor):
     state.current_plan = plan.model_dump(mode="json")
     out = executor.run(plan, state)
     assert out["status"] == "success"
-    summary = plan.steps[0].execution.last_result.output_summary or ""
+    summary = _dag_last_summary(state, plan.steps[0].step_id)
     low = summary.lower()
     assert "executed successfully" in low
     assert "passed" in low or "ok" in low
 
 
-def test_edit_applies_patch_in_temp_project(executor: PlanExecutor, tmp_path: Path):
+def test_edit_applies_patch_in_temp_project(executor: DagExecutor, tmp_path: Path):
     """
-    End-to-end edit via PlanExecutor → _dispatch_react → _edit_react → execute_patch.
+    End-to-end edit via DagExecutor → _dispatch_react → _edit_react → execute_patch.
 
     ``_generate_patch_once`` is patched to return a fixed ``text_sub`` plan so the test
     does not depend on the coding model; snapshot, apply_patch, syntax check, and

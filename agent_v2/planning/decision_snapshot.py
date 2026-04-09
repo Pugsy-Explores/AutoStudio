@@ -61,7 +61,7 @@ def build_planner_decision_snapshot(
     has_pending: Optional[bool] = None
     lph = ""
     if plan_doc is not None:
-        has_pending = plan_document_has_runnable_work(plan_doc)
+        has_pending = plan_document_has_runnable_work(plan_doc, state=state)
         lph = plan_document_fingerprint(plan_doc)
 
     v_hint = ""

@@ -21,7 +21,6 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
 )
 from agent_v2.schemas.trace import Trace, TraceMetadata, TraceStep
 from agent.models import model_client
@@ -35,7 +34,6 @@ def _plan_step() -> PlanStep:
         goal="g",
         action="search",
         inputs={"query": "q"},
-        execution=PlanStepExecution(),
     )
 
 

@@ -1,4 +1,4 @@
-"""Phase 7 — Replanner, ReplanResultValidator, PlanExecutor replan loop."""
+"""Phase 7 — Replanner, ReplanResultValidator, DagExecutor replan loop."""
 
 import unittest
 from unittest.mock import MagicMock
@@ -16,13 +16,11 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
-    PlanStepLastResult,
 )
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.planner_plan_context import PlannerPlanContext
 from agent_v2.schemas.replan import ReplanContext, ReplanNewPlan, ReplanResult
-from agent_v2.runtime.plan_executor import PlanExecutor
+from agent_v2.runtime.dag_executor import DagExecutor
 from agent_v2.runtime.replanner import (
     Replanner,
     merge_preserved_completed_steps,
@@ -60,6 +58,7 @@ def _attach_plan(state: AgentState, plan: PlanDocument) -> None:
 
 
 def _plan(pid: str, sid_search: str, sid_finish: str, max_attempts: int = 2) -> PlanDocument:
+    _ = max_attempts  # policy applied at compile time
     return PlanDocument(
         plan_id=pid,
         instruction="test",
@@ -73,7 +72,6 @@ def _plan(pid: str, sid_search: str, sid_finish: str, max_attempts: int = 2) -> 
                 goal="search",
                 action="search",
                 inputs={"query": "q"},
-                execution=PlanStepExecution(max_attempts=max_attempts),
             ),
             PlanStep(
                 step_id=sid_finish,
@@ -82,7 +80,6 @@ def _plan(pid: str, sid_search: str, sid_finish: str, max_attempts: int = 2) -> 
                 goal="done",
                 action="finish",
                 dependencies=[sid_search],
-                execution=PlanStepExecution(max_attempts=max_attempts),
             ),
         ],
         risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
@@ -146,28 +143,15 @@ class TestReplanResultValidator(unittest.TestCase):
 
 
 class TestMergePreserved(unittest.TestCase):
-    def test_copies_completed_execution_by_step_id(self):
+    def test_copies_completed_planner_fields_by_step_id(self):
         old = _plan("p1", "s1", "s2")
-        old.steps[0].execution = PlanStepExecution(
-            status="completed",
-            attempts=1,
-            max_attempts=2,
-            last_result=PlanStepLastResult(success=True, output_summary="done"),
-        )
         new = _plan("p2", "s1", "s2")
-        merged = merge_preserved_completed_steps(old, new)
-        self.assertEqual(merged.steps[0].execution.status, "completed")
-        self.assertEqual(merged.steps[0].execution.last_result.output_summary, "done")
+        merged = merge_preserved_completed_steps(old, new, completed_step_ids={"s1"})
+        self.assertEqual(merged.steps[0].step_id, "s1")
+        self.assertEqual(merged.steps[0].model_dump(), old.steps[0].model_dump())
 
     def test_prepends_completed_steps_missing_from_new_tail(self):
-        """Controller re-plan often emits only the next synthetic steps (s3/s4), not completed s1."""
         old = _plan("p1", "s1", "s2")
-        old.steps[0].execution = PlanStepExecution(
-            status="completed",
-            attempts=1,
-            max_attempts=2,
-            last_result=PlanStepLastResult(success=True, output_summary="done"),
-        )
         new = PlanDocument(
             plan_id="p2",
             instruction="test",
@@ -181,7 +165,6 @@ class TestMergePreserved(unittest.TestCase):
                     goal="shell",
                     action="shell",
                     inputs={"command": "ls"},
-                    execution=PlanStepExecution(max_attempts=2),
                 ),
                 PlanStep(
                     step_id="s4",
@@ -190,27 +173,18 @@ class TestMergePreserved(unittest.TestCase):
                     goal="done",
                     action="finish",
                     dependencies=["s3"],
-                    execution=PlanStepExecution(max_attempts=2),
                 ),
             ],
             risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
             completion_criteria=["c"],
             metadata=PlanMetadata(created_at="2026-01-01T00:00:00Z", version=1),
         )
-        merged = merge_preserved_completed_steps(old, new)
+        merged = merge_preserved_completed_steps(old, new, completed_step_ids={"s1"})
         self.assertEqual([s.step_id for s in merged.steps], ["s1", "s3", "s4"])
-        self.assertEqual(merged.steps[0].execution.status, "completed")
         self.assertEqual(merged.steps[1].action, "shell")
 
     def test_restores_goal_action_inputs_when_replan_rewrites_completed_step_id(self):
-        """Replan JSON often reuses s1 with a new action; merge must freeze completed work."""
         old = _plan("p1", "s1", "s2")
-        old.steps[0].execution = PlanStepExecution(
-            status="completed",
-            attempts=1,
-            max_attempts=2,
-            last_result=PlanStepLastResult(success=True, output_summary="done"),
-        )
         new = _plan("p2", "s1", "s2")
         new.steps[0] = PlanStep(
             step_id="s1",
@@ -219,13 +193,12 @@ class TestMergePreserved(unittest.TestCase):
             goal="done early",
             action="finish",
             inputs={},
-            execution=PlanStepExecution(max_attempts=2),
         )
-        merged = merge_preserved_completed_steps(old, new)
+        merged = merge_preserved_completed_steps(old, new, completed_step_ids={"s1"})
         self.assertEqual(merged.steps[0].action, "search")
         self.assertEqual(merged.steps[0].goal, "search")
         self.assertEqual(merged.steps[0].inputs, {"query": "q"})
-        validate_completed_steps_immutable(old, merged)
+        validate_completed_steps_immutable(old, merged, completed_step_ids={"s1"})
 
 
 class TestReplannerBuild(unittest.TestCase):
@@ -233,10 +206,12 @@ class TestReplannerBuild(unittest.TestCase):
         policy = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
         r = Replanner(MagicMock(), policy=policy)
         plan = _plan("p0", "a1", "a2", max_attempts=2)
-        plan.steps[0].execution = plan.steps[0].execution.model_copy(update={"attempts": 1})
         st = AgentState(instruction="instr")
         st.context["exploration_result"] = {
             "summary": {"key_findings": ["f1"], "knowledge_gaps": []},
+        }
+        st.context["dag_graph_tasks"] = {
+            "a1": {"runtime": {"attempts": 2, "last_result": None}},
         }
         last = _fail_result("a1", "tool broke")
         req = r.build_replan_request(st, plan, plan.steps[0], last)
@@ -248,14 +223,14 @@ class TestReplannerBuild(unittest.TestCase):
         self.assertEqual(ctx.failure_context.step_id, "a1")
 
 
-class TestPlanExecutorReplanLoop(unittest.TestCase):
+class TestDagExecutorReplanLoop(unittest.TestCase):
     def test_no_replan_path_unchanged(self):
         mock_dispatch = MagicMock()
         mock_dispatch.execute.return_value = _fail_result("s1")
         arg_gen = MagicMock()
         arg_gen.generate.return_value = {"query": "q"}
-        policy = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
-        ex = PlanExecutor(mock_dispatch, arg_gen, replanner=None, policy=policy)
+        policy = ExecutionPolicy(max_steps=8, max_retries_per_step=1, max_replans=2)
+        ex = DagExecutor(mock_dispatch, arg_gen, replanner=None, policy=policy)
         plan = _plan("p1", "s1", "s2", max_attempts=1)
         state = AgentState(instruction="x")
         _attach_plan(state, plan)
@@ -265,8 +240,10 @@ class TestPlanExecutorReplanLoop(unittest.TestCase):
 
     def test_replan_then_success(self):
         mock_dispatch = MagicMock()
+        # Initial step x1 must exhaust retries before replan; policy uses max_retries_per_step.
         mock_dispatch.execute.side_effect = [
-            _fail_result("r1"),
+            _fail_result("x1"),
+            _fail_result("x1"),
             _ok_result("r1", "ok"),
         ]
         arg_gen = MagicMock()
@@ -278,7 +255,7 @@ class TestPlanExecutorReplanLoop(unittest.TestCase):
 
         policy = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
         replanner = Replanner(mock_planner, policy=policy)
-        ex = PlanExecutor(mock_dispatch, arg_gen, replanner=replanner, policy=policy)
+        ex = DagExecutor(mock_dispatch, arg_gen, replanner=replanner, policy=policy)
 
         initial = _plan("p_init", "x1", "x2", max_attempts=1)
         state = AgentState(instruction="task")
@@ -296,8 +273,8 @@ class TestPlanExecutorReplanLoop(unittest.TestCase):
             pctx = ca.args[1]
         self.assertIsInstance(pctx, PlannerPlanContext)
         self.assertIsInstance(pctx.replan, ReplanContext)
-        self.assertIsNotNone(pctx.session, "Replanner must receive SessionMemory from PlanExecutor")
-        self.assertEqual(mock_dispatch.execute.call_count, 2)
+        self.assertIsNotNone(pctx.session, "Replanner must receive SessionMemory from DagExecutor")
+        self.assertEqual(mock_dispatch.execute.call_count, 3)
         self.assertEqual(state.metadata.get("replan_attempt"), 1)
         self.assertEqual(state.context.get("active_plan_document").plan_id, "p_rec")
 
@@ -309,10 +286,9 @@ class TestPlanExecutorReplanLoop(unittest.TestCase):
 
         policy = ExecutionPolicy(max_steps=8, max_retries_per_step=1, max_replans=2)
         mock_planner = MagicMock()
-        # Fresh PlanDocument each replan so steps are not reused with exhausted attempts.
         mock_planner.plan.side_effect = lambda *a, **kw: _plan("p_rec", "s1", "s2", max_attempts=1)
         replanner = Replanner(mock_planner, policy=policy)
-        ex = PlanExecutor(mock_dispatch, arg_gen, replanner=replanner, policy=policy)
+        ex = DagExecutor(mock_dispatch, arg_gen, replanner=replanner, policy=policy)
 
         initial = _plan("p_init", "s1", "s2", max_attempts=policy.max_retries_per_step)
         state = AgentState(instruction="task")

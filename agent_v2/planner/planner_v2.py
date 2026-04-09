@@ -15,7 +15,6 @@ from typing import Any, Callable, Optional
 
 from pydantic import ValidationError
 
-from agent_v2.schemas.execution import ErrorType
 from agent_v2.schemas.plan import (
     PlanDocument,
     PlanMetadata,
@@ -25,9 +24,6 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
-    PlanStepFailure,
-    PlanStepLastResult,
     PlannerPlannerTool,
 )
 from agent_v2.schemas.plan_state import PlanState
@@ -50,6 +46,7 @@ from agent_v2.runtime.phase1_tool_exposure import (
 )
 from agent_v2.runtime.session_memory import SessionMemory, is_vague_user_text
 from agent.prompt_system.registry import get_registry
+from agent_v2.utils.json_extractor import JSONExtractor
 from agent_v2.runtime.tool_policy import (
     PLAN_MODE_TOOL_POLICY,
     ToolPolicy,
@@ -148,10 +145,14 @@ def _strip_json_fence(text: str) -> str:
 
 def _parse_json_object(text: str) -> dict[str, Any]:
     raw = _strip_json_fence(text)
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise ValueError("LLM output must be a JSON object")
-    return data
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    # Fallback handles reasoning + fenced JSON and last-valid-json behavior.
+    return JSONExtractor.extract_final_json(text)
 
 
 def _trim_plan_steps_preserving_finish(steps_raw: list[Any], max_steps: int) -> list[Any]:
@@ -231,7 +232,7 @@ class PlannerV2:
     Args:
         generate_fn: ``(user_prompt, system_prompt=None) -> str`` preferred; or legacy
             ``(prompt: str) -> str`` (system+user merged when needed).
-        policy: ExecutionPolicy; max_retries_per_step seeds PlanStep.execution.max_attempts.
+        policy: ExecutionPolicy; max_retries_per_step is applied at compile time in DagExecutor.
     """
 
     def __init__(
@@ -692,6 +693,12 @@ class PlannerV2:
         es = exploration.exploration_summary
         key_findings = "\n".join(f"- {k}" for k in es.key_findings) or "(none)"
         knowledge_gaps = "\n".join(f"- {g}" for g in es.knowledge_gaps) or "(none)"
+        available_symbols = "\n".join(
+            f"- {s}" for s in (planner_context.available_symbols or [])[:20]
+        ) or "(none)"
+        missing_symbols = "\n".join(
+            f"- {s}" for s in (planner_context.missing_symbols or [])[:20]
+        ) or "(none)"
         conf_band = exploration.confidence
         summary_text = (es.overall or "").strip() or "(none)"
 
@@ -739,6 +746,12 @@ KEY FINDINGS:
 
 KNOWLEDGE GAPS:
 {knowledge_gaps}
+
+AVAILABLE SYMBOLS:
+{available_symbols}
+
+MISSING SYMBOLS:
+{missing_symbols}
 
 CONFIDENCE:
 {conf_band}{insufficiency_tail}{deep_tail}{ro_tail}{plan_safe_tail}{plan_progress}{PlannerV2._last_planner_validation_block(planner_context.session)}
@@ -1207,7 +1220,6 @@ COMPLETED STEPS:
         self,
         spec: PlannerEngineStepSpec,
         instruction: str,
-        max_attempts: int,
         *,
         step_id: str = "s1",
         index: int = 1,
@@ -1231,8 +1243,6 @@ COMPLETED STEPS:
                 inputs=inputs,
                 outputs={},
                 dependencies=[],
-                execution=PlanStepExecution(max_attempts=max_attempts),
-                failure=PlanStepFailure(),
             )
         if a == "open_file":
             inputs = {}
@@ -1248,8 +1258,6 @@ COMPLETED STEPS:
                 inputs=inputs,
                 outputs={},
                 dependencies=[],
-                execution=PlanStepExecution(max_attempts=max_attempts),
-                failure=PlanStepFailure(),
             )
         if a == "edit":
             # Keep consistent with _validate_act_tool_inputs(edit).
@@ -1278,8 +1286,6 @@ COMPLETED STEPS:
                 inputs=inputs,
                 outputs={},
                 dependencies=[],
-                execution=PlanStepExecution(max_attempts=max_attempts),
-                failure=PlanStepFailure(),
             )
         if a == "run_tests":
             inputs = {}
@@ -1294,8 +1300,6 @@ COMPLETED STEPS:
                 inputs=inputs,
                 outputs={},
                 dependencies=[],
-                execution=PlanStepExecution(max_attempts=max_attempts),
-                failure=PlanStepFailure(),
             )
         if a == "shell":
             cmd = inp or str(md.get("command") or "").strip()
@@ -1308,8 +1312,6 @@ COMPLETED STEPS:
                 inputs={"command": cmd} if cmd else {},
                 outputs={},
                 dependencies=[],
-                execution=PlanStepExecution(max_attempts=max_attempts),
-                failure=PlanStepFailure(),
             )
         return PlanStep(
             step_id=step_id,
@@ -1320,8 +1322,6 @@ COMPLETED STEPS:
             inputs={},
             outputs={},
             dependencies=[],
-            execution=PlanStepExecution(max_attempts=max_attempts),
-            failure=PlanStepFailure(),
         )
 
     def _synthesize_steps_from_engine(
@@ -1331,8 +1331,6 @@ COMPLETED STEPS:
         *,
         prior_plan_document: PlanDocument | None = None,
     ) -> list[PlanStep]:
-        max_attempts = self._policy.max_retries_per_step
-
         def _finish(sid: str, idx: int, deps: list[str]) -> PlanStep:
             return PlanStep(
                 step_id=sid,
@@ -1343,8 +1341,6 @@ COMPLETED STEPS:
                 inputs={},
                 outputs={},
                 dependencies=deps,
-                execution=PlanStepExecution(max_attempts=max_attempts),
-                failure=PlanStepFailure(),
             )
 
         d = engine.decision
@@ -1357,9 +1353,7 @@ COMPLETED STEPS:
             spec = self._resolve_act_step_spec(engine, instruction)
             ws, wi, fs, fi = self._allocate_engine_step_slots(prior_plan_document, d)
             wid, fid = f"s{ws}", f"s{fs}"
-            work = self._step_spec_to_plan_step(
-                spec, instruction, max_attempts, step_id=wid, index=wi
-            )
+            work = self._step_spec_to_plan_step(spec, instruction, step_id=wid, index=wi)
             fin = _finish(fid, fi, [wid])
             steps = [work, fin]
 
@@ -1826,7 +1820,6 @@ COMPLETED STEPS:
             steps_raw = []
 
         steps: list[PlanStep] = []
-        max_attempts = self._policy.max_retries_per_step
 
         steps_raw = _trim_plan_steps_preserving_finish(steps_raw, self._policy.max_steps)
         for idx, s in enumerate(steps_raw):
@@ -1858,51 +1851,6 @@ COMPLETED STEPS:
             if not isinstance(outputs, dict):
                 outputs = {}
 
-            exec_raw = s.get("execution")
-            if isinstance(exec_raw, dict):
-                lr = exec_raw.get("last_result")
-                last_result = PlanStepLastResult()
-                if isinstance(lr, dict):
-                    last_result = PlanStepLastResult(
-                        success=lr.get("success"),
-                        error=lr.get("error"),
-                        output_summary=lr.get("output_summary"),
-                    )
-                st = exec_raw.get("status", "pending")
-                if st not in ("pending", "in_progress", "completed", "failed"):
-                    st = "pending"
-                execution = PlanStepExecution(
-                    status=st,
-                    attempts=int(exec_raw.get("attempts", 0)),
-                    max_attempts=max_attempts,
-                    started_at=exec_raw.get("started_at"),
-                    completed_at=exec_raw.get("completed_at"),
-                    last_result=last_result,
-                )
-            else:
-                execution = PlanStepExecution(max_attempts=max_attempts)
-
-            fail_raw = s.get("failure")
-            if isinstance(fail_raw, dict):
-                ft_raw = fail_raw.get("failure_type")
-                failure_type = None
-                if ft_raw is not None:
-                    try:
-                        failure_type = ErrorType(str(ft_raw))
-                    except ValueError:
-                        failure_type = None
-                rs = fail_raw.get("retry_strategy", "retry_same")
-                if rs not in ("retry_same", "adjust_inputs", "abort"):
-                    rs = "retry_same"
-                failure = PlanStepFailure(
-                    is_recoverable=bool(fail_raw.get("is_recoverable", True)),
-                    failure_type=failure_type,
-                    retry_strategy=rs,
-                    replan_required=bool(fail_raw.get("replan_required", False)),
-                )
-            else:
-                failure = PlanStepFailure()
-
             try:
                 steps.append(
                     PlanStep(
@@ -1914,8 +1862,6 @@ COMPLETED STEPS:
                         inputs=inputs,
                         outputs=outputs,
                         dependencies=deps,
-                        execution=execution,
-                        failure=failure,
                     )
                 )
             except ValidationError as e:

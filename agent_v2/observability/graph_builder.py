@@ -30,7 +30,7 @@ def build_graph(trace: Trace, plan: Optional[PlanDocument] = None) -> ExecutionG
     - Optional retry edges when plan is provided
 
     v2 behavior (Phase 12 Step 9):
-    - Retry edges: Synthetic retry event nodes when step.execution.attempts > 1
+    - Retry edges: Synthetic retry event nodes when TraceStep.metadata[\"attempts\"] > 1
     - Replan edges: Detect replan boundaries and add type="replan" edges
 
     Args:
@@ -89,8 +89,14 @@ def build_graph(trace: Trace, plan: Optional[PlanDocument] = None) -> ExecutionG
                 },
             )
 
-        if step.kind == "tool" and plan_step is not None and hasattr(plan_step, "execution"):
-            attempts = getattr(plan_step.execution, "attempts", 0)
+        if step.kind == "tool":
+            raw_att = step.metadata.get("attempts")
+            try:
+                attempts = int(raw_att) if raw_att is not None else 1
+            except (TypeError, ValueError):
+                attempts = 1
+            if attempts < 1:
+                attempts = 1
             node.metadata["attempts"] = attempts
 
             if attempts > 1:

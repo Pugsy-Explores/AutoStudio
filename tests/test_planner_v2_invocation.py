@@ -13,7 +13,6 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
 )
 from agent_v2.schemas.planner_decision import PlannerDecision
 
@@ -41,32 +40,29 @@ def test_plan_document_valid_for_v2_gate():
         goal="g",
         action="finish",
         inputs={},
-        execution=PlanStepExecution(),
     )
     assert plan_document_valid_for_v2_gate(_minimal_plan([s])) is True
 
 
 def test_plan_document_has_runnable_work():
-    s_done = PlanStep(
+    from unittest.mock import MagicMock
+
+    s = PlanStep(
         step_id="s1",
         index=1,
         type="finish",
         goal="g",
         action="finish",
         inputs={},
-        execution=PlanStepExecution(status="completed"),
     )
-    assert plan_document_has_runnable_work(_minimal_plan([s_done])) is False
-    s_run = PlanStep(
-        step_id="s1",
-        index=1,
-        type="finish",
-        goal="g",
-        action="finish",
-        inputs={},
-        execution=PlanStepExecution(status="in_progress"),
-    )
-    assert plan_document_has_runnable_work(_minimal_plan([s_run])) is True
+    plan = _minimal_plan([s])
+    st_done = MagicMock()
+    st_done.context = {"dag_graph_tasks": {"s1": {}}, "dag_completed_step_ids": ["s1"]}
+    assert plan_document_has_runnable_work(plan, state=st_done) is False
+    st_run = MagicMock()
+    st_run.context = {"dag_graph_tasks": {"s1": {}}, "dag_completed_step_ids": []}
+    assert plan_document_has_runnable_work(plan, state=st_run) is True
+    assert plan_document_has_runnable_work(plan, state=None) is True
 
 
 def test_should_call_planner_v2_task_decision():

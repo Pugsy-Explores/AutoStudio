@@ -20,7 +20,6 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
 )
 from agent_v2.state.agent_state import AgentState
 
@@ -94,7 +93,6 @@ def test_plan_mode_allows_partial_exploration_when_config_enabled():
                     goal="g",
                     action="finish",
                     inputs={},
-                    execution=PlanStepExecution(),
                 ),
             ],
             risks=[PlanRisk(risk="r", impact="low", mitigation="m")],

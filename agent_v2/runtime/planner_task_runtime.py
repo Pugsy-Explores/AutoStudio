@@ -266,16 +266,43 @@ def _record_session_after_plan(mem: SessionMemory, plan: PlanDocument) -> None:
     )
 
 
-def _record_session_after_executor_step(mem: SessionMemory, plan: PlanDocument) -> None:
+def _record_session_after_executor_step(
+    mem: SessionMemory, plan: PlanDocument, state: Any
+) -> None:
     eng = plan.engine
     tool = str(getattr(eng, "tool", "") or "")
     summ = ""
     active: str | None = None
+    ctx = getattr(state, "context", None)
+    raw_tasks = ctx.get("dag_graph_tasks") if isinstance(ctx, dict) else None
+    if not isinstance(raw_tasks, dict):
+        raw_tasks = {}
+
+    def _row_summary(row: Any) -> str:
+        if not isinstance(row, dict):
+            return ""
+        rt = row.get("runtime")
+        if not isinstance(rt, dict):
+            return ""
+        lr = rt.get("last_result")
+        if isinstance(lr, dict):
+            out = lr.get("output")
+            if isinstance(out, dict):
+                return str(out.get("summary") or "").strip()[:120]
+        return ""
+
     for s in plan.steps:
-        if s.execution.status != "completed" or s.action == "finish":
+        row = raw_tasks.get(s.step_id)
+        if not isinstance(row, dict):
             continue
-        if s.execution.last_result is not None:
-            summ = str(s.execution.last_result.output_summary or "").strip()[:120]
+        rt = row.get("runtime")
+        if not isinstance(rt, dict) or rt.get("status") != "completed":
+            continue
+        if s.action == "finish":
+            continue
+        xs = _row_summary(row)
+        if xs:
+            summ = xs
         if s.action == "open_file" and isinstance(s.inputs, dict):
             p = s.inputs.get("path")
             if p:
@@ -397,13 +424,9 @@ def _failure_replan_context_from_step(
     result: Any,
     state: Any,
 ) -> ReplanContext:
-    completed: list[ReplanCompletedStep] = []
-    for s in plan.steps:
-        if s.execution.status == "completed" and s.step_id != failed_step.step_id:
-            summ = ""
-            if s.execution.last_result is not None:
-                summ = str(s.execution.last_result.output_summary or "")
-            completed.append(ReplanCompletedStep(step_id=s.step_id, summary=summ))
+    from agent_v2.runtime.replanner import completed_steps_for_replan, failure_attempts_from_dag
+
+    completed = [x for x in completed_steps_for_replan(state, plan) if x.step_id != failed_step.step_id]
     err_type = ErrorType.unknown
     if result.error is not None and result.error.type is not None:
         try:
@@ -414,12 +437,12 @@ def _failure_replan_context_from_step(
     if result.error is not None and (result.error.message or "").strip():
         msg = str(result.error.message).strip()
     lr_summary = ""
-    if failed_step.execution.last_result is not None:
-        lr_summary = str(failed_step.execution.last_result.output_summary or "")
+    if result.output is not None:
+        lr_summary = str(result.output.summary or "")
     fc = ReplanFailureContext(
         step_id=failed_step.step_id,
         error=ReplanFailureError(type=err_type, message=msg or lr_summary or "step_failed"),
-        attempts=int(failed_step.execution.attempts),
+        attempts=failure_attempts_from_dag(state, failed_step.step_id),
         last_output_summary=lr_summary,
     )
     return ReplanContext(
@@ -432,13 +455,9 @@ def _failure_replan_context_from_step(
 
 
 def _insufficiency_replan_context(plan: PlanDocument, instruction: str, state: Any) -> ReplanContext:
-    completed: list[ReplanCompletedStep] = []
-    for s in plan.steps:
-        if s.execution.status == "completed":
-            summ = ""
-            if s.execution.last_result is not None:
-                summ = str(s.execution.last_result.output_summary or "")
-            completed.append(ReplanCompletedStep(step_id=s.step_id, summary=summ))
+    from agent_v2.runtime.replanner import completed_steps_for_replan
+
+    completed = list(completed_steps_for_replan(state, plan))
     sid = plan.steps[-1].step_id if plan.steps else "s1"
     msg = "Insufficient evidence for next decision (controller replan)"
     md = getattr(state, "metadata", None)
@@ -502,7 +521,7 @@ class PlannerTaskRuntime:
     def run_explore_plan_execute(self, state: Any, *, deep: bool) -> Any:
         if self.plan_executor is None:
             raise ValueError(
-                "ACT and plan_execute require PlanExecutor; pass plan_argument_generator to AgentRuntime."
+                "ACT and plan_execute require DagExecutor; pass plan_argument_generator to AgentRuntime."
             )
         if self.exploration_runner is None:
             raise ValueError("ACT requires exploration_runner.")
@@ -564,7 +583,7 @@ class PlannerTaskRuntime:
                 _attach_plan_view(state, plan_doc)
                 _sync_tool_policy_mode_to_state(state, self.planner)
                 exec_out = self.plan_executor.run(plan_doc, state, trace_emitter=trace_emitter)
-                _record_session_after_executor_step(mem, plan_doc)
+                _record_session_after_executor_step(mem, plan_doc, state)
         finally:
             clear_active_trace_emitter()
             _restore_planner_tool_policy(self.planner, prev_policy)
@@ -592,13 +611,13 @@ class PlannerTaskRuntime:
     def run_plan_explore_execute_safe(self, state: Any, *, deep: bool) -> Any:
         """
         PLAN mode (post–plan_mode_safe_loop_upgrade): exploration → ACT-style controller loop
-        with PLAN_MODE_TOOL_POLICY, PlanExecutor for safe tools only, ACT-style trace.
+        with PLAN_MODE_TOOL_POLICY, DagExecutor for safe tools only, ACT-style trace.
 
         Does not set react_mode (AgentRuntime sets plan_safe_execute for this path).
         """
         if self.plan_executor is None:
             raise ValueError(
-                "plan mode (safe loop) requires PlanExecutor; pass plan_argument_generator to AgentRuntime."
+                "plan mode (safe loop) requires DagExecutor; pass plan_argument_generator to AgentRuntime."
             )
         if self.exploration_runner is None:
             raise ValueError("plan mode requires exploration_runner.")
@@ -667,7 +686,7 @@ class PlannerTaskRuntime:
                 _attach_plan_view(state, plan_doc)
                 _sync_tool_policy_mode_to_state(state, self.planner)
                 exec_out = self.plan_executor.run(plan_doc, state, trace_emitter=trace_emitter)
-                _record_session_after_executor_step(mem, plan_doc)
+                _record_session_after_executor_step(mem, plan_doc, state)
         finally:
             clear_active_trace_emitter()
             _restore_planner_tool_policy(self.planner, prev_policy)
@@ -778,8 +797,14 @@ class PlannerTaskRuntime:
             return True
 
         def _merge(new_plan: PlanDocument, old: PlanDocument) -> PlanDocument:
-            merged = merge_preserved_completed_steps(old, new_plan)
-            validate_completed_steps_immutable(old, merged)
+            ctx = getattr(state, "context", None)
+            cids: set[str] = set()
+            if isinstance(ctx, dict):
+                raw = ctx.get("dag_completed_step_ids")
+                if isinstance(raw, list):
+                    cids = {str(x) for x in raw}
+            merged = merge_preserved_completed_steps(old, new_plan, completed_step_ids=cids)
+            validate_completed_steps_immutable(old, merged, completed_step_ids=cids)
             return merged
 
         authoritative = cfg.task_planner_authoritative_loop
@@ -823,7 +848,7 @@ class PlannerTaskRuntime:
             )
             if shadow:
                 tp = self._task_planner.decide(snap)
-                eng = planner_decision_from_plan_document(plan_doc)
+                eng = planner_decision_from_plan_document(plan_doc, state=state)
                 md["decision_source"] = "shadow"
                 md["task_planner_decision"] = tp.model_dump(mode="json")
                 md["engine_decision"] = eng.model_dump(mode="json")
@@ -836,7 +861,7 @@ class PlannerTaskRuntime:
                 md["task_planner_decision"] = d.model_dump(mode="json")
                 md["decision_snapshot_hash"] = _snapshot_hash(snap)
                 return d
-            return planner_decision_from_plan_document(plan_doc)
+            return planner_decision_from_plan_document(plan_doc, state=state)
 
         if not _budget_planner():
             raise RuntimeError(
@@ -859,7 +884,7 @@ class PlannerTaskRuntime:
         def _exit_budget_exhausted() -> tuple[PlanDocument, Any]:
             md["planner_loop_abort"] = "planner_controller_budget_exhausted"
             self.plan_executor.trace_emitter = trace_emitter
-            return plan_doc, self.plan_executor._finalize_run(state, plan_doc, "failed")
+            return plan_doc, self.plan_executor.finalize_run(state, plan_doc, "failed")
 
         while True:
             md["act_controller_iteration_count"] = int(md.get("act_controller_iteration_count", 0)) + 1
@@ -1033,7 +1058,7 @@ class PlannerTaskRuntime:
                 _record_task_memory_after_exploration(state, exploration, query)
                 maybe_synthesize_to_state(state, exploration, langfuse_trace)
                 md["sub_explorations_used"] = md["sub_explorations_used"] + 1
-                ps = plan_state_from_plan_document(old_pd)
+                ps = plan_state_from_plan_document(old_pd, state=state)
                 if not _budget_planner():
                     return _exit_budget_exhausted()
                 pctx_sub = _exploration_to_planner_ctx_with_validation(state, exploration, mem)
@@ -1095,7 +1120,7 @@ class PlannerTaskRuntime:
             st = out.get("status")
             if st == "success":
                 md["post_validation_synthesize_blocked"] = False
-                _record_session_after_executor_step(mem, plan_doc)
+                _record_session_after_executor_step(mem, plan_doc, state)
                 return plan_doc, out
             if st == "failed_step":
                 failed_step = out["failed_step"]
@@ -1125,10 +1150,25 @@ class PlannerTaskRuntime:
                 md["post_validation_synthesize_blocked"] = False
                 old_pd = plan_doc
                 last_summary = ""
-                for s in plan_doc.steps:
-                    if s.execution.status == "completed" and s.execution.last_result is not None:
-                        last_summary = str(s.execution.last_result.output_summary or "")
-                ps = plan_state_from_plan_document(plan_doc, last_result_summary=last_summary)
+                sctx = getattr(state, "context", None)
+                if isinstance(sctx, dict):
+                    rt = sctx.get("dag_graph_tasks")
+                    cids = sctx.get("dag_completed_step_ids") or []
+                    if isinstance(rt, dict) and isinstance(cids, list):
+                        done = {str(x) for x in cids}
+                        for s in sorted(plan_doc.steps, key=lambda x: x.index, reverse=True):
+                            if s.step_id in done:
+                                row = rt.get(s.step_id)
+                                if isinstance(row, dict):
+                                    lr = (row.get("runtime") or {}).get("last_result")
+                                    if isinstance(lr, dict):
+                                        out = lr.get("output")
+                                        if isinstance(out, dict):
+                                            last_summary = str(out.get("summary") or "")
+                                break
+                ps = plan_state_from_plan_document(
+                    plan_doc, last_result_summary=last_summary, state=state
+                )
                 if not _budget_planner():
                     return _exit_budget_exhausted()
                 pctx_pr = _exploration_to_planner_ctx_with_validation(state, exploration, mem)
@@ -1145,7 +1185,7 @@ class PlannerTaskRuntime:
                         f"Planner must return PlanDocument, got {type(np).__name__}"
                     )
                 plan_doc = _merge(np, old_pd)
-                _record_session_after_executor_step(mem, plan_doc)
+                _record_session_after_executor_step(mem, plan_doc, state)
                 _record_session_after_plan(mem, plan_doc)
                 _attach_plan_view(state, plan_doc)
                 continue

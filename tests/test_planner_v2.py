@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from types import SimpleNamespace
 
 from agent_v2.planner.planner_v2 import (
     TOOL_REPAIR_EXHAUSTED_PREFIX,
@@ -138,6 +139,23 @@ class TestPlannerActSemanticCoercion(unittest.TestCase):
         doc = planner.plan("x", _minimal_exploration())
         self.assertEqual(doc.engine.decision, "stop")
 
+    def test_planner_accepts_reasoning_plus_fenced_json(self):
+        def gen(_p: str, _s=None) -> str:
+            return (
+                "Reasoning about next action.\n"
+                "```json\n"
+                '{"decision":"stop","tool":"none","reason":"Done","query":"","step":null}\n'
+                "```"
+            )
+
+        planner = PlannerV2(
+            generate_fn=gen,
+            policy=ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2),
+        )
+        doc = planner.plan("Explain AgentLoop", _minimal_exploration())
+        self.assertEqual(doc.engine.decision, "stop")
+        self.assertEqual(doc.engine.tool, "none")
+
     def test_last_planner_validation_error_in_exploration_context_block(self):
         from agent_v2.runtime.exploration_planning_input import exploration_to_planner_context
 
@@ -153,6 +171,37 @@ class TestPlannerActSemanticCoercion(unittest.TestCase):
         )
         self.assertIn("LAST PLANNER JSON VALIDATION ERROR", block)
         self.assertIn("non-empty search query", block)
+
+    def test_exploration_context_block_includes_available_and_missing_symbols(self):
+        ctx = PlannerPlanContext(
+            exploration=_minimal_exploration(),
+            available_symbols=["Foo.run", "Bar.handle"],
+            missing_symbols=["BazClient.fetch"],
+        )
+        planner = PlannerV2(
+            generate_fn=lambda _u, _s=None: _valid_decision_json_act(),
+            policy=ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2),
+        )
+        block = planner._compose_exploration_context_block(
+            ctx, deep=False, task_mode=None, plan_state=None
+        )
+        self.assertIn("AVAILABLE SYMBOLS", block)
+        self.assertIn("MISSING SYMBOLS", block)
+        self.assertIn("Foo.run", block)
+        self.assertIn("BazClient.fetch", block)
+
+    def test_exploration_to_planner_context_reads_symbol_signals_from_state(self):
+        from agent_v2.runtime.exploration_planning_input import exploration_to_planner_context
+
+        state = SimpleNamespace(
+            context={
+                "exploration_available_symbols": ["Foo.run"],
+                "exploration_missing_symbols": ["Need.more"],
+            }
+        )
+        ctx = exploration_to_planner_context(_minimal_exploration(), state=state)
+        self.assertEqual(ctx.available_symbols, ["Foo.run"])
+        self.assertEqual(ctx.missing_symbols, ["Need.more"])
 
     def test_user_task_intent_falls_back_to_instruction_when_query_intent_missing(self):
         """When exploration never produced QueryIntent, CONTEXT still carries scope from the user task."""
@@ -384,8 +433,7 @@ class TestPlannerV2(unittest.TestCase):
             PlanRisk,
             PlanSource,
             PlanStep,
-            PlanStepExecution,
-        )
+                    )
 
         good = PlanDocument(
             plan_id="p",
@@ -400,7 +448,6 @@ class TestPlannerV2(unittest.TestCase):
                     goal="g",
                     action="run_tests",
                     dependencies=[],
-                    execution=PlanStepExecution(),
                 ),
                 PlanStep(
                     step_id="b",
@@ -409,7 +456,6 @@ class TestPlannerV2(unittest.TestCase):
                     goal="done",
                     action="finish",
                     dependencies=["a"],
-                    execution=PlanStepExecution(),
                 ),
             ],
             risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
@@ -425,8 +471,7 @@ class TestPlannerV2(unittest.TestCase):
             PlanRisk,
             PlanSource,
             PlanStep,
-            PlanStepExecution,
-        )
+                    )
 
         doc = PlanDocument(
             plan_id="p",
@@ -441,7 +486,6 @@ class TestPlannerV2(unittest.TestCase):
                     goal="tests",
                     action="run_tests",
                     dependencies=[],
-                    execution=PlanStepExecution(),
                 ),
                 PlanStep(
                     step_id="b",
@@ -451,7 +495,6 @@ class TestPlannerV2(unittest.TestCase):
                     action="shell",
                     inputs={"command": "ls ."},
                     dependencies=["a"],
-                    execution=PlanStepExecution(),
                 ),
                 PlanStep(
                     step_id="c",
@@ -460,7 +503,6 @@ class TestPlannerV2(unittest.TestCase):
                     goal="done",
                     action="finish",
                     dependencies=["b"],
-                    execution=PlanStepExecution(),
                 ),
             ],
             risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
@@ -476,8 +518,7 @@ class TestPlannerV2(unittest.TestCase):
             PlanRisk,
             PlanSource,
             PlanStep,
-            PlanStepExecution,
-        )
+                    )
 
         doc = PlanDocument(
             plan_id="p",
@@ -492,7 +533,6 @@ class TestPlannerV2(unittest.TestCase):
                     goal="tests",
                     action="run_tests",
                     dependencies=[],
-                    execution=PlanStepExecution(),
                 ),
                 PlanStep(
                     step_id="b",
@@ -501,7 +541,6 @@ class TestPlannerV2(unittest.TestCase):
                     goal="done",
                     action="finish",
                     dependencies=["a"],
-                    execution=PlanStepExecution(),
                 ),
             ],
             risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
@@ -1002,9 +1041,7 @@ class TestEngineSynthesisStepIds(unittest.TestCase):
             PlanRisk,
             PlanSource,
             PlanStep,
-            PlanStepExecution,
-            PlanStepLastResult,
-            PlannerEngineOutput,
+                                    PlannerEngineOutput,
             PlannerEngineStepSpec,
         )
 
@@ -1023,10 +1060,6 @@ class TestEngineSynthesisStepIds(unittest.TestCase):
                     goal="g",
                     action="search",
                     inputs={"query": "q"},
-                    execution=PlanStepExecution(
-                        status="completed",
-                        last_result=PlanStepLastResult(success=True, output_summary="ok"),
-                    ),
                 ),
                 PlanStep(
                     step_id="s2",
@@ -1035,7 +1068,6 @@ class TestEngineSynthesisStepIds(unittest.TestCase):
                     goal="done",
                     action="finish",
                     dependencies=["s1"],
-                    execution=PlanStepExecution(),
                 ),
             ],
             risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
@@ -1062,8 +1094,7 @@ class TestEngineSynthesisStepIds(unittest.TestCase):
             PlanRisk,
             PlanSource,
             PlanStep,
-            PlanStepExecution,
-            PlannerEngineOutput,
+                        PlannerEngineOutput,
         )
 
         pol = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
@@ -1081,7 +1112,6 @@ class TestEngineSynthesisStepIds(unittest.TestCase):
                     goal="g",
                     action="search",
                     inputs={"query": "q"},
-                    execution=PlanStepExecution(),
                 ),
             ],
             risks=[PlanRisk(risk="r", impact="low", mitigation="m")],

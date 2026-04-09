@@ -1,10 +1,13 @@
 """Tests for agent_v2 ModeManager: ACT / plan (safe loop) / plan_legacy / deep_plan / plan_execute."""
 
 import unittest
-from types import SimpleNamespace
+from typing import Literal
+
 from unittest.mock import MagicMock
 
 from agent_v2.runtime.mode_manager import ModeManager
+from agent_v2.schemas.exploration import ExplorationResultMetadata, ExplorationSummary
+from agent_v2.schemas.final_exploration import ExplorationAdapterTrace, FinalExplorationSchema
 from agent_v2.schemas.planner_plan_context import PlannerPlanContext
 from agent_v2.schemas.plan import (
     PlanDocument,
@@ -12,7 +15,6 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
 )
 from agent_v2.schemas.trace import Trace, TraceMetadata
 from agent_v2.state.agent_state import AgentState
@@ -32,12 +34,43 @@ def _minimal_plan(*, plan_id: str = "p1") -> PlanDocument:
                 goal="g",
                 action="search",
                 inputs={},
-                execution=PlanStepExecution(),
             ),
         ],
         risks=[PlanRisk(risk="r", impact="low", mitigation="m")],
         completion_criteria=["c"],
         metadata=PlanMetadata(created_at="2026-01-01T00:00:00Z", version=1),
+    )
+
+
+def _stub_final_exploration(
+    instruction: str,
+    *,
+    overall: str = "explore summary",
+    knowledge_gaps: list | None = None,
+    completion_status: Literal["complete", "incomplete"] = "complete",
+    termination_reason: str = "complete",
+) -> FinalExplorationSchema:
+    gaps = [] if knowledge_gaps is None else list(knowledge_gaps)
+    return FinalExplorationSchema(
+        exploration_id="e1",
+        instruction=instruction,
+        status="complete" if completion_status == "complete" else "incomplete",
+        evidence=[],
+        relationships=[],
+        exploration_summary=ExplorationSummary(
+            overall=overall,
+            key_findings=[],
+            knowledge_gaps=gaps,
+            knowledge_gaps_empty_reason=None if gaps else "none",
+        ),
+        metadata=ExplorationResultMetadata(
+            total_items=0,
+            created_at="2026-01-01T00:00:00Z",
+            completion_status=completion_status,
+            termination_reason=termination_reason,
+        ),
+        confidence="high",
+        trace=ExplorationAdapterTrace(llm_used=False, synthesis_success=True),
     )
 
 
@@ -57,16 +90,14 @@ def _fake_plan_executor_return(doc, st: AgentState, **kwargs) -> dict:
     }
 
 
-def _make_mocks_for_pipeline():
+def _make_mocks_for_pipeline(*, instruction: str = "i"):
     mock_doc = _minimal_plan()
     mock_planner = MagicMock()
     mock_planner.plan.return_value = mock_doc
 
-    mock_exp = MagicMock()
-    mock_exp.exploration_summary = SimpleNamespace(overall="explore summary")
-    mock_exp.model_dump.return_value = {"exploration_id": "e1"}
+    stub = _stub_final_exploration(instruction)
     mock_er = MagicMock()
-    mock_er.run.return_value = mock_exp
+    mock_er.run.return_value = stub
 
     mock_pe = MagicMock()
     mock_pe.run.side_effect = _fake_plan_executor_return
@@ -77,7 +108,9 @@ def _make_mocks_for_pipeline():
 
 class TestModeManager(unittest.TestCase):
     def test_act_mode_runs_explore_plan_execute_not_agent_loop(self):
-        mock_er, mock_planner, mock_pe, mock_doc, mock_loop = _make_mocks_for_pipeline()
+        mock_er, mock_planner, mock_pe, mock_doc, mock_loop = _make_mocks_for_pipeline(
+            instruction="do something"
+        )
         mode_manager = ModeManager(mock_er, mock_planner, mock_pe, loop=mock_loop)
         state = AgentState(instruction="do something")
         result = mode_manager.run(state, mode="act")
@@ -111,12 +144,10 @@ class TestModeManager(unittest.TestCase):
         plan_doc = _minimal_plan(plan_id="plan-mode")
         mock_planner.plan.return_value = plan_doc
         state = AgentState(instruction="add a feature")
-        mock_exp = MagicMock()
-        mock_exp.exploration_summary = SimpleNamespace(overall="sum", key_findings=[], knowledge_gaps=[])
-        mock_exp.metadata = SimpleNamespace(completion_status="complete")
-        mock_exp.model_dump.return_value = {"exploration_id": "e1"}
         mock_er = MagicMock()
-        mock_er.run.return_value = mock_exp
+        mock_er.run.return_value = _stub_final_exploration(
+            "add a feature", overall="sum", completion_status="complete"
+        )
         mock_pe = MagicMock()
 
         mode_manager = ModeManager(mock_er, mock_planner, mock_pe, loop=mock_loop)
@@ -127,20 +158,22 @@ class TestModeManager(unittest.TestCase):
         mock_planner.plan.assert_called_once()
         p_kw = mock_planner.plan.call_args.kwargs
         self.assertFalse(p_kw.get("deep"))
-        self.assertIs(p_kw.get("planner_context").exploration, mock_exp)
+        self.assertIs(p_kw.get("planner_context").exploration, mock_er.run.return_value)
         mock_pe.run.assert_not_called()
         mock_pe.run_one_step.assert_not_called()
         mock_loop.run.assert_not_called()
         self.assertIsInstance(result.current_plan, dict)
         self.assertEqual(result.current_plan.get("plan_id"), "plan-mode")
-        self.assertIs(result.exploration_result, mock_exp)
+        self.assertIs(result.exploration_result, mock_er.run.return_value)
         tr = result.metadata.get("trace")
         self.assertIsNotNone(tr)
         self.assertEqual(tr.plan_id, "plan-mode")
         self.assertEqual(result.metadata.get("execution_trace_id"), tr.trace_id)
 
     def test_plan_mode_runs_safe_controller_loop_like_act(self):
-        mock_er, mock_planner, mock_pe, mock_doc, mock_loop = _make_mocks_for_pipeline()
+        mock_er, mock_planner, mock_pe, mock_doc, mock_loop = _make_mocks_for_pipeline(
+            instruction="inspect only"
+        )
         mode_manager = ModeManager(mock_er, mock_planner, mock_pe, loop=mock_loop)
         state = AgentState(instruction="inspect only")
         result = mode_manager.run(state, mode="plan")
@@ -155,7 +188,9 @@ class TestModeManager(unittest.TestCase):
         self.assertIn("trace", result)
 
     def test_deep_plan_mode_runs_safe_loop_with_deep_planner_calls(self):
-        mock_er, mock_planner, mock_pe, mock_doc, mock_loop = _make_mocks_for_pipeline()
+        mock_er, mock_planner, mock_pe, mock_doc, mock_loop = _make_mocks_for_pipeline(
+            instruction="analyze code"
+        )
         mode_manager = ModeManager(mock_er, mock_planner, mock_pe, loop=mock_loop)
         state = AgentState(instruction="analyze code")
         result = mode_manager.run(state, mode="deep_plan")
@@ -185,16 +220,18 @@ class TestModeManager(unittest.TestCase):
         state = AgentState(instruction="x")
         with self.assertRaises(ValueError) as ctx:
             mode_manager.run(state, mode="plan_execute")
-        self.assertIn("PlanExecutor", str(ctx.exception))
+        self.assertIn("DagExecutor", str(ctx.exception))
         with self.assertRaises(ValueError) as ctx2:
             mode_manager.run(state, mode="act")
-        self.assertIn("PlanExecutor", str(ctx2.exception))
+        self.assertIn("DagExecutor", str(ctx2.exception))
         with self.assertRaises(ValueError) as ctx3:
             mode_manager.run(state, mode="plan")
-        self.assertIn("PlanExecutor", str(ctx3.exception))
+        self.assertIn("DagExecutor", str(ctx3.exception))
 
     def test_plan_execute_wires_exploration_planner_executor(self):
-        mock_er, mock_planner, mock_pe, mock_doc, mock_loop = _make_mocks_for_pipeline()
+        mock_er, mock_planner, mock_pe, mock_doc, mock_loop = _make_mocks_for_pipeline(
+            instruction="do thing"
+        )
         mode_manager = ModeManager(mock_er, mock_planner, mock_pe, loop=mock_loop)
         state = AgentState(instruction="do thing")
         result = mode_manager.run(state, mode="plan_execute")
@@ -229,15 +266,13 @@ class TestModeManager(unittest.TestCase):
         self.assertIn("exploration_runner", str(ctx.exception).lower())
 
     def test_planner_receives_insufficiency_when_exploration_incomplete(self):
-        mock_er, mock_planner, mock_pe, _, mock_loop = _make_mocks_for_pipeline()
-        mock_exp = MagicMock()
-        mock_exp.exploration_summary = SimpleNamespace(
-            overall="incomplete exploration",
-            key_findings=[],
-            knowledge_gaps=["gap1"],
+        mock_er, mock_planner, mock_pe, _, mock_loop = _make_mocks_for_pipeline(
+            instruction="do thing"
         )
-        mock_exp.model_dump.return_value = {"exploration_id": "e_incomplete"}
-        mock_exp.metadata = SimpleNamespace(
+        mock_exp = _stub_final_exploration(
+            "do thing",
+            overall="incomplete exploration",
+            knowledge_gaps=["gap1"],
             completion_status="incomplete",
             termination_reason="max_steps",
         )

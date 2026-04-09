@@ -6,7 +6,6 @@ Structured replan only; no silent in-place plan mutation. Validation via agent_v
 """
 from __future__ import annotations
 
-from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -43,6 +42,66 @@ from agent_v2.validation.replan_result_validator import ReplanResultValidator
 _DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
 
 
+def _dag_completed_id_set(state: Any) -> set[str]:
+    ctx = getattr(state, "context", None)
+    if not isinstance(ctx, dict):
+        return set()
+    raw = ctx.get("dag_completed_step_ids")
+    if isinstance(raw, list):
+        return {str(x) for x in raw}
+    return set()
+
+
+def _summary_from_dag_task_row(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    rt = row.get("runtime")
+    if not isinstance(rt, dict):
+        return ""
+    lr = rt.get("last_result")
+    if not isinstance(lr, dict):
+        return ""
+    out = lr.get("output")
+    if isinstance(out, dict):
+        return str(out.get("summary") or "")
+    return ""
+
+
+def completed_steps_for_replan(state: Any, plan: PlanDocument) -> list[ReplanCompletedStep]:
+    """Completed step summaries from DAG runtime in state.context (not PlanStep)."""
+    ctx = getattr(state, "context", None)
+    raw_tasks: dict[str, Any] = {}
+    if isinstance(ctx, dict) and isinstance(ctx.get("dag_graph_tasks"), dict):
+        raw_tasks = ctx["dag_graph_tasks"]
+    done = _dag_completed_id_set(state)
+    out: list[ReplanCompletedStep] = []
+    for s in sorted(plan.steps, key=lambda x: x.index):
+        if s.step_id not in done:
+            continue
+        summ = _summary_from_dag_task_row(raw_tasks.get(s.step_id))
+        out.append(ReplanCompletedStep(step_id=s.step_id, summary=summ))
+    return out
+
+
+def failure_attempts_from_dag(state: Any, step_id: str) -> int:
+    ctx = getattr(state, "context", None)
+    if not isinstance(ctx, dict):
+        return 0
+    raw_tasks = ctx.get("dag_graph_tasks")
+    if not isinstance(raw_tasks, dict):
+        return 0
+    row = raw_tasks.get(step_id)
+    if not isinstance(row, dict):
+        return 0
+    rt = row.get("runtime")
+    if not isinstance(rt, dict):
+        return 0
+    try:
+        return int(rt.get("attempts", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 class Replanner:
     """
     Builds ReplanRequest from runtime state, maps to ReplanContext for PlannerInput,
@@ -70,7 +129,7 @@ class Replanner:
         err_type = (
             last_result.error.type
             if last_result.error is not None
-            else (failed_step.failure.failure_type or ErrorType.unknown)
+            else ErrorType.unknown
         )
         if isinstance(err_type, ErrorType):
             err_type_enum = err_type
@@ -84,26 +143,22 @@ class Replanner:
         if last_result.error is not None and (last_result.error.message or "").strip():
             msg_parts.append(last_result.error.message.strip())
         lr_summary = ""
-        if failed_step.execution.last_result is not None:
-            lr_summary = str(failed_step.execution.last_result.output_summary or "")
+        if last_result.output is not None:
+            lr_summary = str(last_result.output.summary or "")
         if lr_summary and (not msg_parts or msg_parts[0] != lr_summary):
             msg_parts.append(lr_summary)
         message = " | ".join(msg_parts) if msg_parts else lr_summary or err_type_enum.value
 
+        attempts = failure_attempts_from_dag(state, failed_step.step_id)
+
         failure_context = ReplanFailureContext(
             step_id=failed_step.step_id,
             error=ReplanFailureError(type=err_type_enum, message=message),
-            attempts=failed_step.execution.attempts,
+            attempts=attempts,
             last_output_summary=lr_summary,
         )
 
-        completed: list[ReplanCompletedStep] = []
-        for s in plan.steps:
-            if s.execution.status == "completed":
-                summ = ""
-                if s.execution.last_result is not None:
-                    summ = str(s.execution.last_result.output_summary or "")
-                completed.append(ReplanCompletedStep(step_id=s.step_id, summary=summ))
+        completed = completed_steps_for_replan(state, plan)
 
         partial = [
             ReplanPartialResult(
@@ -268,14 +323,17 @@ def _exploration_context_from_state(state: Any) -> ReplanExplorationContext:
     )
 
 
-def validate_completed_steps_immutable(old: PlanDocument, new: PlanDocument) -> None:
-    """
-    Completed steps must not change goal/action/inputs. Planner may only append or edit pending steps.
-    """
+def validate_completed_steps_immutable(
+    old: PlanDocument,
+    new: PlanDocument,
+    *,
+    completed_step_ids: set[str],
+) -> None:
+    """Completed steps (by id set from DAG runtime) must not change goal/action/inputs."""
     old_by_id = {s.step_id: s for s in old.steps}
     for ns in new.steps:
         o = old_by_id.get(ns.step_id)
-        if o is None or o.execution.status != "completed":
+        if o is None or o.step_id not in completed_step_ids:
             continue
         if (o.goal, o.action, o.inputs) != (ns.goal, ns.action, ns.inputs):
             raise ValueError(
@@ -284,43 +342,31 @@ def validate_completed_steps_immutable(old: PlanDocument, new: PlanDocument) -> 
             )
 
 
-def merge_preserved_completed_steps(old: PlanDocument, new: PlanDocument) -> PlanDocument:
+def merge_preserved_completed_steps(
+    old: PlanDocument,
+    new: PlanDocument,
+    *,
+    completed_step_ids: set[str],
+) -> PlanDocument:
     """
-    When constraints.preserve_completed is True, freeze planner-owned fields for completed
-    steps: copy ``index``, ``type``, ``goal``, ``action``, ``inputs``, ``outputs``,
-    ``dependencies``, plus ``execution`` and ``failure`` from ``old`` into matching
-    ``new.steps`` by ``step_id``. The replan LLM often reuses ids with different actions;
-    completed work must not change.
+    Freeze planner-owned fields for step_ids in ``completed_step_ids`` using ``old`` as source.
 
-    Also prepends completed steps from ``old`` that are missing from ``new.steps`` (controller
-    re-plan often emits only the next synthetic tail, e.g. s3/s4, while s1 remains completed).
+    Prepends completed steps from ``old`` missing from ``new.steps`` (controller tail-only replans).
     """
     old_by_id = {s.step_id: s for s in old.steps}
     new_ids = {s.step_id for s in new.steps}
     prefix: list[PlanStep] = []
     for s in sorted(old.steps, key=lambda x: x.index):
-        if s.execution.status == "completed" and s.step_id not in new_ids:
-            prefix.append(s)
+        if s.step_id in completed_step_ids and s.step_id not in new_ids:
+            prefix.append(s.model_copy())
 
     merged: list[PlanStep] = []
     for s in new.steps:
         o = old_by_id.get(s.step_id)
-        if o is not None and o.execution.status == "completed":
-            merged.append(
-                s.model_copy(
-                    update={
-                        "index": o.index,
-                        "type": o.type,
-                        "goal": o.goal,
-                        "action": o.action,
-                        "inputs": deepcopy(o.inputs) if o.inputs else {},
-                        "outputs": deepcopy(o.outputs) if o.outputs else {},
-                        "dependencies": list(o.dependencies),
-                        "execution": o.execution.model_copy(),
-                        "failure": o.failure.model_copy(),
-                    }
-                )
-            )
+        if o is not None and o.step_id in completed_step_ids:
+            merged.append(o.model_copy())
         else:
             merged.append(s)
-    return new.model_copy(update={"steps": prefix + merged})
+    combined = prefix + merged
+    reindexed = [s.model_copy(update={"index": i}) for i, s in enumerate(combined, start=1)]
+    return new.model_copy(update={"steps": reindexed})

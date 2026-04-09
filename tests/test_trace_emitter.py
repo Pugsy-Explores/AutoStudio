@@ -16,7 +16,6 @@ from agent_v2.schemas.plan import (
     PlanRisk,
     PlanSource,
     PlanStep,
-    PlanStepExecution,
 )
 from agent_v2.runtime.trace_emitter import TraceEmitter, extract_target_from_plan_step
 
@@ -35,7 +34,6 @@ def _plan() -> PlanDocument:
                 goal="g",
                 action="search",
                 inputs={"query": "foo"},
-                execution=PlanStepExecution(),
             ),
         ],
         risks=[PlanRisk(risk="r", impact="low", mitigation="m")],

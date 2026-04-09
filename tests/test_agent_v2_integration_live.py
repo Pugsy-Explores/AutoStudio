@@ -377,8 +377,6 @@ class TestPhase5FailureScenarios:
             PlanRisk,
             PlanSource,
             PlanStep,
-            PlanStepExecution,
-            PlanStepFailure,
             PlannerEngineOutput,
             PlannerEngineStepSpec,
         )
@@ -407,8 +405,6 @@ class TestPhase5FailureScenarios:
                     "path": "agent_v2/runtime/__file_does_not_exist_zz__.py",
                 },
                 dependencies=[],
-                execution=PlanStepExecution(max_attempts=2),
-                failure=PlanStepFailure(),
             ),
             PlanStep(
                 step_id="s2",
@@ -417,8 +413,6 @@ class TestPhase5FailureScenarios:
                 goal="done",
                 action="finish",
                 dependencies=["s1"],
-                execution=PlanStepExecution(max_attempts=2),
-                failure=PlanStepFailure(),
             ),
         ]
         plan = PlanDocument(
