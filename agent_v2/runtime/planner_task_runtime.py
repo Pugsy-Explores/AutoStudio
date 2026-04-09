@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 _LOG = logging.getLogger(__name__)
 
-from agent_v2.config import get_config
+from agent_v2.config import get_agent_v2_episodic_log_dir, get_config
 from agent_v2.exploration.answer_synthesizer import maybe_synthesize_to_state
 from agent_v2.memory.conversation_memory import (
     get_or_create_in_memory_store,
@@ -526,7 +526,7 @@ class PlannerTaskRuntime:
         prev_policy = _set_planner_tool_policy(self.planner, ACT_MODE_TOOL_POLICY)
         obs = state.metadata.get("obs")
         lf = state.metadata.get("langfuse_trace")
-        trace_emitter = TraceEmitter()
+        trace_emitter = TraceEmitter(log_dir=get_agent_v2_episodic_log_dir())
         trace_emitter.reset()
         set_active_trace_emitter(trace_emitter)
         try:
@@ -622,7 +622,7 @@ class PlannerTaskRuntime:
         prev_policy = _set_planner_tool_policy(self.planner, PLAN_MODE_TOOL_POLICY)
         obs = state.metadata.get("obs")
         lf = state.metadata.get("langfuse_trace")
-        trace_emitter = TraceEmitter()
+        trace_emitter = TraceEmitter(log_dir=get_agent_v2_episodic_log_dir())
         trace_emitter.reset()
         set_active_trace_emitter(trace_emitter)
         try:
@@ -715,7 +715,7 @@ class PlannerTaskRuntime:
         prev_policy = _set_planner_tool_policy(self.planner, PLAN_MODE_TOOL_POLICY)
         obs = state.metadata.get("obs")
         lf = state.metadata.get("langfuse_trace")
-        trace_emitter = TraceEmitter()
+        trace_emitter = TraceEmitter(log_dir=get_agent_v2_episodic_log_dir())
         trace_emitter.reset()
         set_active_trace_emitter(trace_emitter)
         try:

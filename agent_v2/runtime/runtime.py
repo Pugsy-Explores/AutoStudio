@@ -11,6 +11,7 @@ from agent_v2.runtime.exploration_runner import ExplorationRunner
 from agent_v2.runtime.mode_manager import ModeManager
 from agent_v2.runtime.observation_builder import ObservationBuilder
 from agent_v2.runtime.dag_executor import DagExecutor
+from agent_v2.config import get_agent_v2_episodic_log_dir
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.runtime.validator import Validator
 from agent_v2.state.agent_state import AgentState
@@ -92,6 +93,7 @@ class AgentRuntime:
                 plan_argument_generator,
                 replanner=replanner,
                 policy=execution_policy,
+                trace_log_dir=get_agent_v2_episodic_log_dir(),
             )
 
         action_generator = ActionGenerator(

@@ -28,6 +28,7 @@ from agent_v2.schemas.trace import Trace, TraceError, TraceMetadata, TraceStep
 class ExecutionLogEntry(BaseModel):
     """Per-attempt execution log for debugging and replay."""
     task_id: str
+    tool: str
     attempt_number: int
     arguments: dict[str, Any] | None = None
     success: bool
@@ -94,6 +95,7 @@ class TraceEmitter:
 
         entry = ExecutionLogEntry(
             task_id=task.id,
+            tool=str(task.tool or ""),
             attempt_number=attempt_number,
             arguments=dict(task.arguments),  # Frozen arguments from snapshot
             success=result.success,

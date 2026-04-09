@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from agent_v2.runtime.phase1_tool_exposure import ALLOWED_PLAN_STEP_ACTIONS
@@ -29,6 +30,23 @@ def _bool_env(name: str, default: bool = False) -> bool:
     if raw is None or not str(raw).strip():
         return default
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_agent_v2_episodic_log_dir() -> str | None:
+    """
+    Root directory for TraceEmitter JSONL execution logs (Phase 5.1 episodic memory).
+
+    Env ``AGENT_V2_EPISODIC_LOG_DIR``: unset → default ``.agent_memory/episodic`` (resolved cwd);
+    set to empty string → disable on-disk execution logs (returns None).
+    """
+    raw = os.environ.get("AGENT_V2_EPISODIC_LOG_DIR")
+    if raw is not None and not str(raw).strip():
+        return None
+    if raw is None:
+        rel = Path(".agent_memory/episodic")
+    else:
+        rel = Path(str(raw).strip())
+    return str(rel.expanduser().resolve())
 
 
 # Plan / exploration (architecture freeze §3.1)

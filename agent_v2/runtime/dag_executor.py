@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Optional, Protocol
 
 from agent_v2.runtime.dag_scheduler import DagScheduler, SchedulerResult
+from agent_v2.config import get_agent_v2_episodic_log_dir
 from agent_v2.runtime.plan_compiler import compile_plan, tasks_by_id
 from agent_v2.runtime.replanner import Replanner, merge_preserved_completed_steps
 from agent_v2.runtime.session_memory import SessionMemory
@@ -177,6 +178,9 @@ class DagExecutor:
         self.replanner = replanner
         self._policy = policy or _DEFAULT_POLICY
         self._trace_emitter_factory: TraceEmitterFactory = trace_emitter_factory or TraceEmitter
+        if trace_log_dir is None:
+            trace_log_dir = get_agent_v2_episodic_log_dir()
+        self._trace_log_dir: str | None = trace_log_dir
         self.trace_emitter: TraceEmitter = self._trace_emitter_factory(log_dir=trace_log_dir)
         self._tasks_by_id: dict[str, ExecutionTask] = {}
         self._active_plan_id: str | None = None
@@ -258,7 +262,9 @@ class DagExecutor:
         self._active_plan_id = None
         self._clear_executor_context_keys(state)
 
-        self.trace_emitter = trace_emitter if trace_emitter is not None else self._trace_emitter_factory()
+        self.trace_emitter = trace_emitter if trace_emitter is not None else self._trace_emitter_factory(
+            log_dir=self._trace_log_dir
+        )
         md0 = _metadata_dict(state)
         md0["executor_dispatch_count"] = 0
         md0.pop("plan_executor_abort", None)
@@ -405,7 +411,9 @@ class DagExecutor:
         if getattr(state, "current_plan", None) is None:
             raise ValueError("DagExecutor.run_one_step requires state.current_plan before execution.")
 
-        self.trace_emitter = trace_emitter if trace_emitter is not None else self._trace_emitter_factory()
+        self.trace_emitter = trace_emitter if trace_emitter is not None else self._trace_emitter_factory(
+            log_dir=self._trace_log_dir
+        )
         if isinstance(state.context, dict):
             state.context["active_plan_document"] = plan
 
