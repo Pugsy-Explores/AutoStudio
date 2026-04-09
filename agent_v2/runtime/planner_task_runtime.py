@@ -16,10 +16,13 @@ _LOG = logging.getLogger(__name__)
 
 from agent_v2.config import (
     enable_episodic_injection,
+    enable_semantic_injection,
     get_agent_v2_episodic_log_dir,
     get_config,
+    get_semantic_memory_dir,
 )
 from agent_v2.memory.episodic_query import EpisodicQuery
+from agent_v2.memory.semantic_memory import SemanticMemory
 from agent_v2.exploration.answer_synthesizer import maybe_synthesize_to_state
 from agent_v2.memory.conversation_memory import (
     get_or_create_conversation_store,
@@ -52,7 +55,7 @@ from agent_v2.schemas.exploration import (
     effective_exploration_budget,
     read_query_intent_from_agent_state,
 )
-from agent_v2.runtime.session_memory import SessionMemory
+from agent_v2.runtime.session_memory import SessionMemory, planner_session_memory_from_state
 from agent_v2.runtime.tool_policy import (
     ACT_MODE_TOOL_POLICY,
     PLAN_MODE_TOOL_POLICY,
@@ -96,7 +99,46 @@ def attach_episodic_failures_if_enabled(planner_context: PlannerPlanContext) -> 
     if not enable_episodic_injection():
         return
     failures = _get_recent_failures()
-    object.__setattr__(planner_context, "episodic_failures", failures)
+    planner_context.__dict__["episodic_failures"] = failures
+
+
+def _get_relevant_facts(
+    planner_context: PlannerPlanContext,
+    *,
+    instruction: str,
+    state: Any | None = None,
+) -> list[dict[str, Any]]:
+    base_dir = get_semantic_memory_dir()
+    if not base_dir:
+        return []
+    mem = SemanticMemory(base_dir)
+    query_parts: list[str] = []
+    session = getattr(planner_context, "session", None)
+    if session and getattr(session, "active_file", None):
+        query_parts.append(str(session.active_file))
+    instr_piece = ""
+    if state is not None and hasattr(state, "instruction"):
+        instr_piece = str(getattr(state, "instruction", "") or "").strip()[:100]
+    if not instr_piece:
+        instr_piece = str(instruction or "").strip()[:100]
+    if instr_piece:
+        query_parts.append(instr_piece)
+    query = " ".join(query_parts).strip()
+    if not query:
+        return []
+    return mem.query(query, limit=3)
+
+
+def attach_semantic_facts_if_enabled(
+    planner_context: PlannerPlanContext,
+    *,
+    instruction: str,
+    state: Any | None = None,
+) -> None:
+    if not enable_semantic_injection():
+        return
+    facts = _get_relevant_facts(planner_context, instruction=instruction, state=state)
+    planner_context.__dict__["semantic_facts"] = facts
 
 
 def _snapshot_hash(snap: PlannerDecisionSnapshot) -> str:
@@ -141,19 +183,6 @@ def _attach_plan_view(state: Any, plan: Any) -> None:
             state.current_plan_steps = None
     else:
         state.current_plan_steps = None
-
-
-def _planner_session_memory_from_state(state: Any) -> SessionMemory:
-    ctx = getattr(state, "context", None)
-    if not isinstance(ctx, dict):
-        raise TypeError("state.context must be a dict for planner session memory")
-    key = "planner_session_memory"
-    existing = ctx.get(key)
-    if isinstance(existing, SessionMemory):
-        return existing
-    mem = SessionMemory()
-    ctx[key] = mem
-    return mem
 
 
 def _planner_inner(planner: Any) -> Any:
@@ -552,7 +581,7 @@ class PlannerTaskRuntime:
         set_active_trace_emitter(trace_emitter)
         try:
             reset_task_working_memory(state)
-            mem = _planner_session_memory_from_state(state)
+            mem = planner_session_memory_from_state(state)
             mem.record_user_turn(state.instruction)
             _st = get_or_create_conversation_store(state)
             _sid = get_session_id_from_state(state)
@@ -592,6 +621,7 @@ class PlannerTaskRuntime:
                     langfuse_trace=lf,
                     require_controller_json=False,
                     session=mem,
+                    state=state,
                 )
                 if not isinstance(plan_doc, PlanDocument):
                     raise TypeError(
@@ -654,7 +684,7 @@ class PlannerTaskRuntime:
             md0["plan_validation_task_mode"] = "plan_safe"
 
             reset_task_working_memory(state)
-            mem = _planner_session_memory_from_state(state)
+            mem = planner_session_memory_from_state(state)
             mem.record_user_turn(state.instruction)
             _st = get_or_create_conversation_store(state)
             _sid = get_session_id_from_state(state)
@@ -695,6 +725,7 @@ class PlannerTaskRuntime:
                     require_controller_json=False,
                     session=mem,
                     validation_task_mode="plan_safe",
+                    state=state,
                 )
                 if not isinstance(plan_doc, PlanDocument):
                     raise TypeError(
@@ -741,7 +772,7 @@ class PlannerTaskRuntime:
         set_active_trace_emitter(trace_emitter)
         try:
             reset_task_working_memory(state)
-            mem = _planner_session_memory_from_state(state)
+            mem = planner_session_memory_from_state(state)
             mem.record_user_turn(state.instruction)
             _st = get_or_create_conversation_store(state)
             _sid = get_session_id_from_state(state)
@@ -769,6 +800,7 @@ class PlannerTaskRuntime:
                 langfuse_trace=lf,
                 require_controller_json=False,
                 session=mem,
+                state=state,
             )
             if not isinstance(plan, PlanDocument):
                 raise TypeError(
@@ -849,6 +881,7 @@ class PlannerTaskRuntime:
                 session=mem,
                 validation_task_mode=validation_task_mode,
                 plan_body_only=plan_body_only,
+                state=state,
             )
 
         def _rolling_store_summary() -> str:

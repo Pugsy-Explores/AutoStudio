@@ -735,7 +735,13 @@ class PlannerV2:
         session_block = self._format_session_memory_block(planner_context.session)
         failures = getattr(planner_context, "episodic_failures", [])
         episodic_block = self._format_episodic_failure_block(failures)
-        session_segment = session_block.strip() + episodic_block
+        facts = getattr(planner_context, "semantic_facts", [])
+        semantic_block = self._format_semantic_facts_block(facts)
+        session_segment = session_block.strip() + episodic_block + semantic_block
+        if episodic_block or semantic_block:
+            session_segment += (
+                "\nIf conflicts with exploration, trust exploration.\n"
+            )
 
         exploration_block = f"""--------------------------------
 EXPLORATION (source of truth for repo facts)
@@ -836,7 +842,13 @@ CONFIDENCE:
         session_block = self._format_session_memory_block(planner_context.session)
         failures = getattr(planner_context, "episodic_failures", [])
         episodic_block = self._format_episodic_failure_block(failures)
-        session_segment = session_block.strip() + episodic_block
+        facts = getattr(planner_context, "semantic_facts", [])
+        semantic_block = self._format_semantic_facts_block(facts)
+        session_segment = session_block.strip() + episodic_block + semantic_block
+        if episodic_block or semantic_block:
+            session_segment += (
+                "\nIf conflicts with exploration, trust exploration.\n"
+            )
 
         exploration_block = f"""--------------------------------
 EXPLORATION / CONTEXT (replan)
@@ -1015,7 +1027,33 @@ COMPLETED STEPS:
             "\n--------------------------------\n"
             "RECENT FAILURES (advisory; avoid repeating):\n"
             f"{recap}\n"
-            "If conflicts with exploration, trust exploration.\n"
+        )
+
+    @staticmethod
+    def _normalize_semantic_fact_key(raw: Any) -> str:
+        key = str(raw or "fact").strip() or "fact"
+        if ":" in key:
+            prefix, name = key.split(":", 1)
+            return f"{prefix[:6]}:{name[:14]}"
+        return key[:20]
+
+    @staticmethod
+    def _format_semantic_facts_block(facts: list[dict[str, Any]]) -> str:
+        if not facts:
+            return ""
+
+        lines = []
+        for f in facts[:3]:
+            key = PlannerV2._normalize_semantic_fact_key(f.get("key") or "fact")
+            text = (f.get("text") or "")[:60]
+            lines.append(f"{key}:{text}")
+
+        recap = " ∙ ".join(lines)
+
+        return (
+            "\n--------------------------------\n"
+            "PROJECT FACTS (advisory):\n"
+            f"{recap}\n"
         )
 
     @staticmethod

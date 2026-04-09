@@ -27,7 +27,7 @@ def test_format_episodic_failure_block_renders_recap() -> None:
     assert "open_file:tool_error" in text
     assert "search:timeout" in text
     assert " ∙ " in text
-    assert "If conflicts with exploration, trust exploration." in text
+    assert "If conflicts with exploration, trust exploration." not in text
 
 
 def test_format_episodic_failure_block_caps_at_three() -> None:
@@ -75,8 +75,10 @@ def test_planner_prompt_includes_failures_after_attach() -> None:
             session=None,
         )
 
-    assert "RECENT FAILURES" in captured["user"]
-    assert "shell:policy_denied" in captured["user"]
+    u = captured["user"]
+    assert "RECENT FAILURES" in u
+    assert "shell:policy_denied" in u
+    assert u.count("If conflicts with exploration, trust exploration.") == 1
 
 
 def test_episodic_injection_disabled_no_block_in_prompt() -> None:

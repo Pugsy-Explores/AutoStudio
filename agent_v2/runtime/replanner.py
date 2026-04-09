@@ -195,9 +195,13 @@ class Replanner:
             query_intent=replan_context.query_intent,
             exploration_budget=effective_exploration_budget(replan_context.query_intent),
         )
-        from agent_v2.runtime.planner_task_runtime import attach_episodic_failures_if_enabled
+        from agent_v2.runtime.planner_task_runtime import (
+            attach_episodic_failures_if_enabled,
+            attach_semantic_facts_if_enabled,
+        )
 
         attach_episodic_failures_if_enabled(pc)
+        attach_semantic_facts_if_enabled(pc, instruction=request.instruction, state=None)
         try:
             new_plan = self.planner.plan(
                 request.instruction,

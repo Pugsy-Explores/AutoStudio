@@ -94,6 +94,15 @@ def enable_episodic_injection() -> bool:
     return _bool_env("AGENT_V2_ENABLE_EPISODIC_FAILURE_INJECTION", True)
 
 
+def enable_semantic_injection() -> bool:
+    """
+    Phase 5.5b — inject token-matched semantic facts into planner context prompts.
+
+    Env ``AGENT_V2_ENABLE_SEMANTIC_INJECTION``: set to 1/true/on to enable (default: off).
+    """
+    return _bool_env("AGENT_V2_ENABLE_SEMANTIC_INJECTION", False)
+
+
 # Plan / exploration (architecture freeze §3.1)
 MAX_PLAN_STEPS: int = _int_env("AGENT_V2_MAX_PLAN_STEPS", 8)
 EXPLORATION_STEPS: int = _int_env("AGENT_V2_EXPLORATION_STEPS", 5)
