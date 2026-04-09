@@ -382,6 +382,13 @@ _TEMPLATE_VARIABLE_LOG_KEYS = frozenset(
     }
 )
 
+# Keys that must NOT be sourced from `_extract_json_objects` heuristics: exploration
+# selector batch and similar prompts embed JSON-shaped examples; candidate code in
+# `candidates_json` often contains substrings like `{"selected_indices": [0]}` that
+# are not model inputs as template variables. Logging them under [workflow] model request
+# is misleading (use exploration.selector_handoff + model response instead).
+_JSON_BLOB_LOG_SKIP_KEYS = frozenset({"selected_indices", "selected"})
+
 
 def _extract_planner_injected_variables(combined: str) -> dict[str, str]:
     """instruction + context_block from rendered planner prompts ({instruction}, {context_block} slots)."""
@@ -528,6 +535,8 @@ def _extract_prompt_context(messages: list[dict]) -> dict[str, str]:
 
     for blob in _extract_json_objects(src) + _extract_json_objects(system_content):
         for key in _TEMPLATE_VARIABLE_LOG_KEYS:
+            if key in _JSON_BLOB_LOG_SKIP_KEYS:
+                continue
             if key in blob and key not in out:
                 try:
                     out[key] = _truncate_for_log(
@@ -1008,10 +1017,12 @@ def call_small_model(
     system_prompt: Optional[str] = None,
     prompt_name: Optional[str] = None,
     debug_replanner: bool = False,
+    model_key: Optional[str] = None,
 ) -> str:
     """Call the model for the given task. Returns model output text.
     When task_name is set, uses params and endpoint from models_config (task_params, task_models).
-    When task_name is None, uses SMALL model endpoint.
+    When model_key is set, uses that model_key directly (overrides task_models).
+    When neither is set, defaults to REASONING model endpoint.
     When system_prompt is provided, sends as system + user messages for grounding/scope.
     When prompt_name is set, runs post-call constraint validation (logs on failure).
     Guardrails: injection check on prompt before call (always when ENABLE_PROMPT_GUARDRAILS=1)."""
@@ -1019,14 +1030,9 @@ def call_small_model(
     _log_bound_prompt_for_llm_call(task_name)
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
-    # Resolve endpoint from task_models: task_name -> model_key (SMALL, REASONING, etc.)
-    if not task_name or task_name not in TASK_MODELS:
-        raise ValueError(
-            f"call_small_model requires task_name in task_models; got task_name={task_name!r}. "
-            f"Available: {list(TASK_MODELS.keys())}"
-        )
-    model_key = TASK_MODELS[task_name]
-    endpoint = get_endpoint_for_model(model_key)
+    # Use provided model_key, or lookup from task_models, or default to REASONING
+    resolved_model_key = model_key or TASK_MODELS.get(task_name, "REASONING")
+    endpoint = get_endpoint_for_model(resolved_model_key)
     logger.info(
         "call_small_model: endpoint=%s task=%r prompt=%r max_tokens=%s system_prompt=%s",
         endpoint,
@@ -1049,7 +1055,7 @@ def call_small_model(
     if task_name in _REPLANNER_LLM_DEBUG_TASK_NAMES and debug_replanner:
         _dump_replanner_prompt_files(_sys_for_dump or None, _user_for_dump or "")
     # Stage 28: record real model call (stubs never reach here)
-    model_name = get_model_name(model_key)
+    model_name = get_model_name(resolved_model_key)
     base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
     _record_model_call("small", callsite=task_name or "call_small_model", model_name=model_name, base_url=base_url)
     last_msg = ""
@@ -1061,7 +1067,7 @@ def call_small_model(
             endpoint,
             _normalize_messages_for_backend(messages),
             task_name=task_name,
-            model_key=model_key,
+            model_key=resolved_model_key,
             max_tokens=limit,
             temperature=temperature,
             request_timeout=params.get("request_timeout_seconds"),
@@ -1115,11 +1121,13 @@ def call_reasoning_model(
     model_type: Optional[str] = None,
     prompt_name: Optional[str] = None,
     debug_replanner: bool = False,
+    model_key: Optional[str] = None,
 ) -> str:
     """
     Call the reasoning model. If system_prompt is given, send as chat with system + user;
     otherwise single user message. Returns model output text.
     When task_name is set, uses params from models_config task_params for that task.
+    When model_key is set, uses that model_key directly (highest priority).
     When model_type is set (e.g. REASONING_V2), uses that model's endpoint; else uses
     task_models[task_name] from config.
     When prompt_name is set, runs post-call constraint validation (logs on failure).
@@ -1131,8 +1139,9 @@ def call_reasoning_model(
 
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
-    model_key = model_type or get_model_for_task(task_name or "")
-    endpoint = get_endpoint_for_model(model_key)
+    # Use provided model_key, or model_type, or lookup from task_models, or default to REASONING
+    resolved_model_key = model_key or model_type or get_model_for_task(task_name or "")
+    endpoint = get_endpoint_for_model(resolved_model_key)
     _sys = None if system_prompt is None else (system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt)
     logger.debug(
         "call_reasoning_model: endpoint=%s model=%s task=%r prompt=%r system_prompt=%s max_tokens=%s",
@@ -1157,7 +1166,7 @@ def call_reasoning_model(
     if task_name in _REPLANNER_LLM_DEBUG_TASK_NAMES and debug_replanner:
         _dump_replanner_prompt_files(_sys_for_dump or None, _user_for_dump or "")
     # Stage 28: record real model call (stubs never reach here)
-    model_name = get_model_name(model_key)
+    model_name = get_model_name(resolved_model_key)
     base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
     _record_model_call("reasoning", callsite=task_name or "call_reasoning_model", model_name=model_name, base_url=base_url)
     last_msg = ""
@@ -1169,7 +1178,7 @@ def call_reasoning_model(
             endpoint,
             _normalize_messages_for_backend(messages),
             task_name=task_name,
-            model_key=model_key,
+            model_key=resolved_model_key,
             max_tokens=limit,
             temperature=temperature,
             request_timeout=params.get("request_timeout_seconds"),
@@ -1222,6 +1231,7 @@ def call_reasoning_model_messages(
     model_type: Optional[str] = None,
     max_tokens: Optional[int] = None,
     prompt_name: Optional[str] = None,
+    model_key: Optional[str] = None,
 ) -> str:
     """
     Message-native reasoning model call. Keeps legacy wrappers untouched.
@@ -1242,9 +1252,10 @@ def call_reasoning_model_messages(
 
     params = get_model_call_params(task_name)
     limit = max_tokens if max_tokens is not None else params.get("max_tokens") or _DEFAULT_MAX_TOKENS
-    model_key = model_type or get_model_for_task(task_name or "")
-    endpoint = get_endpoint_for_model(model_key)
-    model_name = get_model_name(model_key)
+    # Use provided model_key, or model_type, or lookup from task_models, or default to REASONING
+    resolved_model_key = model_key or model_type or get_model_for_task(task_name or "")
+    endpoint = get_endpoint_for_model(resolved_model_key)
+    model_name = get_model_name(resolved_model_key)
     base_url = endpoint.rsplit("/chat/completions", 1)[0].rstrip("/") if "/chat/completions" in endpoint else endpoint.rsplit("/", 1)[0]
     _record_model_call("reasoning", callsite=task_name or "call_reasoning_model_messages", model_name=model_name, base_url=base_url)
     last_msg = ""
@@ -1257,7 +1268,7 @@ def call_reasoning_model_messages(
             endpoint,
             backend_messages,
             task_name=task_name,
-            model_key=model_key,
+            model_key=resolved_model_key,
             max_tokens=limit,
             temperature=temperature,
             request_timeout=params.get("request_timeout_seconds"),
@@ -1273,7 +1284,7 @@ def call_reasoning_model_messages(
                 system_prompt=system_prompt or None,
                 output_text=response,
                 latency_ms=latency_ms,
-                model_name=model_name,
+                model_name=model_name,  # This is already using resolved_model_key
             )
             return response
         last_msg = msg or "unknown"

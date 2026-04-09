@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional, Protocol
 
@@ -44,6 +45,7 @@ from agent_v2.schemas.execution_task import ExecutionTask, TaskScheduler
 from agent_v2.schemas.plan import PlanDocument
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.validation.plan_validator import PlanValidator
+from agent.models.model_config import TASK_MODELS
 
 _LOG = logging.getLogger(__name__)
 _DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
@@ -570,6 +572,15 @@ class DagExecutor:
         if not task.arguments_frozen and task.tool != "finish":
             logging.warning(f"Task {task.id}: executing with unfrozen arguments")
 
+        # Resolve model_key for this task
+        # Priority: 1) task.model_key, 2) TASK_MODELS lookup by task_name, 3) default to REASONING
+        if task.model_key:
+            resolved_model_key = task.model_key
+        elif task.task_name and task.task_name in TASK_MODELS:
+            resolved_model_key = TASK_MODELS.get(task.task_name, "REASONING")
+        else:
+            resolved_model_key = "REASONING"
+
         # Immutable deep copy of arguments for this execution attempt
         start_time = time.time()
 
@@ -595,7 +606,9 @@ class DagExecutor:
             self.trace_emitter.record_execution_attempt(task, res, task.attempts, duration_ms)
             return res
 
+        # Inject model_key into dispatch_dict
         dispatch_dict = _to_dispatch_step(task, merged)
+        dispatch_dict["model_key"] = resolved_model_key
         res = self.dispatcher.execute(dispatch_dict, state)
         duration_ms = int((time.time() - start_time) * 1000)
 

@@ -24,6 +24,8 @@ class ExecutionTask(BaseModel):
 
     id: str
     tool: str
+    task_name: str | None = None  # Task name for model routing (e.g., "PLANNER_DECISION_ACT")
+    model_key: str | None = None  # Optional model override for this task
     dependencies: list[str] = Field(default_factory=list)
     arguments: dict[str, Any] = Field(default_factory=dict)
     arguments_frozen: bool = False  # Separate control flag - not in arguments dict
