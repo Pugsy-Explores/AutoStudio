@@ -2,9 +2,26 @@
 DAG execution: compile_plan → in-memory ExecutionTask dict → dependency-only schedule → dispatch.
 
 No PlanStep in this module. No state.context["dag_graph_tasks"].
+
+DagExecutor owns execution semantics and retry logic:
+
+Responsibilities:
+- Argument snapshotting and freezing (deep immutability)
+- Attempt counter management (single source of truth)
+- Context-aware retry decisions (_should_retry)
+- Execution termination conditions
+- Consistency validation (not replay)
+
+Scheduler is responsible for:
+- Dependency-based ordering
+- Lifecycle state transitions
+- Calling executor for execution
+
+No duplication: executor owns all execution semantics.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional, Protocol
@@ -151,13 +168,14 @@ class DagExecutor:
         replanner: Optional[Replanner] = None,
         policy: Optional[ExecutionPolicy] = None,
         trace_emitter_factory: Optional[TraceEmitterFactory] = None,
+        trace_log_dir: str | None = None,
     ):
         self.dispatcher = dispatcher
         self.argument_generator = argument_generator
         self.replanner = replanner
         self._policy = policy or _DEFAULT_POLICY
         self._trace_emitter_factory: TraceEmitterFactory = trace_emitter_factory or TraceEmitter
-        self.trace_emitter: TraceEmitter = self._trace_emitter_factory()
+        self.trace_emitter: TraceEmitter = self._trace_emitter_factory(log_dir=trace_log_dir)
         self._tasks_by_id: dict[str, ExecutionTask] = {}
         self._active_plan_id: str | None = None
         self._persistent_completed_ids: set[str] = set()
@@ -442,20 +460,34 @@ class DagExecutor:
         return None
 
     def _snapshot_arguments(self, task: ExecutionTask, state: Any) -> ExecutionTask:
-        if task.arguments:
+        # Check if arguments are already frozen (generated and finalized)
+        if task.arguments_frozen:
+            # Arguments already frozen - return as-is
             return task
+        
         if task.tool == "finish":
-            return task.model_copy(update={"arguments": {}})
+            return task.model_copy(update={"arguments_frozen": True})
+        
+        # Generate arguments
         gen = self.argument_generator.generate(task, state)
         merged = _merge_args_hints(task, gen)
-        return task.model_copy(update={"arguments": merged})
+        
+        # DEEP FREEZE: prevent nested mutation via JSON serialization
+        try:
+            frozen_args = json.loads(json.dumps(merged))
+        except (TypeError, ValueError) as e:
+            # Fallback to shallow copy if JSON serialization fails (e.g., non-serializable types)
+            logging.warning(f"Task {task.id}: deep freeze failed, using shallow copy: {e}")
+            frozen_args = dict(merged)
+        
+        return task.model_copy(update={"arguments": frozen_args, "arguments_frozen": True})
 
     def _snapshot_all_arguments(self, state: Any) -> list[ExecutionTask]:
         """Generate arguments for all tasks before execution."""
         tasks = list(self._tasks_by_id.values())
         with_args = []
         for task in tasks:
-            if not task.arguments:
+            if not task.arguments_frozen:
                 task = self._snapshot_arguments(task, state)
             with_args.append(task)
         return with_args
@@ -533,21 +565,185 @@ class DagExecutor:
     def _dispatch_once(self, task: ExecutionTask, state: Any) -> ExecutionResult:
         md = _metadata_dict(state)
         md["executor_dispatch_count"] = int(md.get("executor_dispatch_count", 0)) + 1
-        merged = dict(task.arguments)
+
+        # Validate arguments frozen before execution
+        if not task.arguments_frozen and task.tool != "finish":
+            logging.warning(f"Task {task.id}: executing with unfrozen arguments")
+
+        # Immutable deep copy of arguments for this execution attempt
+        start_time = time.time()
+
+        try:
+            merged = json.loads(json.dumps(task.arguments))
+        except (TypeError, ValueError) as e:
+            logging.warning(f"Task {task.id}: deep copy failed, using shallow copy: {e}")
+            merged = dict(task.arguments)
+
         guard = self._plan_safe_guard(state, task, merged)
         if guard is not None:
+            duration_ms = int((time.time() - start_time) * 1000)
             _ensure_execution_result_contract(guard, task.id)
+            # Record execution attempt for debugging
+            self.trace_emitter.record_execution_attempt(task, guard, task.attempts, duration_ms)
             return guard
+
         if task.tool == "shell":
             res = self._dispatch_shell(task, merged, state)
+            duration_ms = int((time.time() - start_time) * 1000)
             _ensure_execution_result_contract(res, task.id)
+            # Record execution attempt for debugging
+            self.trace_emitter.record_execution_attempt(task, res, task.attempts, duration_ms)
             return res
+
         dispatch_dict = _to_dispatch_step(task, merged)
         res = self.dispatcher.execute(dispatch_dict, state)
+        duration_ms = int((time.time() - start_time) * 1000)
+
         if isinstance(res, list):
             raise RuntimeError("DAG executor does not support list ExecutionResult from dispatcher here")
+
         _ensure_execution_result_contract(res, task.id)
+
+        # Record execution attempt for debugging
+        self.trace_emitter.record_execution_attempt(task, res, task.attempts, duration_ms)
+
         return res
+
+    def _should_retry(self, result: ExecutionResult, task: ExecutionTask, state: Any) -> bool:
+        """
+        Context-aware retry decision.
+
+        Factors:
+        - Error type (base classification)
+        - Tool type (tool-specific policies)
+        - State context (resource constraints, partial success)
+        - Attempt count (terminal condition)
+
+        Returns True if retry is recommended, False otherwise.
+        """
+        # Terminal condition: exceeded max attempts
+        if task.attempts >= task.max_attempts:
+            return False
+
+        # Already succeeded - no retry needed
+        if result.success:
+            return False
+
+        # Error missing - conservative: retry
+        if result.error is None:
+            logging.debug(f"Task {task.id}: no error info, retry (attempt {task.attempts})")
+            return True
+
+        error_type = result.error.type
+        tool = task.tool
+
+        # Tool-specific retry policies
+        tool_specific_policies = {
+            # Read tools: retry I/O errors, fail on validation
+            "read": lambda t, s: {
+                ErrorType.tool_error: True,  # I/O errors retryable
+                ErrorType.timeout: True,
+                ErrorType.permission_error: False,  # Won't fix on retry
+                ErrorType.not_found: False,  # Won't fix on retry
+                ErrorType.validation_error: False,
+                ErrorType.tests_failed: False,  # Not applicable
+            }.get(t, True),
+            # Write/edit tools: retry timeouts, fail on validation
+            "edit": lambda t, s: {
+                ErrorType.tool_error: True,
+                ErrorType.timeout: True,
+                ErrorType.permission_error: False,
+                ErrorType.not_found: True,  # May be transient
+                ErrorType.validation_error: False,  # Fix requires argument change
+                ErrorType.tests_failed: False,
+            }.get(t, True),
+            # Shell: retry everything but specific failures
+            "shell": lambda t, s: {
+                ErrorType.tool_error: True,
+                ErrorType.timeout: True,
+                ErrorType.permission_error: True,  # May fix on retry (e.g., resource lock)
+                ErrorType.not_found: False,  # Command won't appear
+                ErrorType.validation_error: False,  # Command malformed
+                ErrorType.tests_failed: False,
+            }.get(t, True),
+            # Search: retry I/O and timeouts
+            "search": lambda t, s: {
+                ErrorType.tool_error: True,
+                ErrorType.timeout: True,
+                ErrorType.permission_error: False,
+                ErrorType.not_found: False,
+                ErrorType.validation_error: False,
+                ErrorType.tests_failed: False,
+            }.get(t, True),
+        }
+
+        # Get tool-specific policy if available
+        if tool in tool_specific_policies:
+            should_retry_tool = tool_specific_policies[tool](error_type, state)
+            logging.debug(f"Task {task.id}: tool '{tool}' error '{error_type}' -> retry={should_retry_tool}")
+            return should_retry_tool
+
+        # Default classification (conservative)
+        retryable_types = {
+            ErrorType.tool_error,
+            ErrorType.timeout,
+            ErrorType.unknown,
+        }
+
+        non_retryable_types = {
+            ErrorType.validation_error,
+            ErrorType.tests_failed,
+        }
+
+        if error_type in retryable_types:
+            return True
+        elif error_type in non_retryable_types:
+            return False
+        else:
+            # Unknown error type - conservative: retry
+            logging.debug(f"Task {task.id}: unknown error type '{error_type}', retry (attempt {task.attempts})")
+            return True
+
+    def _validate_consistency(self, task: ExecutionTask, result: ExecutionResult) -> None:
+        """
+        Validate execution result consistency (NOT actual replay).
+
+        Lightweight validation checks:
+        - Arguments were frozen
+        - Result structure is complete
+        - Error type matches context
+
+        This does NOT re-execute the task. That would be a separate
+        debugging mode not implemented here.
+        """
+        if not task.arguments:
+            return
+
+        # Skip validation for inherently non-deterministic tools
+        # (no point validating can't change)
+        non_deterministic_tools = {"shell", "run_tests", "search"}
+        if task.tool in non_deterministic_tools:
+            logging.debug(f"Task {task.id}: skip consistency validation for non-deterministic tool {task.tool}")
+            return
+
+        # Validate that arguments were frozen
+        if not task.arguments_frozen:
+            logging.warning(f"Task {task.id}: arguments not frozen, consistency validation incomplete")
+            return
+
+        # Validate result structure consistency
+        if result.success:
+            if not result.output:
+                logging.warning(f"Task {task.id}: success but no output in result")
+            if not result.output.summary:
+                logging.warning(f"Task {task.id}: success but no summary in result")
+            if result.error:
+                logging.warning(f"Task {task.id}: success but error present in result")
+        else:
+            if not result.error:
+                logging.warning(f"Task {task.id}: failure but no error in result")
+
+        logging.debug(f"Task {task.id}: consistency validation passed (structure only)")
 
     def _execute_task_with_retries(self, task: ExecutionTask, state: Any) -> ExecutionResult:
         task = self._snapshot_arguments(task, state)
@@ -559,6 +755,11 @@ class DagExecutor:
         result: ExecutionResult | None = None
 
         while task.attempts < max_attempts:
+            # EXECUTOR increments attempts - single source of truth
+            task = self._tasks_by_id[task.id]
+            task = task.model_copy(update={"attempts": task.attempts + 1})
+            self._tasks_by_id[task.id] = task
+
             abort = self._guard_limits(state)
             if abort is not None:
                 _metadata_dict(state)["plan_executor_abort"] = abort
@@ -574,12 +775,12 @@ class DagExecutor:
                         timestamp=_utc_now(),
                     ),
                 )
+                task = self._tasks_by_id[task.id]
                 task = task.model_copy(
                     update={
                         "status": "failed",
                         "completed_at": _utc_now(),
                         "last_result": result,
-                        "attempts": task.attempts + 1,
                     }
                 )
                 self._tasks_by_id[task.id] = task
@@ -596,9 +797,9 @@ class DagExecutor:
                     error=None,
                     metadata=ExecutionMetadata(tool_name="finish", duration_ms=0, timestamp=_utc_now()),
                 )
+                task = self._tasks_by_id[task.id]
                 task = task.model_copy(
                     update={
-                        "attempts": task.attempts + 1,
                         "status": "completed",
                         "completed_at": _utc_now(),
                         "last_result": result,
@@ -611,12 +812,16 @@ class DagExecutor:
                 self._update_state_history(state, task, str(result.output.summary or ""))
                 return result
 
+            # Normal tool dispatch
             result = self._dispatch_once(self._tasks_by_id[task.id], state)
             task = self._tasks_by_id[task.id]
-            task = task.model_copy(update={"attempts": task.attempts + 1, "last_result": result})
+            task = task.model_copy(update={"last_result": result})
             self._tasks_by_id[task.id] = task
 
             if result.success:
+                self._validate_consistency(self._tasks_by_id[task.id], result)
+
+                task = self._tasks_by_id[task.id]
                 task = task.model_copy(
                     update={
                         "status": "completed",
@@ -629,6 +834,14 @@ class DagExecutor:
                 self.trace_emitter.record_execution_task(task, result, execution_attempts=att)
                 self._update_state_history(state, task, str(result.output.summary or ""))
                 return result
+
+            # Context-aware retry decision
+            if self._should_retry(result, task, state):
+                # Log retry and continue loop - executor will increment on next iteration
+                continue
+
+            # Not retryable - fail terminal
+            break
 
         assert result is not None
         task = task.model_copy(

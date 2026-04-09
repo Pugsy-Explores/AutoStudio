@@ -8,15 +8,33 @@ TraceEmitter only records facts; it does not decide retries or replans.
 """
 from __future__ import annotations
 
+import json
+import logging
 import time
 import uuid
-from typing import Callable, Literal
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Literal
+
+from pydantic import BaseModel
 
 from agent_v2.schemas.execution import ErrorType, ExecutionResult
 from agent_v2.schemas.execution_task import ExecutionTask
 from agent_v2.schemas.plan import PlanStep
 from agent_v2.observability.trace_text import truncate_trace_text
 from agent_v2.schemas.trace import Trace, TraceError, TraceMetadata, TraceStep
+
+
+class ExecutionLogEntry(BaseModel):
+    """Per-attempt execution log for debugging and replay."""
+    task_id: str
+    attempt_number: int
+    arguments: dict[str, Any] | None = None
+    success: bool
+    error_type: str | None = None
+    error_message: str | None = None
+    timestamp: str
+    duration_ms: int
 
 
 def extract_target_from_execution_task(task: ExecutionTask) -> str:
@@ -46,13 +64,66 @@ def extract_target_from_plan_step(step: PlanStep) -> str:
 
 
 class TraceEmitter:
-    def __init__(self) -> None:
+    def __init__(self, log_dir: str | None = None) -> None:
+        self.log_dir = Path(log_dir) if log_dir else None
         self.reset()
 
     def reset(self) -> None:
         self.trace_id: str = str(uuid.uuid4())
         self._steps: list[TraceStep] = []
         self._start_mono: float = time.perf_counter()
+        self._execution_logs: list[ExecutionLogEntry] = []
+        self._execution_log_dir: Path | None = None
+        if self.log_dir is not None:
+            self._execution_log_dir = self.log_dir / f"trace_{self.trace_id}"
+            self._execution_log_dir.mkdir(parents=True, exist_ok=True)
+
+    def record_execution_attempt(
+        self,
+        task: ExecutionTask,
+        result: ExecutionResult,
+        attempt_number: int,
+        duration_ms: int,
+    ) -> None:
+        """
+        Record a single execution attempt with immediate persistence.
+
+        Persists to file immediately to survive crashes.
+        """
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        entry = ExecutionLogEntry(
+            task_id=task.id,
+            attempt_number=attempt_number,
+            arguments=dict(task.arguments),  # Frozen arguments from snapshot
+            success=result.success,
+            error_type=str(result.error.type) if result.error else None,
+            error_message=(result.error.message or "") if result.error else None,
+            timestamp=timestamp,
+            duration_ms=duration_ms,
+        )
+
+        # Keep in memory for in-session access
+        self._execution_logs.append(entry)
+
+        # Persist to file immediately (survives crashes)
+        self._persist_execution_log_entry(entry)
+
+    def _persist_execution_log_entry(self, entry: ExecutionLogEntry) -> None:
+        """Persist a single execution log entry to file (immediate write)."""
+        if self._execution_log_dir is None:
+            return
+
+        # Per-task log file
+        log_file = self._execution_log_dir / f"{entry.task_id}.jsonl"
+
+        try:
+            # Append as JSONL (newline-delimited JSON) for atomic writes
+            with open(log_file, "a") as f:
+                f.write(entry.model_dump_json() + "\n")
+        except Exception as e:
+            # Logging failure shouldn't break execution
+            logging.error(f"Failed to persist execution log for {entry.task_id}: {e}")
 
     def record_step(
         self,

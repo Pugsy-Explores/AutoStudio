@@ -26,6 +26,7 @@ class ExecutionTask(BaseModel):
     tool: str
     dependencies: list[str] = Field(default_factory=list)
     arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments_frozen: bool = False  # Separate control flag - not in arguments dict
     status: TaskStatus = "pending"
     attempts: int = 0
     max_attempts: int = 2

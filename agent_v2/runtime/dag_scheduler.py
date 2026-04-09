@@ -5,6 +5,8 @@ Scheduler controls retry loop: attempt → fail → pending → retry.
 """
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Literal
 
 from agent_v2.runtime.plan_compiler import tasks_by_id
@@ -26,16 +28,23 @@ def _dispatch_numeric_id(task_id: str) -> int:
 _DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
 
 
-def _dispatch_numeric_id(task_id: str) -> int:
-    h = hash(task_id)
-    return abs(h) % (2**31 - 1) or 1
-
-
-_DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
-
-
 class DagScheduler:
-    """DAG scheduler with explicit state machine and dependency-driven execution."""
+    """
+    DAG scheduler owns dependency-based ordering:
+
+    Responsibilities:
+    - Task selection based on dependency graph
+    - Lifecycle state transitions (pending -> running -> completed/failed)
+    - Ready queue management
+    - Calling dispatcher for single execution
+
+    Executor is responsible for:
+    - All execution semantics (retry, attempts, termination)
+    - Context-aware retry decisions
+    - Argument freezing and consistency
+
+    No duplication: scheduler delegates retry to executor.
+    """
 
     def __init__(self, dispatcher, argument_generator, policy=None):
         self.dispatcher = dispatcher
@@ -74,26 +83,33 @@ class DagScheduler:
                 return SchedulerResult(status="failed", failed_task=task, last_result=task.last_result)
 
     def _execute_one_task(self, task: ExecutionTask, state: Any) -> ExecutionTask:
-        """Execute one task with explicit state transitions. Scheduler controls retry loop."""
-        # Step 1: pending → running
+        """
+        Execute a single task.
+
+        SCHEDULER LIFECYCLE ONLY:
+        - Transition to running
+        - Execute single dispatch (stateless)
+        - Delegate retry decision to caller (executor)
+        """
+        # Transition to running
         task = TaskScheduler.transition_to_running(task)
         self._tasks_by_id[task.id] = task
 
-        # Step 2: execute single dispatch (reads from task.arguments only)
+        # Execute single dispatch (stateless - no attempt management here)
         result = self._dispatch_once(task, state)
 
-        # Step 3: transition based on result
+        # Transition based on result
         if result.success:
             task = TaskScheduler.transition_to_completed(task, result)
             self._tasks_by_id[task.id] = task
             self._completed_ids.add(task.id)
         else:
-            # Handle failure: retry if attempts < max (scheduler controls retry loop)
+            # Scheduler delegates retry decision to executor via loop control
+            # Simply transition to pending - caller decides if retry is needed
             if task.attempts < task.max_attempts:
                 task = TaskScheduler.transition_to_pending_after_failure(task)
                 self._tasks_by_id[task.id] = task
-                # Don't add to completed_ids so it can be retried
-                # Continue loop: pending → running → retry
+                # Callers (run_scheduler loop) will decide if to retry
             else:
                 task = TaskScheduler.transition_to_failed(task, result)
                 self._tasks_by_id[task.id] = task
@@ -101,20 +117,30 @@ class DagScheduler:
         return self._tasks_by_id[task.id]
 
     def _dispatch_once(self, task: ExecutionTask, state: Any) -> ExecutionResult:
-        """Single dispatch (reads ONLY from task.arguments)."""
-        # Increment attempts
-        task = self._tasks_by_id[task.id]
-        task = task.model_copy(update={"attempts": task.attempts + 1})
-        self._tasks_by_id[task.id] = task
+        """Single dispatch (reads ONLY from task.arguments).
 
-        # Execute using task.arguments (execution isolation)
+        SCHEDULER IS STATELESS: no attempt management here.
+        Executor owns all execution semantics including retry logic.
+        """
+        # Log the attempt number for debugging (set by executor)
+        attempt_num = task.attempts
+        logging.debug(f"Dispatching task {task.id}, attempt {attempt_num}/{task.max_attempts}")
+
+        start_time = time.time()
+
         args = dict(task.arguments)
-
-        # Build dispatch step
         dispatch_dict = self._to_dispatch_step(task, args)
+        result = self.dispatcher.execute(dispatch_dict, state)
 
-        # Execute via dispatcher
-        return self.dispatcher.execute(dispatch_dict, state)
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        # Record execution attempt for debugging
+        if hasattr(state, "context") and "trace_emitter" in state.context:
+            state.context["trace_emitter"].record_execution_attempt(
+                task, result, attempt_num, duration_ms
+            )
+
+        return result
 
     def _to_dispatch_step(self, task: ExecutionTask, args: dict) -> dict:
         """Convert ExecutionTask to dispatcher step format."""
