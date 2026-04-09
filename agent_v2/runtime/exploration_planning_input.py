@@ -142,6 +142,9 @@ def call_planner_with_context(
     """Single path: planner always receives planner_context=PlannerPlanContext."""
     if session is not None:
         ctx = ctx.model_copy(update={"session": session})
+    from agent_v2.runtime.planner_task_runtime import attach_episodic_failures_if_enabled
+
+    attach_episodic_failures_if_enabled(ctx)
     req = False if plan_body_only else require_controller_json
     return planner.plan(
         instruction,

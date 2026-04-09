@@ -733,6 +733,9 @@ class PlannerV2:
             )
 
         session_block = self._format_session_memory_block(planner_context.session)
+        failures = getattr(planner_context, "episodic_failures", [])
+        episodic_block = self._format_episodic_failure_block(failures)
+        session_segment = session_block.strip() + episodic_block
 
         exploration_block = f"""--------------------------------
 EXPLORATION (source of truth for repo facts)
@@ -759,13 +762,13 @@ CONFIDENCE:
 
         intent_section = self._user_task_intent_section(planner_context, instruction=instruction)
         validation_block = PlannerV2._validation_feedback_section(planner_context)
-        parts = [intent_section.strip(), exploration_block.strip(), session_block.strip()]
+        parts = [intent_section.strip(), exploration_block.strip(), session_segment]
         if validation_block.strip():
             parts = [
                 intent_section.strip(),
                 exploration_block.strip(),
                 validation_block.strip(),
-                session_block.strip(),
+                session_segment,
             ]
         return "\n\n".join(p for p in parts if p)
 
@@ -831,6 +834,9 @@ CONFIDENCE:
 {trigger_note}"""
 
         session_block = self._format_session_memory_block(planner_context.session)
+        failures = getattr(planner_context, "episodic_failures", [])
+        episodic_block = self._format_episodic_failure_block(failures)
+        session_segment = session_block.strip() + episodic_block
 
         exploration_block = f"""--------------------------------
 EXPLORATION / CONTEXT (replan)
@@ -863,7 +869,7 @@ COMPLETED STEPS:
             intent_section.strip(),
             budget_block.strip(),
             exploration_block.strip(),
-            session_block.strip(),
+            session_segment,
         ]
         if validation_block.strip():
             parts = [
@@ -871,7 +877,7 @@ COMPLETED STEPS:
                 budget_block.strip(),
                 exploration_block.strip(),
                 validation_block.strip(),
-                session_block.strip(),
+                session_segment,
             ]
         return "\n\n".join(p for p in parts if p)
 
@@ -991,6 +997,26 @@ COMPLETED STEPS:
         
         # Default: assume write task (conservative - prevent accidental writes)
         return None
+
+    @staticmethod
+    def _format_episodic_failure_block(failures: list[dict[str, Any]]) -> str:
+        if not failures:
+            return ""
+
+        lines = []
+        for f in failures[:3]:
+            tool = (f.get("tool") or "unknown")[:16]
+            err = (f.get("error_type") or "error")[:32]
+            lines.append(f"{tool}:{err}")
+
+        recap = " ∙ ".join(lines)
+
+        return (
+            "\n--------------------------------\n"
+            "RECENT FAILURES (advisory; avoid repeating):\n"
+            f"{recap}\n"
+            "If conflicts with exploration, trust exploration.\n"
+        )
 
     @staticmethod
     def _format_session_memory_block(session: Any) -> str:

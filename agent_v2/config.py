@@ -85,6 +85,15 @@ def get_agent_v2_episodic_log_dir() -> str | None:
     return str(rel.expanduser().resolve())
 
 
+def enable_episodic_injection() -> bool:
+    """
+    Phase 5.5a — inject last episodic execution failures into planner context prompts.
+
+    Env ``AGENT_V2_ENABLE_EPISODIC_FAILURE_INJECTION``: set to 0/false/off to disable (default: on).
+    """
+    return _bool_env("AGENT_V2_ENABLE_EPISODIC_FAILURE_INJECTION", True)
+
+
 # Plan / exploration (architecture freeze §3.1)
 MAX_PLAN_STEPS: int = _int_env("AGENT_V2_MAX_PLAN_STEPS", 8)
 EXPLORATION_STEPS: int = _int_env("AGENT_V2_EXPLORATION_STEPS", 5)

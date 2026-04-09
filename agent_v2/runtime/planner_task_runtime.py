@@ -9,11 +9,17 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 _LOG = logging.getLogger(__name__)
 
-from agent_v2.config import get_agent_v2_episodic_log_dir, get_config
+from agent_v2.config import (
+    enable_episodic_injection,
+    get_agent_v2_episodic_log_dir,
+    get_config,
+)
+from agent_v2.memory.episodic_query import EpisodicQuery
 from agent_v2.exploration.answer_synthesizer import maybe_synthesize_to_state
 from agent_v2.memory.conversation_memory import (
     get_or_create_conversation_store,
@@ -76,6 +82,21 @@ from agent_v2.schemas.replan import (
     ReplanFailureContext,
     ReplanFailureError,
 )
+
+
+def _get_recent_failures() -> list[dict[str, Any]]:
+    log_dir = get_agent_v2_episodic_log_dir()
+    if not log_dir:
+        return []
+    q = EpisodicQuery(Path(log_dir))
+    return q.query(success=False, limit=3)
+
+
+def attach_episodic_failures_if_enabled(planner_context: PlannerPlanContext) -> None:
+    if not enable_episodic_injection():
+        return
+    failures = _get_recent_failures()
+    object.__setattr__(planner_context, "episodic_failures", failures)
 
 
 def _snapshot_hash(snap: PlannerDecisionSnapshot) -> str:

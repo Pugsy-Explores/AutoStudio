@@ -184,20 +184,24 @@ class Replanner:
         validation_task_mode: Optional[str] = None,
     ) -> tuple[ReplanResult, Optional[PlanDocument]]:
         """
-        ``session`` should be the run's ``SessionMemory`` (``state.context['planner_session_memory']``).
+        ``session`` should be the run's ``SessionMemory`` (``planner_session_memory_from_state`` / legacy context key).
         PlanExecutor always passes a concrete instance (creates/pins one if missing) so replan does not
         drop planner continuity. Callers that omit ``session`` get no memory in the planner prompt.
         """
         replan_context = self.build_replan_context(request)
+        pc = PlannerPlanContext(
+            replan=replan_context,
+            session=session,
+            query_intent=replan_context.query_intent,
+            exploration_budget=effective_exploration_budget(replan_context.query_intent),
+        )
+        from agent_v2.runtime.planner_task_runtime import attach_episodic_failures_if_enabled
+
+        attach_episodic_failures_if_enabled(pc)
         try:
             new_plan = self.planner.plan(
                 request.instruction,
-                planner_context=PlannerPlanContext(
-                    replan=replan_context,
-                    session=session,
-                    query_intent=replan_context.query_intent,
-                    exploration_budget=effective_exploration_budget(replan_context.query_intent),
-                ),
+                planner_context=pc,
                 deep=True,
                 langfuse_trace=langfuse_trace,
                 obs=obs,
