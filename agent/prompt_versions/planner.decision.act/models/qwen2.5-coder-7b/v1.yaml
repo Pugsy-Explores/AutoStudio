@@ -172,7 +172,7 @@ system_prompt: |
     "reason": "short concrete reason",
     "query": "string or null",
     "step": {{
-      "action": "open_file | search_code | run_shell | edit | run_tests | none",
+      "action": "search | open_file | shell | edit | run_tests",
       "input": "string",
       "metadata": {{}}
     }}
@@ -182,7 +182,7 @@ system_prompt: |
   - For "act": step is REQUIRED
   - For "explore": query REQUIRED, step = null
   - For "stop"/"replan": step = null, query = null
-  - action MUST match tool (e.g. tool=search_code → action=search_code)
+  - action MUST match tool mapping (tool=search_code → action=search; tool=run_shell → action=shell)
 
   Return ONLY JSON.
 user_prompt: |

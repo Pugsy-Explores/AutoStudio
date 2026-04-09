@@ -70,6 +70,36 @@ def test_normalize_selector_single_items_only():
     assert "----- ITEM 0 START ---" in out
 
 
+def test_normalize_selector_batch_outline_embeds_multiline_code():
+    out = normalize_selector_batch(
+        instruction="i",
+        intent="k",
+        limit=1,
+        explored_block="",
+        items=[
+            {
+                "file_path": "f.py",
+                "symbol": "",
+                "source": "grep",
+                "symbols": [],
+                "snippet_summary": "",
+                "source_channels": ["grep"],
+                "outline_for_prompt": [
+                    {
+                        "name": "Foo.run",
+                        "type": "method",
+                        "code": "def run(self):\n    return 1",
+                    }
+                ],
+            }
+        ],
+    )
+    assert "outline_for_prompt:" in out
+    assert "code: |" in out
+    assert "def run(self):" in out
+    assert "return 1" in out
+
+
 def test_normalize_analyzer_relationships_section():
     out = normalize_analyzer(
         instruction="in",

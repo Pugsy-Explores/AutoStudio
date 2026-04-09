@@ -96,3 +96,37 @@ def test_load_from_flat_packaged_existing_dir_without_v_raises(monkeypatch: pyte
     monkeypatch.setattr(loader, "_PROMPT_VERSIONS_DIR", fake_root)
     with pytest.raises(FileNotFoundError, match="No v<number>.yaml"):
         load_from_flat_packaged(name, model_name="qwen2.5-coder-7b")
+
+
+def test_load_prompt_fallback_still_injects_known_variables_on_format_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    Guardrail: malformed braces in prompt text must not disable known variable injection.
+    """
+    fake_root = tmp_path / "prompt_versions"
+    name = "exploration.fallback_guardrail"
+    pdir = fake_root / name
+    pdir.mkdir(parents=True)
+    (pdir / "v1.yaml").write_text(
+        (
+            "role: system\n"
+            "instructions: |\n"
+            "  malformed literal: {}\n"
+            "  instruction value: {instruction}\n"
+            "user_prompt_template: |\n"
+            "  candidates: {candidates_json}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    import agent.prompt_system.loader as loader
+
+    monkeypatch.setattr(loader, "_PROMPT_VERSIONS_DIR", fake_root)
+    t = loader.load_prompt(
+        name,
+        version="latest",
+        variables={"instruction": "HELLO", "candidates_json": "WORLD"},
+    )
+    assert "instruction value: HELLO" in (t.instructions or "")
+    assert "candidates: WORLD" in (t.user_prompt_template or "")

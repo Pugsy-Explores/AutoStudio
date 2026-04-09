@@ -39,14 +39,38 @@ def load_python_file_outline(file_path: str) -> list[dict[str, str]]:
         resolved = str(path)
 
     raw = extract_symbols(tree, resolved, source_bytes)
+    try:
+        source_text = source_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        source_text = ""
+    lines = source_text.splitlines()
+
     out: list[dict[str, str]] = []
     for row in raw:
         st = str(row.get("symbol_type") or "")
         if st not in ("function", "class", "method"):
             continue
         name = str(row.get("symbol_name") or "").strip()
-        if name:
-            out.append({"name": name, "type": st})
+        if not name:
+            continue
+        try:
+            start_line = int(row.get("start_line") or 0)
+            end_line = int(row.get("end_line") or 0)
+        except Exception:
+            start_line = 0
+            end_line = 0
+        code = ""
+        if start_line >= 1 and end_line >= start_line and end_line <= len(lines):
+            code = "\n".join(lines[start_line - 1 : end_line])
+        out.append(
+            {
+                "name": name,
+                "type": st,
+                "start_line": str(start_line) if start_line > 0 else "",
+                "end_line": str(end_line) if end_line > 0 else "",
+                "code": code,
+            }
+        )
     return out
 
 

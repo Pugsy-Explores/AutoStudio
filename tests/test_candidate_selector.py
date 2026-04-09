@@ -2,12 +2,25 @@ from typing import Any
 
 import pytest
 
-from agent_v2.exploration.candidate_selector import CandidateSelector
+from agent_v2.exploration.candidate_selector import (
+    CandidateSelector,
+    _selector_candidate_payload,
+    build_selector_prompt_with_budget,
+)
 from agent_v2.schemas.exploration import ExplorationCandidate
 
 
 def _c(path: str, symbol: str | None = None) -> ExplorationCandidate:
     return ExplorationCandidate(file_path=path, symbol=symbol, source="grep")
+
+
+def test_selector_payload_contract_contains_minimal_fields():
+    p = _selector_candidate_payload(
+        _c("src/a.py", "A"),
+        snippet_compact="def A()",
+        outline_for_prompt=[{"name": "A", "type": "function", "code": "def A():\n    pass"}],
+    )
+    assert set(p.keys()) == {"file_path", "symbol", "source", "snippet_compact", "outline_for_prompt"}
 
 
 def test_select_batch_returns_ranked_matches_from_llm():
@@ -28,6 +41,27 @@ def test_select_batch_returns_ranked_matches_from_llm():
         "src/b.py:B",
         "src/a.py:A",
     ]
+
+
+def test_build_selector_prompt_with_budget_keeps_all_top_candidates():
+    top = [_c(f"src/{i}.py", f"S{i}") for i in range(6)]
+    outlines = [
+        [{"name": f"S{i}", "type": "function", "start_line": "1", "end_line": "4", "code": "def x():\n" + ("    pass\n" * 100)}]
+        for i in range(6)
+    ]
+    txt, items, n = build_selector_prompt_with_budget(
+        instruction="rank",
+        intent="intent",
+        limit=3,
+        explored_block="",
+        top=top,
+        outline_rows=outlines,
+        max_selector_code_chars=45000,
+        prompt_token_budget=100,  # intentionally tiny to force pruning
+    )
+    assert n == len(top)
+    assert len(items) == n
+    assert "snippet_summary_full" not in txt
 
 
 def test_select_batch_supports_no_relevant_candidate_signal():
@@ -165,6 +199,39 @@ def test_select_batch_raises_when_llm_output_invalid_strict_mode():
         )
 
 
+def test_select_batch_accepts_kv_style_selected_indices_output():
+    selector = CandidateSelector(
+        llm_generate=lambda _: "selected_indices: [0]\nselection_confidence: \"high\""
+    )
+    ranked = selector.select_batch(
+        "rank candidates",
+        "no intent",
+        [_c("src/a.py", "A"), _c("src/b.py", "B")],
+        explored_location_keys=None,
+        limit=1,
+    )
+    assert ranked is not None
+    assert [f"{x.file_path}:{x.symbol}" for x in ranked.selected_candidates] == ["src/a.py:A"]
+
+
+def test_select_batch_accepts_fenced_kv_selected_indices_output():
+    selector = CandidateSelector(
+        llm_generate=lambda _: "```text\nselected_indices : [ 0,\\n\\t1 ]\nselection_confidence: high\n```"
+    )
+    ranked = selector.select_batch(
+        "rank candidates",
+        "no intent",
+        [_c("src/a.py", "A"), _c("src/b.py", "B")],
+        explored_location_keys=None,
+        limit=2,
+    )
+    assert ranked is not None
+    assert [f"{x.file_path}:{x.symbol}" for x in ranked.selected_candidates] == [
+        "src/a.py:A",
+        "src/b.py:B",
+    ]
+
+
 def test_select_batch_empty_json_object_normalizes_to_empty_selection():
     selector = CandidateSelector(llm_generate=lambda _: "{}")
     ranked = selector.select_batch(
@@ -190,3 +257,40 @@ def test_select_batch_explicit_empty_indices_without_selected_is_empty():
         limit=2,
     )
     assert ranked.selected_candidates == []
+
+
+def test_select_batch_populates_expanded_symbols_from_selected_symbols():
+    selector = CandidateSelector(
+        llm_generate=lambda _: (
+            '{"selected_indices":[0,1],'
+            '"selected":[{"file_path":"src/a.py","symbol":"A"},{"file_path":"src/b.py","symbol":"B"}],'
+            '"selected_symbols":{"0":["Foo.run","Foo"],"1":["Bar.run"]}}'
+        )
+    )
+    ranked = selector.select_batch(
+        "rank candidates",
+        "no intent",
+        [_c("src/a.py", "A"), _c("src/b.py", "B")],
+        explored_location_keys=None,
+        limit=2,
+    )
+    assert ranked.expanded_symbols == ["Foo.run", "Foo", "Bar.run"]
+
+
+def test_select_batch_does_not_fallback_to_selected_when_indices_present_but_unmatchable():
+    selector = CandidateSelector(
+        llm_generate=lambda _: (
+            '{"selected_indices":[99],'
+            '"selected":[{"file_path":"src/a.py","symbol":"A"}],'
+            '"no_relevant_candidate":false}'
+        )
+    )
+    ranked = selector.select_batch(
+        "rank candidates",
+        "no intent",
+        [_c("src/a.py", "A"), _c("src/b.py", "B")],
+        explored_location_keys=None,
+        limit=2,
+    )
+    assert ranked.selected_candidates == []
+    assert ranked.coverage_signal == "fragmented"

@@ -31,7 +31,7 @@ system_prompt: |
 
   STRICT RULES:
   - You MUST first output reasoning. Then output JSON.
-  - The last output MUST be valid JSON
+  - The last output MUST be valid JSON in strict JSON format without backticks or code fences.
   - Do NOT extract raw code or repeat full block content unnecessarily
   - Do NOT generate line ranges or symbols (handled upstream)
   - Do NOT suggest actions (no next_action, no planning)
@@ -58,7 +58,8 @@ system_prompt: |
     "understanding": "sufficient | partial | insufficient",
     "key_findings": ["string"],
     "gaps": ["string"],
-    "gaps_relevant_to_intent": ["string"]
+    "gaps_relevant_to_intent": ["string"],
+    "required_symbols": ["SymbolOrQualifiedName"]
   }}
 
   Optional field gaps_relevant_to_intent: subset of or notes tied to gaps that matter for the user task summary; may be empty.
@@ -73,4 +74,5 @@ user_prompt_template: |
   - Base analysis ONLY on provided normalized input (code in Context Block sections is primary; Relationships are optional)
   - Identify whether understanding is complete or partial
   - Highlight missing pieces if any; each gap must name a concrete symbol, file, or dependency
+  - Include required_symbols when concrete symbols/functions/classes are needed to close gaps
   - Final output MUST be JSON only

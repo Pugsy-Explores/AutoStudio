@@ -15,6 +15,7 @@ subset transform when called.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable
 
 from agent_v2.exploration.llm_input_normalize import normalize_scoper
@@ -79,9 +80,25 @@ class ExplorationScoper:
             return self._llm_generate(prompt)
 
         def _complete(raw: str) -> tuple[dict[str, Any], dict[str, Any]]:
-            parsed = JSONExtractor.extract_final_json(raw)
-            selected_raw = parsed.get("selected_indices")
+            selected_raw: Any = None
+            parse_error: Exception | None = None
+            try:
+                selected_raw = self._parse_scoper_selected_indices(raw)
+            except Exception as exc:
+                parse_error = exc
             if not isinstance(selected_raw, list):
+                if parse_error is not None:
+                    _LOG.warning(
+                        "exploration_scoper parse failure: could not parse selected_indices as JSON/list; "
+                        "error=%s raw_preview=%r",
+                        parse_error,
+                        str(raw or "")[:500],
+                    )
+                    raise parse_error
+                _LOG.warning(
+                    "exploration_scoper parse failure: selected_indices missing or non-list; raw_preview=%r",
+                    str(raw or "")[:500],
+                )
                 raise ValueError("ExplorationScoper expected `selected_indices` list in parsed JSON.")
             valid_dedupe: set[int] = set()
             for x in selected_raw:
@@ -132,6 +149,55 @@ class ExplorationScoper:
             on_complete=_complete,
         )
         return holder[0]
+
+    @classmethod
+    def _parse_scoper_selected_indices(cls, raw: Any) -> list[int] | None:
+        text = str(raw or "")
+        try:
+            parsed = JSONExtractor.extract_final_json(text)
+            selected_raw = parsed.get("selected_indices")
+            if isinstance(selected_raw, str):
+                nums = re.findall(r"-?\d+", selected_raw)
+                if nums:
+                    return [int(n) for n in nums]
+            if isinstance(selected_raw, list):
+                return selected_raw
+        except Exception as exc:
+            fallback = cls._extract_selected_indices_lenient(text)
+            if isinstance(fallback, list):
+                return fallback
+            raise exc
+        return cls._extract_selected_indices_lenient(text)
+
+    @staticmethod
+    def _extract_selected_indices_lenient(raw: Any) -> list[int] | None:
+        """
+        Robust fallback for model outputs that are near-JSON but malformed:
+        fenced text, extra whitespace, escaped newlines/tabs, or bare key/value style.
+        """
+        text = str(raw or "")
+        if not text.strip():
+            return None
+        compact = text.replace("\\n", "\n").replace("\\t", "\t")
+        # selected_indices: [0, 4] / "selected_indices": [0,4] / selected_indices=[0,4]
+        m = re.search(
+            r"(?:\"|')?selected_indices(?:\"|')?\s*[:=]\s*\[([^\]]*)\]",
+            compact,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if m:
+            nums = re.findall(r"-?\d+", m.group(1) or "")
+            return [int(n) for n in nums]
+        # selected_indices: 0, 4 (no brackets)
+        m2 = re.search(
+            r"(?:\"|')?selected_indices(?:\"|')?\s*[:=]\s*([0-9,\s-]+)",
+            compact,
+            flags=re.IGNORECASE,
+        )
+        if m2:
+            nums = re.findall(r"-?\d+", m2.group(1) or "")
+            return [int(n) for n in nums]
+        return None
 
     def _aggregate_payload_by_file_path(
         self, candidates: list[ExplorationCandidate]

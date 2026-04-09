@@ -16,8 +16,11 @@ Responsibilities:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
+
+_LOG = logging.getLogger(__name__)
 
 from agent_v2.schemas.execution import (
     ErrorType,
@@ -199,12 +202,24 @@ def coerce_to_tool_result(
             duration_ms=duration_ms,
         )
 
-    # Fallback — wrap whatever came back as opaque output
+    # Fallback — conservative: assume failure on unknown formats
+    _LOG.warning(
+        f"coerce_to_tool_result: unexpected type {type(raw).__name__} "
+        f"for tool {tool_name}; treating as failure"
+    )
     return ToolResult(
         tool_name=tool_name,
-        success=True,
+        success=False,  # CHANGED: Conservative - assume failure
         data={"output": str(raw)} if raw is not None else {},
-        error=None,
+        error=ToolError(
+            type="unknown_format",
+            message=f"Tool returned unexpected type: {type(raw).__name__}",
+            details={"repr": repr(raw)} if raw is not None else {},
+        ) if raw is not None else ToolError(
+            type="no_output",
+            message="Tool returned no output",
+            details={},
+        ),
         duration_ms=duration_ms,
     )
 

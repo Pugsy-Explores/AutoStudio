@@ -1,5 +1,6 @@
 """Central loader: loads YAML from prompt_versions or legacy prompts/, applies template variables."""
 
+import logging
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -14,6 +15,7 @@ _PROMPT_VERSIONS_DIR = Path(__file__).resolve().parent.parent / "prompt_versions
 
 # Model-specific prompts use v1.yaml, v2.yaml, ... — always load the highest N.
 _V_NUM_PROMPT_RE = re.compile(r"^v(\d+)\.yaml$", re.IGNORECASE)
+_LOG = logging.getLogger(__name__)
 
 
 def discover_highest_v_prompt_yaml(model_dir: Path) -> tuple[str, Path]:
@@ -227,6 +229,18 @@ def _format_map_with_defaults(s: str, variables: dict) -> str:
     return s.format_map(d)
 
 
+def _best_effort_replace_known_fields(s: str, variables: dict) -> str:
+    """
+    Fallback substitution when str.format_map fails due to malformed braces in prompt text.
+
+    This only replaces known `{key}` tokens and leaves all other braces untouched.
+    """
+    out = s
+    for k, v in variables.items():
+        out = out.replace("{" + str(k) + "}", "" if v is None else str(v))
+    return out
+
+
 def _apply_prompt_variables(template: PromptTemplate, variables: dict | None) -> PromptTemplate:
     if not variables:
         return template
@@ -249,8 +263,32 @@ def _apply_prompt_variables(template: PromptTemplate, variables: dict | None) ->
             extra=template.extra,
             source_path=template.source_path,
         )
-    except (KeyError, ValueError):
-        return template
+    except (KeyError, ValueError) as exc:
+        _LOG.warning(
+            "Prompt formatting fallback for %s@%s due to %s: %s",
+            template.name,
+            template.version,
+            type(exc).__name__,
+            exc,
+        )
+        return PromptTemplate(
+            name=template.name,
+            version=template.version,
+            role=template.role,
+            instructions=_best_effort_replace_known_fields(template.instructions, variables),
+            constraints=template.constraints,
+            output_schema=template.output_schema,
+            system_prompt=_best_effort_replace_known_fields(template.system_prompt, variables)
+            if template.system_prompt
+            else "",
+            user_prompt_template=_best_effort_replace_known_fields(
+                template.user_prompt_template, variables
+            )
+            if template.user_prompt_template
+            else "",
+            extra=template.extra,
+            source_path=template.source_path,
+        )
 
 
 def load_prompt(

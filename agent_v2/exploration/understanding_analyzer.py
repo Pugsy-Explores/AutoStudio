@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable
 
 from agent_v2.exploration.llm_input_normalize import normalize_analyzer
@@ -15,6 +16,7 @@ from agent_v2.utils.json_extractor import JSONExtractor
 _LOG = logging.getLogger(__name__)
 
 _EXPLORATION_ANALYZER_KEY = "exploration.analyzer"
+_SYMBOL_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\b")
 
 
 class UnderstandingAnalyzer:
@@ -53,7 +55,7 @@ class UnderstandingAnalyzer:
         srb = (symbol_relationships_block or "").strip()
         if not srb:
             srb = "(not provided)"
-        blocks_payload = [b.model_dump() for b in context_blocks[:6]]
+        blocks_payload = [b.model_dump() for b in context_blocks]
         exploration_llm_input = normalize_analyzer(
             instruction=instruction,
             intent=intent,
@@ -120,7 +122,7 @@ class UnderstandingAnalyzer:
         if not context_blocks:
             return ""
         chunks: list[str] = []
-        for b in context_blocks[:6]:
+        for b in context_blocks:
             chunks.append(
                 f"{b.file_path}:{b.start}-{b.end}\n{b.content}".strip()
             )
@@ -138,6 +140,38 @@ class UnderstandingAnalyzer:
             return []
         return [str(x).strip() for x in gr if str(x).strip()]
 
+    @staticmethod
+    def _required_symbols_from_parsed(parsed: dict) -> list[str]:
+        raw = parsed.get("required_symbols")
+        if not isinstance(raw, list):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for x in raw:
+            s = str(x).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out[:8]
+
+    @classmethod
+    def _fallback_required_symbols_from_gaps(cls, gaps: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for gap in gaps:
+            for tok in _SYMBOL_RE.findall(str(gap or "")):
+                # Keep likely symbols/types; skip obvious prose lowercase words.
+                if tok.lower() == tok and "." not in tok:
+                    continue
+                if tok in seen:
+                    continue
+                seen.add(tok)
+                out.append(tok)
+                if len(out) >= 8:
+                    return out
+        return out
+
     @classmethod
     def _coerce_understanding(cls, parsed: dict) -> UnderstandingResult:
         if not isinstance(parsed, dict):
@@ -152,6 +186,7 @@ class UnderstandingAnalyzer:
                 is_sufficient=False,
                 confidence_label="low",
                 gaps_relevant_to_intent=[],
+                required_symbols=[],
             )
 
         # New contract: understanding, relevant_files, relationships, confidence, gaps, is_sufficient
@@ -200,6 +235,8 @@ class UnderstandingAnalyzer:
                 confidence_label=cl,  # type: ignore[arg-type]
                 is_sufficient=is_suf,
                 gaps_relevant_to_intent=cls._gaps_relevant_to_intent_from_parsed(parsed),
+                required_symbols=cls._required_symbols_from_parsed(parsed)
+                or cls._fallback_required_symbols_from_gaps(gaps),
             )
 
         # Legacy status-shaped JSON: map to semantic fields only (no control leakage to engine).
@@ -218,6 +255,7 @@ class UnderstandingAnalyzer:
                     confidence_label="high",
                     is_sufficient=True,
                     gaps_relevant_to_intent=[],
+                    required_symbols=[],
                 )
             if status == "wrong_target":
                 return UnderstandingResult(
@@ -231,6 +269,7 @@ class UnderstandingAnalyzer:
                     confidence_label="medium",
                     is_sufficient=False,
                     gaps_relevant_to_intent=[],
+                    required_symbols=[],
                 )
             return UnderstandingResult(
                 relevance="medium",
@@ -243,6 +282,7 @@ class UnderstandingAnalyzer:
                 confidence_label="medium",
                 is_sufficient=False,
                 gaps_relevant_to_intent=[],
+                required_symbols=[],
             )
 
         clean = dict(parsed)
@@ -290,4 +330,6 @@ class UnderstandingAnalyzer:
             confidence_label=conf_l,  # type: ignore[arg-type]
             is_sufficient=is_sufficient,
             gaps_relevant_to_intent=cls._gaps_relevant_to_intent_from_parsed(parsed),
+            required_symbols=cls._required_symbols_from_parsed(parsed)
+            or cls._fallback_required_symbols_from_gaps(gaps),
         )

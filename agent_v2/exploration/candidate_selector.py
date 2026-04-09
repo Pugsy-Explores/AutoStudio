@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable, Sequence
 
 _LOG = logging.getLogger(__name__)
@@ -14,6 +15,11 @@ from agent_v2.config import (
     EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K,
     EXPLORATION_SELECTOR_TOP_K,
     EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS,
+    MAX_SELECTOR_CODE_CHARS,
+)
+from agent_v2.exploration.selector_outline_injection import (
+    build_outline_signatures_only,
+    prepare_outline_for_selector_prompt,
 )
 from agent_v2.observability.langfuse_helpers import (
     LANGFUSE_GENERATION_PROMPT_INPUT_MAX_CHARS,
@@ -35,21 +41,129 @@ _EXPLORATION_SELECTOR_BATCH_KEY = "exploration.selector.batch"
 def _selector_candidate_payload(
     c: ExplorationCandidate,
     *,
+    snippet_compact: str = "",
     outline_for_prompt: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {
         "file_path": c.file_path,
         "symbol": c.symbol,
         "source": c.source,
-        "symbols": list(c.symbols) if c.symbols else [],
-        "snippet_summary": c.snippet_summary or c.snippet,
-        "source_channels": list(c.source_channels) if c.source_channels else [c.source],
+        "snippet_compact": snippet_compact,
     }
-    if getattr(c, "repo", None):
-        out["repo"] = c.repo
     if outline_for_prompt:
         out["outline_for_prompt"] = list(outline_for_prompt)
     return out
+
+
+def _build_snippet_compact(raw: str, *, head_lines: int = 8, max_chars: int = 600) -> str:
+    text = str(raw or "")
+    if not text.strip():
+        return ""
+    lines = text.splitlines()
+    keep: list[str] = []
+    seen: set[str] = set()
+    for line in lines[: max(1, head_lines)]:
+        s = line.rstrip()
+        if s not in seen:
+            seen.add(s)
+            keep.append(s)
+    pat = re.compile(r"\b(def|class|error|exception)\b", flags=re.IGNORECASE)
+    for line in lines:
+        if not pat.search(line):
+            continue
+        s = line.rstrip()
+        if s not in seen:
+            seen.add(s)
+            keep.append(s)
+    out = "\n".join(keep).strip()
+    if len(out) > max_chars:
+        return out[:max_chars]
+    return out
+
+
+def build_selector_prompt_with_budget(
+    *,
+    instruction: str,
+    intent: str,
+    limit: int,
+    explored_block: str,
+    top: list[ExplorationCandidate],
+    outline_rows: list[list[dict[str, str]]] | None,
+    max_selector_code_chars: int,
+    prompt_token_budget: int = 12000,
+) -> tuple[str, list[dict[str, Any]], int]:
+    """
+    Build minimal selector batch payload under a global budget.
+    Priority:
+    1) identity (always)
+    2) outline signatures (always)
+    3) outline bodies (if space)
+    4) snippet_compact (if space)
+    """
+    char_budget = max(200, prompt_token_budget * 4)
+    # Keep full top list stable; reduce field richness under budget pressure.
+    items: list[dict[str, Any]] = []
+    for i, c in enumerate(top):
+        ol_raw = outline_rows[i] if outline_rows and i < len(outline_rows) else []
+        sigs = build_outline_signatures_only(ol_raw)
+        fallback_snippet = str(c.symbol or "").strip() or "(no-symbol)"
+        item = _selector_candidate_payload(c, snippet_compact=fallback_snippet, outline_for_prompt=sigs)
+        items.append(item)
+
+    for idx, c in enumerate(top[: len(items)]):
+        ol_raw = outline_rows[idx] if outline_rows and idx < len(outline_rows) else []
+        rich = prepare_outline_for_selector_prompt(ol_raw, max_selector_code_chars) if ol_raw else []
+        if not rich:
+            continue
+        cand = dict(items[idx])
+        cand["outline_for_prompt"] = rich
+        trial_items = items[:idx] + [cand] + items[idx + 1 :]
+        trial = normalize_selector_batch(
+            instruction=instruction,
+            intent=intent or "no intent",
+            limit=limit,
+            explored_block=explored_block,
+            items=trial_items,
+        )
+        if len(trial) <= char_budget:
+            items[idx] = cand
+
+    for idx in range(len(items)):
+        sc = _build_snippet_compact(top[idx].snippet_summary or top[idx].snippet or "")
+        if not sc:
+            continue
+        cand = dict(items[idx])
+        cand["snippet_compact"] = sc
+        trial_items = items[:idx] + [cand] + items[idx + 1 :]
+        trial = normalize_selector_batch(
+            instruction=instruction,
+            intent=intent or "no intent",
+            limit=limit,
+            explored_block=explored_block,
+            items=trial_items,
+        )
+        if len(trial) <= char_budget:
+            items[idx] = cand
+
+    for it in items:
+        if not str(it.get("file_path") or "").strip():
+            raise ValueError("Selector payload contract violation: missing file_path")
+        if "snippet_summary" in it or "source_channels" in it or "symbols" in it:
+            raise ValueError("Selector payload contract violation: redundant fields present")
+        has_outline = bool(it.get("outline_for_prompt"))
+        has_snip = bool(str(it.get("snippet_compact") or "").strip())
+        if not (has_outline or has_snip):
+            raise ValueError("Selector payload contract violation: each candidate needs outline or snippet")
+
+    candidates_json = normalize_selector_batch(
+        instruction=instruction,
+        intent=intent or "no intent",
+        limit=limit,
+        explored_block=explored_block,
+        items=items,
+    )
+    # Do not shrink candidate count here; index space must stay aligned with top list.
+    return candidates_json, items, len(top)
 
 
 def _parse_selected_symbols_raw(raw: Any) -> dict[str, list[str]]:
@@ -101,6 +215,22 @@ def _validate_selected_symbols_against_outlines(
     return cleaned
 
 
+def _flatten_expanded_symbols(
+    selected_symbols: dict[str, list[str]],
+    ordered_indices: list[int],
+) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for j in ordered_indices:
+        for name in selected_symbols.get(str(j), []) or []:
+            n = str(name).strip()
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            out.append(n)
+    return out
+
+
 def _expand_js_indices(parsed_idx: list[int], top_n: int) -> list[int]:
     """Map model indices to 0-based top row indices (matches legacy one-based lone-1 rule)."""
     if not parsed_idx or top_n <= 0:
@@ -148,6 +278,70 @@ def _pick_candidates_by_top_indices(
         if len(picked) >= limit:
             break
     return picked, indices
+
+
+def _extract_selector_batch_lenient(raw: str) -> dict[str, Any]:
+    """
+    Selector-specific fallback parser for near-JSON outputs.
+    Keeps scope intentionally small: only core control fields.
+    """
+    text = str(raw or "")
+    if not text.strip():
+        return {}
+    compact = text.replace("\\n", "\n").replace("\\t", "\t")
+    out: dict[str, Any] = {}
+    m_idx = re.search(
+        r"(?:\"|')?selected_indices(?:\"|')?\s*[:=]\s*\[([^\]]*)\]",
+        compact,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m_idx:
+        nums = re.findall(r"-?\d+", m_idx.group(1) or "")
+        out["selected_indices"] = [int(n) for n in nums]
+    m_nrc = re.search(
+        r"(?:\"|')?no_relevant_candidate(?:\"|')?\s*[:=]\s*(true|false)",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if m_nrc:
+        out["no_relevant_candidate"] = m_nrc.group(1).lower() == "true"
+    m_conf = re.search(
+        r"(?:\"|')?selection_confidence(?:\"|')?\s*[:=]\s*(?:\"|')?(high|medium|low)(?:\"|')?",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if m_conf:
+        out["selection_confidence"] = m_conf.group(1).lower()
+    m_cov = re.search(
+        r"(?:\"|')?coverage_signal(?:\"|')?\s*[:=]\s*(?:\"|')?(good|weak|fragmented|empty|unknown)(?:\"|')?",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if m_cov:
+        out["coverage_signal"] = m_cov.group(1).lower()
+    return out
+
+
+def _parse_selector_batch_response(raw: str) -> dict[str, Any]:
+    try:
+        parsed = JSONExtractor.extract_final_json(raw)
+        if isinstance(parsed.get("selected_indices"), str):
+            nums = re.findall(r"-?\d+", str(parsed.get("selected_indices") or ""))
+            if nums:
+                parsed["selected_indices"] = [int(n) for n in nums]
+        if isinstance(parsed.get("selected_indices"), list) or isinstance(parsed.get("selected"), list):
+            return parsed
+        fallback = _extract_selector_batch_lenient(raw)
+        if fallback:
+            merged = dict(parsed)
+            merged.update(fallback)
+            return merged
+        return parsed
+    except Exception as exc:
+        fallback = _extract_selector_batch_lenient(raw)
+        if fallback:
+            return fallback
+        raise exc
 
 
 class CandidateSelector:
@@ -288,23 +482,30 @@ class CandidateSelector:
                 selected_top_indices=[],
             )
         top = candidates[:EXPLORATION_SELECTOR_TOP_K]
+        selector_input_count = len(top)
         if self._llm_generate_batch is None and self._llm_generate_messages_batch is None:
             raise ValueError("CandidateSelector.select_batch requires batch LLM callable in strict mode.")
 
-        payload: list[dict[str, Any]] = []
-        for i, c in enumerate(top):
-            ol = outline_rows[i] if outline_rows and i < len(outline_rows) else None
-            payload.append(_selector_candidate_payload(c, outline_for_prompt=ol))
         explored_block = format_explored_locations_for_prompt(
             explored_location_keys,
             max_rows=EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K,
         )
-        candidates_json = normalize_selector_batch(
+        candidates_json, payload, effective_n = build_selector_prompt_with_budget(
             instruction=instruction,
             intent=intent or "no intent",
             limit=limit,
             explored_block=explored_block,
-            items=payload,
+            top=top,
+            outline_rows=outline_rows,
+            max_selector_code_chars=MAX_SELECTOR_CODE_CHARS,
+        )
+        top = top[:effective_n]
+        _LOG.info(
+            "exploration.selector_batch_counts scoper_output_count=%s selector_input_count=%s selector_effective_n=%s limit=%s",
+            len(candidates),
+            selector_input_count,
+            effective_n,
+            limit,
         )
         system_prompt, user_prompt = get_registry().render_prompt_parts(
             _EXPLORATION_SELECTOR_BATCH_KEY,
@@ -337,7 +538,7 @@ class CandidateSelector:
             return self._llm_generate_batch(prompt)
 
         def _complete_batch(raw: str) -> tuple[dict[str, Any], dict[str, Any]]:
-            parsed = JSONExtractor.extract_final_json(raw)
+            parsed = _parse_selector_batch_response(raw)
             holder["parsed"] = parsed
             holder["raw"] = raw
             if bool(parsed.get("no_relevant_candidate")):
@@ -399,6 +600,7 @@ class CandidateSelector:
                 selection_confidence="low",
                 coverage_signal="weak",
                 selected_symbols={},
+                expanded_symbols=[],
                 selected_top_indices=[],
             )
 
@@ -421,6 +623,7 @@ class CandidateSelector:
                 selection_confidence=conf_default,
                 coverage_signal=cov_default,
                 selected_symbols=sym_clean_empty,
+                expanded_symbols=[],
                 selected_top_indices=[],
             )
 
@@ -440,7 +643,8 @@ class CandidateSelector:
         if ordered_js:
             picked, indices = _pick_candidates_by_top_indices(ordered_js, top, limit=limit)
 
-        if not picked:
+        has_explicit_indices = isinstance(selected_indices_raw, list) and len(selected_indices_raw) > 0
+        if not picked and not has_explicit_indices:
             selected_list = parsed.get("selected")
             if isinstance(selected_list, list):
                 picked, indices = self._match_many_with_top_indices(
@@ -467,6 +671,7 @@ class CandidateSelector:
                 selection_confidence="low",
                 coverage_signal="fragmented",
                 selected_symbols={},
+                expanded_symbols=[],
                 selected_top_indices=[],
             )
 
@@ -494,6 +699,7 @@ class CandidateSelector:
             selection_confidence=conf_default,
             coverage_signal=cov_default,
             selected_symbols=sym_clean,
+            expanded_symbols=_flatten_expanded_symbols(sym_clean, indices),
             selected_top_indices=indices,
         )
 

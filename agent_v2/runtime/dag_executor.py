@@ -31,7 +31,7 @@ from agent_v2.runtime.dag_scheduler import DagScheduler, SchedulerResult
 from agent_v2.config import get_agent_v2_episodic_log_dir
 from agent_v2.runtime.plan_compiler import compile_plan, tasks_by_id
 from agent_v2.runtime.replanner import Replanner, merge_preserved_completed_steps
-from agent_v2.runtime.session_memory import SessionMemory
+from agent_v2.runtime.session_memory import SessionMemory, planner_session_memory_from_state
 from agent_v2.runtime.tool_mapper import coerce_to_tool_result, map_tool_result_to_execution_result
 from agent_v2.runtime.tool_policy import plan_safe_shell_command_allowed
 from agent_v2.runtime.trace_emitter import TraceEmitter, TraceEmitterFactory
@@ -51,6 +51,9 @@ from agent.models.model_config import TASK_MODELS
 _LOG = logging.getLogger(__name__)
 _DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
 
+# Tools that MUST NOT be retried - non-idempotent
+_NON_RETRYABLE_TOOLS = frozenset({"write", "edit", "shell"})
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -62,23 +65,6 @@ def _metadata_dict(state: Any) -> dict:
         state.metadata = {}
         return state.metadata
     return md
-
-
-def _planner_session_memory_from_state(state: Any) -> SessionMemory:
-    ctx = getattr(state, "context", None)
-    if not isinstance(ctx, dict):
-        try:
-            state.context = {}
-            ctx = state.context
-        except Exception:
-            return SessionMemory()
-    key = "planner_session_memory"
-    existing = ctx.get(key)
-    if isinstance(existing, SessionMemory):
-        return existing
-    mem = SessionMemory()
-    ctx[key] = mem
-    return mem
 
 
 def _plan_safe_execution_active(state: Any) -> bool:
@@ -301,7 +287,7 @@ class DagExecutor:
                 tasks_by_id=self._tasks_by_id,
             )
             lf = md.get("langfuse_trace")
-            session = _planner_session_memory_from_state(state)
+            session = planner_session_memory_from_state(state)
             vtm_raw = md.get("plan_validation_task_mode")
             vtm = str(vtm_raw).strip() if isinstance(vtm_raw, str) and str(vtm_raw).strip() else None
             replan_res, new_plan = self.replanner.replan(
@@ -642,6 +628,12 @@ class DagExecutor:
 
         Returns True if retry is recommended, False otherwise.
         """
+        # FIRST: hard block — executor is the single policy gate for task retries
+        # Non-idempotent tools (write, edit, shell) must never be retried to avoid state corruption
+        if task.tool in _NON_RETRYABLE_TOOLS:
+            logging.debug(f"Task {task.id}: non-retryable tool '{task.tool}' -> no retry")
+            return False
+
         # Terminal condition: exceeded max attempts
         if task.attempts >= task.max_attempts:
             return False

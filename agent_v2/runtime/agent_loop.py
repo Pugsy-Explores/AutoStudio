@@ -95,43 +95,31 @@ class AgentLoop:
                     },
                 )
                 self.validator.validate(step)
-                retry_count = 0
-                while True:
-                    result = self.dispatcher.execute(step, state)
-                    failed = is_failure(result)
-                    if failed:
-                        failure_streak += 1
-                        if isinstance(result, ExecutionResult):
-                            err = result.error
-                            state.last_error = err.message if err is not None else None
-                        else:
-                            state.last_error = (
-                                result.get("error")
-                                if isinstance(result, dict)
-                                else getattr(result, "error", None)
-                            )
-                        if state.last_error:
-                            observation = f"ERROR: {state.last_error}"
-                        else:
-                            observation = self.observation_builder.build(step.get("action"), result)
-                        self._update_state(state, step, observation, result)
-
-                        # Retry the same step up to MAX_RETRIES.
-                        if retry_count < MAX_RETRIES:
-                            retry_count += 1
-                            state.retry_count = retry_count
-                            state.metadata["retry_count"] = retry_count
-                            continue
+                result = self.dispatcher.execute(step, state)
+                failed = is_failure(result)
+                if failed:
+                    failure_streak += 1
+                    if isinstance(result, ExecutionResult):
+                        err = result.error
+                        state.last_error = err.message if err is not None else None
                     else:
-                        failure_streak = 0
-                        state.retry_count = 0
-                        state.metadata["retry_count"] = 0
-                        state.last_error = None
+                        state.last_error = (
+                            result.get("error")
+                            if isinstance(result, dict)
+                            else getattr(result, "error", None)
+                        )
+                    if state.last_error:
+                        observation = f"ERROR: {state.last_error}"
+                    else:
                         observation = self.observation_builder.build(step.get("action"), result)
-                        self._update_state(state, step, observation, result)
+                    self._update_state(state, step, observation, result)
+                else:
+                    failure_streak = 0
+                    state.last_error = None
+                    observation = self.observation_builder.build(step.get("action"), result)
+                    self._update_state(state, step, observation, result)
 
-                    state.metadata["failure_streak"] = failure_streak
-                    break
+                state.metadata["failure_streak"] = failure_streak
                 span.end(
                     output={
                         "success": (

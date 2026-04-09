@@ -33,8 +33,10 @@ instructions: |
   "status": "wrong_target|partial|sufficient",
   "needs": ["more_code|callers|callees|definition|different_symbol"],
   "reason": "string",
-  "next_action": "expand|refine|stop"
+  "next_action": "expand|refine|stop",
+  "required_symbols": ["SymbolOrQualifiedName"]
   }}
+  required_symbols is optional; include concrete symbols/functions/classes needed to close current gaps.
 
   VERIFICATION:
   Would this snippet alone help solve the instruction? If not, it cannot be "sufficient".

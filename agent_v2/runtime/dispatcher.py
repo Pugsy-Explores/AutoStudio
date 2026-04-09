@@ -15,6 +15,7 @@ import copy
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import Any, cast
 
 # agent_v2.primitives is NOT imported at module level — doing so creates a circular import
@@ -22,7 +23,13 @@ from typing import Any, cast
 # Primitives are imported lazily inside __init__ only when a Dispatcher is instantiated.
 from agent_v2.runtime.fault_hooks import maybe_inject_open_file_fault_raw
 from agent_v2.runtime.tool_mapper import coerce_to_tool_result, map_tool_result_to_execution_result
-from agent_v2.schemas.execution import ExecutionResult
+from agent_v2.schemas.execution import (
+    ErrorType,
+    ExecutionError,
+    ExecutionMetadata,
+    ExecutionOutput,
+    ExecutionResult,
+)
 from agent_v2.schemas.tool import ToolResult
 
 
@@ -34,6 +41,46 @@ _REACT_ACTION_TO_TOOL: dict[str, str] = {
     "RUN_TEST": "run_tests",
     "FINISH": "finish",
 }
+
+
+# Input validation error for tool inputs
+class ToolInputValidationError(Exception):
+    """Raised when tool input is invalid."""
+
+
+def _validate_tool_inputs(tool_name: str, args: dict) -> None:
+    """Minimal validation for critical tool inputs."""
+    errors = []
+    
+    if tool_name in ("search", "search_multi"):
+        query = str(args.get("query") or "").strip()
+        queries = args.get("queries")
+        if tool_name == "search" and not query:
+            errors.append("search requires non-empty 'query' argument")
+        if tool_name == "search_multi":
+            if not isinstance(queries, list) or not queries:
+                errors.append("search_multi requires non-empty 'queries' list")
+    
+    elif tool_name in ("open_file", "write", "edit"):
+        path = str(args.get("path") or "").strip()
+        if not path:
+            errors.append(f"{tool_name} requires non-empty 'path' argument")
+    
+    elif tool_name == "edit":
+        instruction = str(args.get("instruction") or "").strip()
+        if not instruction:
+            errors.append("edit requires non-empty 'instruction' argument")
+    
+    elif tool_name == "shell":
+        command = str(args.get("command") or "").strip()
+        if not command:
+            errors.append("shell requires non-empty 'command' argument")
+        # Basic safety: forbid chaining tokens
+        if any(tok in command for tok in ("&&", ";", "|", "`")):
+            errors.append("shell command contains forbidden chaining tokens (&&, ;, |, `)")
+    
+    if errors:
+        raise ToolInputValidationError("; ".join(errors))
 
 
 def _resolve_tool_name(step: dict) -> str:
@@ -92,24 +139,53 @@ class Dispatcher:
         Execute a step and return a normalized ExecutionResult, or list[ExecutionResult]
         for ``search_multi`` (batched vector retrieval path).
         """
+        # Deep copy step to prevent mutation during execution
+        safe_step = copy.deepcopy(step)
+        
         if getattr(state, "context", None) is not None:
             state.context.setdefault("shell", self._shell)
             state.context.setdefault("editor", self._editor)
             state.context.setdefault("browser", self._browser)
 
-        tool_name = _resolve_tool_name(step) if isinstance(step, dict) else "unknown"
-        step_id = _resolve_step_id(step) if isinstance(step, dict) else "unknown"
+        tool_name = _resolve_tool_name(safe_step) if isinstance(safe_step, dict) else "unknown"
+        step_id = _resolve_step_id(safe_step) if isinstance(safe_step, dict) else "unknown"
+
+        # Validate inputs before execution
+        try:
+            args = safe_step.get("_react_args") if isinstance(safe_step, dict) else {}
+            _validate_tool_inputs(tool_name, args)
+        except ToolInputValidationError as e:
+            return ExecutionResult(
+                step_id=step_id,
+                success=False,
+                status="failure",
+                output=ExecutionOutput(
+                    data={},
+                    summary=f"Input validation failed: {e}",
+                    full_output=None,
+                ),
+                error=ExecutionError(
+                    type=ErrorType.validation_error,
+                    message=str(e),
+                    details={},
+                ),
+                metadata=ExecutionMetadata(
+                    tool_name=tool_name,
+                    duration_ms=0,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                ),
+            )
 
         # Step 2: run handler (optional test fault injection before real tools)
         fault_raw = (
-            maybe_inject_open_file_fault_raw(tool_name, step, state)
-            if isinstance(step, dict)
+            maybe_inject_open_file_fault_raw(tool_name, safe_step, state)
+            if isinstance(safe_step, dict)
             else None
         )
         if fault_raw is not None:
             raw = fault_raw
         else:
-            raw = self._execute_fn(step, state)
+            raw = self._execute_fn(safe_step, state)
 
         # search_multi: handler returns list[dict] → list[ExecutionResult] (Option A).
         if (
@@ -129,6 +205,21 @@ class Dispatcher:
                     raise ValueError("ExecutionResult.output.summary must be present and non-empty")
                 out_list.append(er)
             return out_list
+
+        # Short-circuit: if raw is already ExecutionResult, align step_id and enforce invariants
+        if isinstance(raw, ExecutionResult):
+            result = raw
+            # Align step_id if needed
+            if result.step_id != step_id:
+                result = result.model_copy(update={"step_id": step_id})
+            # Enforce invariants
+            if result.output is None or not str(result.output.summary or "").strip():
+                raise ValueError("ExecutionResult.output.summary must be present and non-empty")
+            if result.success and result.error is not None:
+                raise ValueError("ExecutionResult.error must be None when success=True")
+            if not result.success and result.error is None:
+                raise ValueError("ExecutionResult.error must be present when success=False")
+            return result
 
         # Step 3 (legacy bridge): coerce whatever came back into schema ToolResult
         tool_result = coerce_to_tool_result(raw, tool_name=tool_name)

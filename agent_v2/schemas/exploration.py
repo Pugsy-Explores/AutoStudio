@@ -297,6 +297,8 @@ class UnderstandingResult(BaseModel):
     confidence_label: Literal["high", "medium", "low"] = "medium"
     is_sufficient: bool = False
     gaps_relevant_to_intent: list[str] = Field(default_factory=list)
+    # Structured symbols still needed to close current understanding gaps.
+    required_symbols: list[str] = Field(default_factory=list)
 
     @property
     def effective_sufficient(self) -> bool:
@@ -354,6 +356,8 @@ class SelectorBatchResult(BaseModel):
     # Symbol picks keyed by batch payload index ("0".."n-1") into candidates[:SELECTOR_TOP_K].
     # Sole source of truth for selector-chosen symbols; never copy onto ExplorationCandidate.
     selected_symbols: dict[str, list[str]] = Field(default_factory=dict)
+    # Flattened selector-proposed symbol anchors in stable batch order.
+    expanded_symbols: list[str] = Field(default_factory=list)
     # Parallel to selected_candidates: top-row index used for selected_symbols lookup.
     selected_top_indices: list[int] = Field(default_factory=list)
 
@@ -422,3 +426,7 @@ class ExplorationState(BaseModel):
     # Not EngineDecisionMapper REFINE; does not consume refine_count.
     intent_bootstrap_pass_count: int = 0
     last_selector_batch: Optional[SelectorBatchResult] = None
+    # Signals for expansion/planner alignment.
+    pending_expansion_symbols: list[str] = Field(default_factory=list)
+    available_symbols: set[str] = Field(default_factory=set)
+    missing_symbols: set[str] = Field(default_factory=set)

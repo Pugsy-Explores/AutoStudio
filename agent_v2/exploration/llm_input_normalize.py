@@ -19,11 +19,8 @@ _SELECTOR_PAYLOAD_KEYS = frozenset(
         "file_path",
         "symbol",
         "source",
-        "symbols",
-        "snippet_summary",
-        "source_channels",
+        "snippet_compact",
         "outline_for_prompt",
-        "repo",
     }
 )
 _CONTEXT_BLOCK_KNOWN = frozenset(
@@ -243,11 +240,8 @@ def _merge_selector_item(row_index: int, raw: dict[str, Any]) -> tuple[dict[str,
         "file_path": raw.get("file_path", "") or "",
         "symbol": raw.get("symbol", "") or "",
         "source": raw.get("source", "") or "",
-        "symbols": list(raw.get("symbols") or []),
-        "snippet_summary": raw.get("snippet_summary") or "",
-        "source_channels": list(raw.get("source_channels") or []),
+        "snippet_compact": raw.get("snippet_compact") or "",
         "outline_for_prompt": list(raw.get("outline_for_prompt") or []),
-        "repo": raw.get("repo", "") or "",
     }
     return merged, extra
 
@@ -259,40 +253,30 @@ def _format_selector_item_body(
     tail: int,
 ) -> list[str]:
     lines: list[str] = []
-    lines.append(f"id: {merged['id']}")
-    lines.append(f"file_path: {merged['file_path']}")
-    lines.append(f"symbol: {merged['symbol']}")
-    lines.append(f"source: {merged['source']}")
-    lines.append("symbols:")
-    for x in merged["symbols"]:
-        lines.append(f"  - {x}")
-    ss = str(merged.get("snippet_summary") or "")
-    mode, first_c, last_c, full = split_preview_full(ss, head, tail)
-    _emit_preview_then_full(
-        lines,
-        base_name="snippet_summary",
-        head=head,
-        tail=tail,
-        first=first_c,
-        last=last_c,
-        full=full,
-        mode=mode,
-    )
-    lines.append("source_channels:")
-    for x in merged["source_channels"]:
-        lines.append(f"  - {x}")
-    lines.append("outline_for_prompt:")
+    lines.append(f"[{merged['id']}]")
+    lines.append(f"file: {merged['file_path']}")
+    lines.append(f"sym: {merged['symbol']}")
+    lines.append(f"src: {merged['source']}")
+    lines.append("")
+    lines.append("outline:")
     for entry in merged["outline_for_prompt"]:
         if isinstance(entry, dict):
-            lines.append("  -")
-            for dk in sorted(entry.keys()):
-                lines.append(f"      {dk}: {entry[dk]}")
+            nm = str(entry.get("name") or "")
+            code = str(entry.get("code") or "")
+            lines.append(f"- {nm}")
+            if code:
+                lines.append(code)
         else:
-            lines.append(f"  - {entry}")
-    lines.append(f"repo: {merged['repo']}")
+            lines.append(f"- {entry}")
+    sc = str(merged.get("snippet_compact") or "").strip()
+    if sc:
+        lines.append("")
+        lines.append("snippet_compact:")
+        lines.append(sc)
     if extra:
-        lines.append("extra_fields:")
-        lines.extend(_render_extra_fields_text_native(extra, "  "))
+        lines.append("")
+        lines.append("extra:")
+        lines.extend(_render_extra_fields_text_native(extra, ""))
     return lines
 
 
@@ -310,20 +294,22 @@ def normalize_selector_batch(
 ) -> str:
     head, tail = preview_line_limits
     out: list[str] = [
-        "[Global]",
         f"instruction: {instruction}",
         f"intent: {intent}",
         f"limit: {limit}",
+        "explored:",
     ]
-    _emit_multiline_key(out, "explored_block", explored_block or "")
+    if explored_block.strip():
+        for line in explored_block.splitlines():
+            out.append(line)
+    else:
+        out.append("-")
     out.append("")
     for i, raw in enumerate(items):
         if not isinstance(raw, dict):
             raw = {"value": raw}
         merged, extra = _merge_selector_item(i, raw)
-        out.append(_unit_delimiter("ITEM", i, False))
         out.extend(_format_selector_item_body(merged, extra, head, tail))
-        out.append(_unit_delimiter("ITEM", i, True))
         out.append("")
     return "\n".join(out).rstrip() + "\n"
 
@@ -355,18 +341,13 @@ def format_explored_locations_for_prompt(
     *,
     max_rows: int,
 ) -> str:
-    """Text-native list of inspected locations (replaces JSON in explored_block)."""
+    """Compact text list of inspected locations."""
     if not explored_location_keys:
         return ""
     rows = sorted(explored_location_keys, key=lambda t: (t[0], t[1]))[:max_rows]
-    lines = [
-        "Locations already inspected in this run (choose different file/symbol pairs "
-        "unless no alternative exists):",
-    ]
+    lines: list[str] = []
     for fp, sym in rows:
-        lines.append("  -")
-        lines.append(f"      file_path: {fp}")
-        lines.append(f"      symbol: {sym or ''}")
+        lines.append(f"- {fp}::{sym or ''}")
     return "\n".join(lines)
 
 
@@ -446,7 +427,7 @@ def normalize_analyzer(
     out.append("[Relationships]")
     _emit_multiline_key(out, "symbol_relationships_block", symbol_relationships_block or "")
     out.append("")
-    for i, blk in enumerate(context_blocks[:6]):
+    for i, blk in enumerate(context_blocks):
         if not isinstance(blk, dict):
             blk = {"value": blk}
         out.append(_unit_delimiter("CONTEXT_BLOCK", i, False))

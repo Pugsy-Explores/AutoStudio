@@ -6,8 +6,12 @@ Run with: pytest tests/test_prompt_regression.py -v
 """
 
 import pytest
+import re
+from pathlib import Path
 
 from agent.prompt_system import get_registry
+from agent.prompt_system.loader import _raw_to_template
+import yaml
 
 
 # Prompts that must load and have non-empty instructions
@@ -179,3 +183,44 @@ def test_react_action_prompt_variables():
     assert "(none yet)" in rendered
     assert "STRICT JSON ONLY" in rendered or "thought" in rendered
     assert "search" in rendered and "edit" in rendered and "finish" in rendered
+
+
+_UNESCAPED_FIELD_RE = re.compile(r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)\}(?!\})")
+
+
+@pytest.mark.parametrize(
+    "yaml_path",
+    sorted((Path(__file__).resolve().parents[1] / "agent" / "prompt_versions").rglob("*.yaml")),
+)
+def test_all_prompt_version_templates_inject_declared_fields(yaml_path: Path):
+    """
+    Repo-wide guardrail: any declared {field} placeholder in prompt text must be injectable.
+    This prevents malformed brace content from silently skipping variable substitution.
+    """
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    rel_name = yaml_path.relative_to(Path(__file__).resolve().parents[1] / "agent" / "prompt_versions")
+    name = str(rel_name.parent).replace("/", ".")
+    version = yaml_path.stem
+    tmpl = _raw_to_template(name, version, raw, source_path=str(yaml_path))
+
+    original_parts = [tmpl.instructions or "", tmpl.system_prompt or "", tmpl.user_prompt_template or ""]
+    field_names: set[str] = set()
+    for part in original_parts:
+        field_names.update(_UNESCAPED_FIELD_RE.findall(part))
+    if not field_names:
+        return
+    vars_map = {k: f"__INJECTED_{k}__" for k in field_names}
+
+    from agent.prompt_system.loader import _apply_prompt_variables
+
+    rendered = _apply_prompt_variables(tmpl, vars_map)
+    rendered_text = "\n".join(
+        [
+            rendered.instructions or "",
+            rendered.system_prompt or "",
+            rendered.user_prompt_template or "",
+        ]
+    )
+    for k, v in vars_map.items():
+        assert f"{{{k}}}" not in rendered_text
+        assert v in rendered_text

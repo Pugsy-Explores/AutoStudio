@@ -159,3 +159,32 @@ def test_scope_snippet_truncated_in_prompt():
     scoper.scope("x", cands)
     assert "aaaaaaaaaa" in captured[0]
     assert "a" * 11 not in captured[0]
+
+
+def test_scope_lenient_parsing_handles_fenced_non_json_spaces_tabs_newlines():
+    raw = (
+        "notes...\n"
+        "```text\n"
+        " selected_indices : [ 0,\\n\\t4 ] \n"
+        "```\n"
+    )
+    scoper = ExplorationScoper(llm_generate=lambda _: raw)
+    cands = [_c(f"{i}.py") for i in range(6)]
+    out = scoper.scope("instr", cands)
+    assert [c.file_path for c in out] == ["0.py", "4.py"]
+
+
+def test_scope_lenient_parsing_handles_quoted_key_equals_style():
+    raw = "'selected_indices' = [1, 3]"
+    scoper = ExplorationScoper(llm_generate=lambda _: raw)
+    cands = [_c(f"{i}.py") for i in range(6)]
+    out = scoper.scope("instr", cands)
+    assert [c.file_path for c in out] == ["1.py", "3.py"]
+
+
+def test_scope_parsing_handles_selected_indices_string_value():
+    raw = '{"selected_indices":"[0, 2]"}'
+    scoper = ExplorationScoper(llm_generate=lambda _: raw)
+    cands = [_c(f"{i}.py") for i in range(6)]
+    out = scoper.scope("instr", cands)
+    assert [c.file_path for c in out] == ["0.py", "2.py"]

@@ -84,6 +84,99 @@ system_prompt: |
 
   --------------------------------
 
+  DECISION PRIORITY (STRICT — FOLLOW IN ORDER):
+
+  You MUST evaluate actions in this order:
+
+  1. STOP
+     - If CURRENT UNDERSTANDING + KEY FINDINGS answer the instruction
+     - OR no meaningful action remains
+     → choose "stop"
+
+  2. ACT (PREFERRED OVER EXPLORE)
+     - If a concrete next step exists using available repository context
+     - Especially when:
+       - a file path is known → use open_file
+       - relevant symbols/functions are known → use search_code
+     → choose "act"
+
+  3. REPLAN
+     - If current approach has failed or is invalid
+
+  4. EXPLORE (LAST RESORT ONLY)
+     - ONLY if no other action is possible
+     - ONLY when a critical knowledge gap blocks progress
+
+  You MUST NOT skip higher-priority options.
+
+  --------------------------------
+
+  AVAILABLE vs MISSING SIGNALS (IMPORTANT):
+
+  CONTEXT may include:
+
+  - available_symbols: symbols/functions already discovered
+  - missing_symbols: symbols/functions required but not yet retrieved
+
+  You MUST use them as follows:
+
+  - If relevant available_symbols exist:
+    → DO NOT explore
+    → use open_file or search_code
+
+  - If missing_symbols exist:
+    → prefer search_code first
+    → use explore ONLY if repository search cannot resolve them
+
+  --------------------------------
+
+  DO NOT EXPLORE IF:
+
+  - The answer is already derivable from current findings
+  - A file path or symbol is already known
+  - search_code or open_file is sufficient
+  - The instruction is empty, invalid, or out of scope
+
+  In these cases:
+  → choose "act" or "stop"
+
+  --------------------------------
+
+  EXPLORE QUERY RULE (STRICT):
+
+  If decision = "explore":
+
+  - Query MUST target missing information
+  - Query MUST NOT repeat the instruction verbatim
+  - Query MUST include concrete signals:
+    - class name, function name, or file/module hint
+
+  Bad:
+  "How does this work?"
+
+  Good:
+  "ExplorationScoper implementation in agent_v2"
+
+  --------------------------------
+
+  TOOL BINDING (STRICT):
+
+  - "explore" → tool MUST be "explore"
+  - "act" → tool MUST be one of:
+    open_file | search_code | run_shell | edit | run_tests
+  - "stop" or "replan" → tool MUST be "none"
+
+  --------------------------------
+
+  SCHEMA CLARIFICATION (CRITICAL):
+
+  - tool = "search_code"
+  - step.action = "search"
+
+  DO NOT use "search_code" as step.action
+
+  --------------------------------
+
   WEB: search_web is disabled in this build — never output tool search_web.
 
   --------------------------------

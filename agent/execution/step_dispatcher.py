@@ -41,6 +41,9 @@ from agent.tools.react_registry import get_tool_by_name
 from agent.tools.run_tests import run_tests
 from agent.tools.validation_scope import resolve_inner_loop_validation
 from agent_v2.primitives import get_editor, get_shell
+from agent_v2.runtime.tool_mapper import coerce_to_tool_result, map_tool_result_to_execution_result
+from agent_v2.schemas.execution import ExecutionResult, ExecutionOutput, ExecutionError, ExecutionMetadata, ErrorType
+from datetime import datetime, timezone
 from config.agent_runtime import REACT_MODE
 from config.retrieval_config import (
     ANSWER_EVAL_SAMPLE_RATE,
@@ -1188,10 +1191,10 @@ def _edit_react(step: dict, state: AgentState) -> dict:
     }
 
 
-def _dispatch_react(step: dict, state: AgentState) -> dict:
+def _dispatch_react(step: dict, state: AgentState) -> ExecutionResult:
     """
     ReAct mode: direct tool execution via registry. No policy_engine.
-    Never blocks; all failures become observations (RETRYABLE, never FATAL).
+    Returns ExecutionResult (normalized) instead of raw dict.
     """
     action = (step.get("action") or "EXPLAIN").upper()
     react_name_by_action = {
@@ -1201,35 +1204,50 @@ def _dispatch_react(step: dict, state: AgentState) -> dict:
         Action.RUN_TEST.value: "run_tests",
     }
 
-    def _obs(err: str) -> dict:
-        """Return failure as observation; model decides next action."""
-        return {
-            "success": False,
-            "output": {},
-            "error": err,
-            "classification": ResultClassification.RETRYABLE_FAILURE.value,
-        }
+    def _obs(err: str, *, tool_name: str = "unknown") -> ExecutionResult:
+        """Return failure as ExecutionResult; model decides next action."""
+        sid = str(step.get("step_id") or step.get("id") or "unknown")
+        return ExecutionResult(
+            step_id=sid,
+            success=False,
+            status="failure",
+            output=ExecutionOutput(data={}, summary=f"Tool failed: {err}", full_output=None),
+            error=ExecutionError(type=ErrorType.tool_error, message=err, details={}),
+            metadata=ExecutionMetadata(
+                tool_name=tool_name,
+                duration_ms=0,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            ),
+        )
 
-    # Prefer explicit tool name when provided. This allows system-driven calls (e.g. bounded reads)
-    # while keeping the user-facing ReAct contract stable (LLM still emits canonical actions).
-    tool_name = (step.get("_react_action_raw") or "").strip() or react_name_by_action.get(action, "")
+    # Deep copy step before mutation
+    import copy
+    safe_step = copy.deepcopy(step)
+    
+    tool_name = (safe_step.get("_react_action_raw") or "").strip() or react_name_by_action.get(action, "")
     tool = get_tool_by_name(tool_name)
     if tool is None or tool.handler is None:
-        return _obs(f"Unknown action for ReAct: {action}. Use search, open_file, edit, run_tests, or finish.")
+        return _obs(f"Unknown action for ReAct: {action}. Use search, open_file, edit, run_tests, or finish.", tool_name=tool_name or "unknown")
+
     try:
-        args = step.get("_react_args")
+        args = safe_step.get("_react_args") if isinstance(safe_step.get("_react_args"), dict) else None
         if not isinstance(args, dict):
             args = {}
             if action == Action.SEARCH.value:
-                args["query"] = step.get("query") or step.get("description") or ""
+                args["query"] = safe_step.get("query") or safe_step.get("description") or ""
             elif action == Action.READ.value:
-                args["path"] = step.get("path") or step.get("description") or step.get("file") or ""
+                args["path"] = safe_step.get("path") or safe_step.get("description") or safe_step.get("file") or ""
             elif action == Action.EDIT.value:
-                args["instruction"] = step.get("description") or ""
-                args["path"] = step.get("path") or step.get("edit_target_path") or ""
-        return tool.handler(args, state)
+                args["instruction"] = safe_step.get("description") or ""
+                args["path"] = safe_step.get("path") or safe_step.get("edit_target_path") or ""
+
+        raw_result = tool.handler(args, state)
+        step_id = str(safe_step.get("step_id") or safe_step.get("id") or "unknown")
+        tool_result = coerce_to_tool_result(raw_result, tool_name=tool_name)
+        return map_tool_result_to_execution_result(tool_result, step_id=step_id)
     except Exception as e:
-        return _obs(str(e))
+        logger.warning("Failed to normalize ReAct result: %s", e)
+        return _obs(f"Normalization failed: {e}", tool_name=tool_name or "unknown")
 
 
 def dispatch(step: dict, state: AgentState) -> dict:
@@ -1239,7 +1257,7 @@ def dispatch(step: dict, state: AgentState) -> dict:
     """
     # ReAct mode: bypass policy_engine entirely. Direct tool execution only.
     if REACT_MODE and (state.context or {}).get("react_mode"):
-        return _dispatch_react(step, state)
+        return _dispatch_react(step, state).model_dump()
 
     try:
         validate_step_input(step)

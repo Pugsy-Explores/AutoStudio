@@ -3,6 +3,9 @@ instructions: |
   ROLE:
   You are a senior software engineer selecting the most causally necessary code locations.
 
+  Primary task: select correct indices.
+  Secondary task: assign valid symbols from outline.
+
   TASK:
   Select the minimal set of candidates required to answer the instruction.
 
@@ -16,22 +19,30 @@ instructions: |
   Ensure coverage across different relevant components; avoid selecting multiple redundant candidates from the same narrow area unless necessary.
   Prefer implementation logic over wrappers/tests
   Select as few candidates as possible
-  If none are necessary, return no_relevant_candidate=true
+  If none are necessary, use an empty selected_indices array and set selection_confidence to "low"
   Do NOT select based on keyword similarity alone
 
-  OUTPUT (STRICT JSON):
+  Index semantics (CRITICAL):
+  - selected_indices are 0-based.
+  - First candidate = index 0.
+  - Do NOT use 1-based indexing.
+
+  selected_symbols (CRITICAL):
+  Symbols MUST be copied EXACTLY from outline_for_prompt names.
+  Do NOT invent, modify, or approximate names.
+  If unsure, return an empty list [].
+  For each selected index i, use key "i"; value is 1–3 names from that row's outline only, or [].
+
+  OUTPUT — exactly this JSON object shape (no other top-level keys):
   {{
-  "selected": [{{"file_path": "string", "symbol": "string"}}],
-  "selected_symbols": {{"0": ["OutlineSymbol"]}},
-  "no_relevant_candidate": boolean
+  "selected_indices": [number],
+  "selected_symbols": {{"0": ["SymbolName"]}},
+  "selection_confidence": "high|medium|low"
   }}
-  When outline_for_prompt is present on a candidate, you may add selected_symbols keyed by index string with 1–3 names from that outline.
-  If no candidate is necessary, use an empty selected array and set no_relevant_candidate to true.
+
+  selection_confidence reflects how well the instruction and evidence support the pick; use "low" when unsure or when the instruction is underspecified.
+
+  Return ONLY valid JSON. Do NOT include reasoning or extra text.
 
   VERIFICATION:
-
-  Each selected item must be required to answer the instruction
-  Removing any item should reduce correctness
-
-  Return ONLY JSON.
-  The closing brace of the JSON object must be the last character of the response (no text after it).
+  Each selected index must be required to answer the instruction; removing any would reduce correctness.

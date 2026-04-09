@@ -76,8 +76,19 @@ def exploration_to_planner_context(
     ``state`` then ``exploration.query_intent`` (adapter mirror).
     """
     qi = query_intent
+    available_symbols: list[str] = []
+    missing_symbols: list[str] = []
     if qi is None and state is not None:
         qi = read_query_intent_from_agent_state(state)
+    if state is not None:
+        ctx = getattr(state, "context", None)
+        if isinstance(ctx, dict):
+            av = ctx.get("exploration_available_symbols")
+            ms = ctx.get("exploration_missing_symbols")
+            if isinstance(av, list):
+                available_symbols = [str(x).strip() for x in av if str(x).strip()]
+            if isinstance(ms, list):
+                missing_symbols = [str(x).strip() for x in ms if str(x).strip()]
     if qi is None and getattr(exploration, "query_intent", None) is not None:
         qi = exploration.query_intent
     eb = effective_exploration_budget(qi)
@@ -88,6 +99,8 @@ def exploration_to_planner_context(
             query_intent=qi,
             exploration_budget=eb,
             validation_feedback=validation_feedback,
+            available_symbols=available_symbols,
+            missing_symbols=missing_symbols,
         )
     reason = _termination_reason(exploration)
     ins = ExplorationInsufficientContext(
@@ -104,6 +117,8 @@ def exploration_to_planner_context(
         query_intent=qi,
         exploration_budget=eb,
         validation_feedback=validation_feedback,
+        available_symbols=available_symbols,
+        missing_symbols=missing_symbols,
     )
 
 

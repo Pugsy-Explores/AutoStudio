@@ -96,3 +96,22 @@ def test_planner_decision_act_qwen_yaml_braces_allow_str_format_substitution() -
     assert ctx.get("instruction") == "my task"
     assert "ctx body" in (ctx.get("context_block") or "")
 
+
+def test_extract_prompt_context_json_blob_does_not_log_incidental_selected_indices() -> None:
+    """
+    Selector batch user text often embeds JSON-looking snippets in code (e.g. test data).
+    Naive { ... } scanning must not surface those as template variable `selected_indices`.
+    """
+    user = """instruction: task
+
+[0]
+file: x.py
+outline:
+- foo
+def test():
+    return {"selected_indices": [0], "ok": true}
+"""
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": user}]
+    ctx = _extract_prompt_context(messages)
+    assert "selected_indices" not in ctx
+

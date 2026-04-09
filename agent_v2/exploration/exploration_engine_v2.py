@@ -46,6 +46,9 @@ from agent_v2.config import (
     EXPLORATION_DISCOVERY_RERANK_MIN_CANDIDATES,
     EXPLORATION_DISCOVERY_RERANK_USE_FUSION,
     EXPLORATION_DISCOVERY_SNIPPET_MERGE_MAX_CHARS,
+    EXPLORATION_PENDING_EXPANSION_SYMBOLS_TOP_K,
+    MAX_ANALYZER_CONTEXT_CHARS,
+    MAX_ANALYZER_SYMBOL_CONTEXT_CHARS,
     exploration_symbol_graph_lookup_enabled,
     get_project_root,
 )
@@ -65,9 +68,14 @@ from agent_v2.exploration.exploration_llm_synthesizer import apply_optional_llm_
 from agent_v2.exploration.exploration_result_adapter import ExplorationResultAdapter
 from agent_v2.exploration.exploration_working_memory import ExplorationWorkingMemory
 from agent_v2.exploration.understanding_analyzer import UnderstandingAnalyzer
+from agent_v2.exploration.selector_outline_injection import (
+    ANALYZER_CODE_TRIM_NOTICE,
+    build_bounded_symbol_context,
+)
 from agent_v2.schemas.execution import ExecutionResult
 from agent_v2.schemas.final_exploration import FinalExplorationSchema
 from agent_v2.schemas.exploration import (
+    ContextBlock,
     ExplorationCandidate,
     ExplorationContent,
     ExplorationDecision,
@@ -683,15 +691,41 @@ class ExplorationEngineV2:
                         analyze_span = None
                 understanding: UnderstandingResult | None = None
                 try:
-                    context_blocks, routing_meta = self._build_context_blocks_for_analysis(
+                    read_blocks, routing_meta = self._build_context_blocks_for_analysis(
                         intent,
                         [read_packet],
+                    )
+                    symbol_budget = min(MAX_ANALYZER_SYMBOL_CONTEXT_CHARS, MAX_ANALYZER_CONTEXT_CHARS)
+                    read_budget = max(0, MAX_ANALYZER_CONTEXT_CHARS - symbol_budget)
+                    read_blocks_bounded = self._bound_context_blocks_by_chars(
+                        read_blocks,
+                        max_chars=read_budget,
+                    )
+                    selector_symbol_blocks = self._build_analyzer_symbol_context_blocks(
+                        target,
+                        max_chars=symbol_budget,
+                    )
+                    # Analyzer currently consumes at most 6 context blocks; reserve one slot
+                    # for symbol expansion block when present so selector symbols are not dropped.
+                    if selector_symbol_blocks and len(read_blocks_bounded) > 5:
+                        read_blocks_bounded = read_blocks_bounded[:5]
+                    context_blocks = read_blocks_bounded + selector_symbol_blocks
+                    context_blocks = self._bound_context_blocks_by_chars(
+                        context_blocks,
+                        max_chars=MAX_ANALYZER_CONTEXT_CHARS,
                     )
                     if exploration_outer is not None and hasattr(exploration_outer, "event"):
                         try:
                             exploration_outer.event(
                                 name="exploration.routing",
-                                metadata=routing_meta,
+                                metadata={
+                                    **routing_meta,
+                                    "read_context_blocks": len(read_blocks_bounded),
+                                    "selector_symbol_context_blocks": len(selector_symbol_blocks),
+                                    "analyzer_context_blocks": len(context_blocks),
+                                    "max_analyzer_context_chars": MAX_ANALYZER_CONTEXT_CHARS,
+                                    "max_analyzer_symbol_context_chars": symbol_budget,
+                                },
                             )
                         except Exception:
                             pass
@@ -770,6 +804,27 @@ class ExplorationEngineV2:
                     selection_confidence="medium",
                     coverage_signal="unknown",
                 )
+                merged_symbols = self._merge_expansion_symbols(
+                    understanding.required_symbols,
+                    sel_batch.expanded_symbols,
+                    cap=EXPLORATION_PENDING_EXPANSION_SYMBOLS_TOP_K,
+                )
+                ex_state.pending_expansion_symbols = merged_symbols
+                for sym in merged_symbols:
+                    if sym in (understanding.required_symbols or []):
+                        ex_state.missing_symbols.add(sym)
+                if exploration_outer is not None and hasattr(exploration_outer, "event"):
+                    try:
+                        exploration_outer.event(
+                            name="exploration.signal_flow",
+                            metadata={
+                                "selector_expanded_symbols": list(sel_batch.expanded_symbols),
+                                "analyzer_required_symbols": list(understanding.required_symbols),
+                                "final_expansion_symbols": list(merged_symbols),
+                            },
+                        )
+                    except Exception:
+                        pass
                 control = EngineDecisionMapper.decide_control(
                     understanding,
                     sel_batch,
@@ -790,13 +845,20 @@ class ExplorationEngineV2:
                     rh = intent.relationship_hint
                     if rh in ("callers", "callees", "both"):
                         ex_state.expand_direction_hint = rh
-                    if not target.symbol:
-                        continue
                     if ex_state.expansion_depth >= EXPLORATION_EXPAND_MAX_DEPTH:
                         continue
-                    if target.symbol in ex_state.expanded_symbols:
+                    expand_symbol = ""
+                    for sym in list(ex_state.pending_expansion_symbols):
+                        s = str(sym).strip()
+                        if not s or s in ex_state.expanded_symbols:
+                            continue
+                        expand_symbol = s
+                        break
+                    if not expand_symbol and target.symbol and target.symbol not in ex_state.expanded_symbols:
+                        expand_symbol = target.symbol
+                    if not expand_symbol:
                         continue
-                    ex_state.expanded_symbols.add(target.symbol)
+                    ex_state.expanded_symbols.add(expand_symbol)
                     expand_span: Any = None
                     if exploration_outer is not None and hasattr(exploration_outer, "span"):
                         try:
@@ -804,6 +866,7 @@ class ExplorationEngineV2:
                                 "exploration.expand",
                                 input={
                                     "symbol": (target.symbol or "")[:500],
+                                "expand_symbol": expand_symbol[:500],
                                     "file_path": str(target.file_path)[:1000],
                                 },
                             )
@@ -813,7 +876,7 @@ class ExplorationEngineV2:
                     skip_files, skip_symbols = self._expand_skip_sets(ex_state)
                     try:
                         expanded, expand_result = self._graph_expander.expand(
-                            target.symbol or "",
+                            expand_symbol,
                             target.file_path,
                             state,
                             max_nodes=EXPLORATION_EXPAND_MAX_NODES,
@@ -845,20 +908,20 @@ class ExplorationEngineV2:
                         expand_span,
                         output=_expand_tool_langfuse_output(expanded, expand_result),
                     )
-                    evidence.append(("expansion", {"symbol": target.symbol or ""}, expand_result))
+                    evidence.append(("expansion", {"symbol": expand_symbol}, expand_result))
                     ex_tool = getattr(getattr(expand_result, "metadata", None), "tool_name", None)
                     ex_summary = ""
                     if expand_result.output:
                         ex_summary = str(expand_result.output.summary or "").strip()
                     memory.add_expansion_evidence_row(
                         canon,
-                        target.symbol,
+                        expand_symbol,
                         ex_summary,
                         success=bool(expand_result.success),
                         tool_name=str(ex_tool or "graph_lookup"),
                     )
                     if isinstance(ex_data, dict):
-                        memory.add_relationships_from_expand(canon, target.symbol, ex_data)
+                        memory.add_relationships_from_expand(canon, expand_symbol, ex_data)
                     if expanded:
                         ex_state.relationships_found = True
                         self._enqueue_targets(
@@ -1028,6 +1091,10 @@ class ExplorationEngineV2:
             termination_reason = "max_steps" if ex_state.steps_taken >= EXPLORATION_MAX_STEPS else "stopped"
         self._last_termination_reason = termination_reason
         self.last_working_memory = memory
+        ctx = getattr(state, "context", None)
+        if isinstance(ctx, dict):
+            ctx["exploration_available_symbols"] = sorted(ex_state.available_symbols | ex_state.expanded_symbols)
+            ctx["exploration_missing_symbols"] = sorted(ex_state.missing_symbols)
         return self._build_result_from_memory(
             memory,
             instruction,
@@ -1240,18 +1307,14 @@ class ExplorationEngineV2:
 
         symbol_queries = list(dict.fromkeys(intent.symbols))[:DISCOVERY_SYMBOL_CAP]
         text_queries = list(dict.fromkeys(intent.keywords))[:DISCOVERY_TEXT_CAP]
-        inject_kw = list(dict.fromkeys(getattr(ex_state, "discovery_keyword_inject", None) or []))[
-            :2
-        ]
+        inject_kw = list(dict.fromkeys(getattr(ex_state, "discovery_keyword_inject", None) or []))[:]
         if inject_kw and refine_phase:
             text_queries = list(dict.fromkeys(text_queries + inject_kw))[:DISCOVERY_TEXT_CAP]
             ex_state.discovery_keyword_inject = []
         regex_src = getattr(intent, "regex_patterns", None)
         if not isinstance(regex_src, list):
             regex_src = []
-        regex_queries = list(dict.fromkeys(str(x) for x in regex_src if str(x).strip()))[
-            :DISCOVERY_REGEX_CAP
-        ]
+        regex_queries = list(dict.fromkeys(str(x) for x in regex_src if str(x).strip()))[:DISCOVERY_REGEX_CAP]
 
         def _collect_pairs(
             query_type: Literal["symbol", "regex", "text"], queries: list[str]
@@ -1453,6 +1516,164 @@ class ExplorationEngineV2:
             )
         return rows
 
+    @staticmethod
+    def _bound_context_blocks_by_chars(
+        blocks: list[ContextBlock],
+        *,
+        max_chars: int,
+    ) -> list[ContextBlock]:
+        if max_chars <= 0:
+            return []
+        out: list[ContextBlock] = []
+        used = 0
+        for b in blocks:
+            text = str(getattr(b, "content", "") or "")
+            if not text.strip():
+                continue
+            if used >= max_chars:
+                break
+            remaining = max_chars - used
+            if len(text) <= remaining:
+                out.append(b)
+                used += len(text)
+                continue
+            clipped = text[:remaining]
+            out.append(b.model_copy(update={"content": clipped}))
+            break
+        return out
+
+    @staticmethod
+    def _collect_all_selected_symbol_names(batch: SelectorBatchResult | None) -> list[str]:
+        if batch is None:
+            return []
+        names: list[str] = []
+        seen: set[str] = set()
+        for k in sorted(batch.selected_symbols.keys(), key=lambda x: int(x) if str(x).isdigit() else 10**9):
+            for raw in batch.selected_symbols.get(k, []) or []:
+                s = str(raw).strip()
+                if not s or s in seen:
+                    continue
+                seen.add(s)
+                names.append(s)
+        for raw in batch.expanded_symbols or []:
+            s = str(raw).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            names.append(s)
+        return sorted(names, key=lambda x: x.lower())
+
+    def _build_analyzer_symbol_context_blocks(
+        self,
+        target: ExplorationTarget,
+        *,
+        max_chars: int,
+    ) -> list[ContextBlock]:
+        """
+        Build bounded symbol context for analyzer from ALL selected selector symbols.
+        Full code first by deterministic budget, overflow as `[trimmed]` signatures.
+        """
+        batch = target.selector_batch
+        names = self._collect_all_selected_symbol_names(batch)
+        if not names:
+            return []
+        if batch is None:
+            return []
+        base_root = get_project_root()
+
+        idx_to_file: dict[str, str] = {}
+        for i, c in enumerate(batch.selected_candidates):
+            top_idx = batch.selected_top_indices[i] if i < len(batch.selected_top_indices) else i
+            canon = self._canonical_path(c.file_path, base_root=base_root)
+            if canon:
+                idx_to_file[str(top_idx)] = canon
+
+        all_candidate_files = sorted(set(idx_to_file.values()))
+        for c in batch.selected_candidates:
+            canon = self._canonical_path(c.file_path, base_root=base_root)
+            if canon and canon not in all_candidate_files:
+                all_candidate_files.append(canon)
+
+        by_pair: dict[tuple[str, str], dict[str, str]] = {}
+        for canon in all_candidate_files:
+            for row in self._outline_full_for_file(canon):
+                n = str(row.get("name") or "").strip()
+                if not n:
+                    continue
+                rec = dict(row)
+                rec["file_path"] = canon
+                by_pair[(canon, n)] = rec
+
+        selected_rows: list[dict[str, str]] = []
+        selected_seen: set[tuple[str, str]] = set()
+        # First, keyed selection by selected_symbols index->candidate file.
+        for k in sorted(batch.selected_symbols.keys(), key=lambda x: int(x) if str(x).isdigit() else 10**9):
+            canon = idx_to_file.get(str(k), "")
+            if not canon:
+                continue
+            for raw_name in batch.selected_symbols.get(k, []) or []:
+                name = str(raw_name).strip()
+                pair = (canon, name)
+                row = by_pair.get(pair)
+                if row is None or pair in selected_seen:
+                    continue
+                selected_seen.add(pair)
+                selected_rows.append(row)
+        # Then fill missing from expanded/all names by searching candidate files.
+        for name in names:
+            found = None
+            for canon in all_candidate_files:
+                pair = (canon, name)
+                if pair in selected_seen:
+                    found = pair
+                    break
+                row = by_pair.get(pair)
+                if row is not None:
+                    found = pair
+                    break
+            if not found:
+                continue
+            if found in selected_seen:
+                continue
+            row = by_pair.get(found)
+            if row is None:
+                continue
+            selected_seen.add(found)
+            selected_rows.append(row)
+
+        bounded = build_bounded_symbol_context(
+            selected_rows,
+            max_code_chars=max_chars,
+            trim_notice=ANALYZER_CODE_TRIM_NOTICE,
+        )
+        if not bounded:
+            return []
+
+        lines: list[str] = []
+        for r in bounded:
+            name = str(r.get("name") or "").strip()
+            fp = str(r.get("file_path") or target.file_path)
+            code = str(r.get("code") or "")
+            if not code.strip():
+                continue
+            lines.append(f"{fp}::{name}")
+            lines.append(code)
+            lines.append("")
+        content = "\n".join(lines).strip()
+        if not content:
+            return []
+        return [
+            ContextBlock(
+                file_path=str(target.file_path),
+                start=1,
+                end=max(1, len(content.splitlines())),
+                content=content,
+                origin_reason="selector_symbol_context_bounded",
+                symbol=None,
+                relationship_refs=[],
+            )
+        ]
+
     def _symbol_relationships_block_for_target(self, target: ExplorationTarget, state: Any) -> str:
         if not ENABLE_SYMBOL_AWARE_EXPLORATION:
             return ""
@@ -1560,7 +1781,7 @@ class ExplorationEngineV2:
                 scope_span = None
         try:
             if need_scope_llm:
-                scoped = self._scoper.scope(
+                scoped = self.scope(
                     instruction,
                     capped,
                     lf_scope_span=scope_span,
@@ -1589,6 +1810,33 @@ class ExplorationEngineV2:
                 obs.current_span = None
             _lf_end(scope_span)
 
+        # Observability: log exact scoper->selector index handoff to avoid
+        # confusing selector-local indices with scoper selection indices.
+        capped_obj_idx = {id(c): i for i, c in enumerate(capped)}
+        scoped_indices_in_capped: list[int] = []
+        for c in scoped:
+            idx = capped_obj_idx.get(id(c))
+            if idx is not None:
+                scoped_indices_in_capped.append(idx)
+        if len(scoped_indices_in_capped) != len(scoped):
+            # Fallback match for any missed identity mapping (defensive).
+            used_fallback: set[int] = set(scoped_indices_in_capped)
+            for c in scoped:
+                idx = capped_obj_idx.get(id(c))
+                if idx is not None:
+                    continue
+                for j, cand in enumerate(capped):
+                    if j in used_fallback:
+                        continue
+                    if (
+                        cand.file_path == c.file_path
+                        and (cand.symbol or "") == (c.symbol or "")
+                        and (cand.source or "") == (c.source or "")
+                    ):
+                        scoped_indices_in_capped.append(j)
+                        used_fallback.add(j)
+                        break
+
         select_span: Any = None
         if expl_parent is not None and hasattr(expl_parent, "span"):
             try:
@@ -1600,6 +1848,15 @@ class ExplorationEngineV2:
         try:
             intent_text = ", ".join([s for s in (intent.intents or []) if str(s).strip()]) or "no intent"
             top_slice = scoped[:EXPLORATION_SELECTOR_TOP_K]
+            top_slice_indices_in_capped = scoped_indices_in_capped[: len(top_slice)]
+            _LOG.info(
+                "exploration.selector_handoff scoper_selected_indices=%s selector_prompt_indices=%s "
+                "scoped_n=%s prompt_n=%s",
+                scoped_indices_in_capped,
+                top_slice_indices_in_capped,
+                len(scoped),
+                len(top_slice),
+            )
             outline_rows = self._outline_rows_for_selector_batch(top_slice, instruction, intent_text)
             ranked = self._selector.select_batch(
                 instruction,
@@ -1616,6 +1873,10 @@ class ExplorationEngineV2:
                 obs.current_span = None
             _lf_end(select_span)
         ex_state.last_selector_batch = ranked
+        for sym in ranked.expanded_symbols:
+            s = str(sym).strip()
+            if s:
+                ex_state.available_symbols.add(s)
         if (
             ENABLE_SYMBOL_AWARE_EXPLORATION
             and EXPLORATION_SYMBOL_AWARE_LOG_PROGRESS
@@ -1676,6 +1937,25 @@ class ExplorationEngineV2:
             )
         self._enqueue_targets(ex_state, targets)
         return False, ranked
+
+    @staticmethod
+    def _merge_expansion_symbols(
+        required_symbols: list[str],
+        expanded_symbols: list[str],
+        *,
+        cap: int,
+    ) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for sym in list(required_symbols or []) + list(expanded_symbols or []):
+            s = str(sym).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+            if len(out) >= cap:
+                break
+        return out
 
     @staticmethod
     def _canonical_path(path: str, *, base_root: str) -> str:

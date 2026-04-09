@@ -141,9 +141,7 @@ DISCOVERY_MERGE_TOP_K: int = _int_env("AGENT_V2_DISCOVERY_MERGE_TOP_K", 50)
 DISCOVERY_SEARCH_BATCH_MAX_WORKERS: int = max(
     1, min(16, _int_env("AGENT_V2_DISCOVERY_SEARCH_BATCH_MAX_WORKERS", 1))
 )
-DISCOVERY_QUERY_POOL_MAX_WORKERS: int = max(
-    1, min(8, _int_env("AGENT_V2_DISCOVERY_QUERY_POOL_MAX_WORKERS", 1))
-)
+DISCOVERY_QUERY_POOL_MAX_WORKERS: int = max(1, _int_env("AGENT_V2_DISCOVERY_QUERY_POOL_MAX_WORKERS", 3))
 # Discovery: file-level merge → optional cross-encoder rerank → post-rerank cap (before scoper).
 EXPLORATION_DISCOVERY_RERANK_ENABLED: bool = (
     _int_env("AGENT_V2_EXPLORATION_DISCOVERY_RERANK_ENABLED", 1) == 1
@@ -207,7 +205,10 @@ def exploration_test_repos_resolved() -> list[dict[str, Any]]:
         return json.loads(EXPLORATION_TEST_REPOS_JSON)
     return list(EXPLORATION_TEST_REPOS)
 # Selector/scoper/read/expand limits
-EXPLORATION_SELECTOR_TOP_K: int = _int_env("AGENT_V2_EXPLORATION_SELECTOR_TOP_K", 10)
+# Keep selector batch candidate breadth at or above 2 globally.
+EXPLORATION_SELECTOR_TOP_K: int = max(
+    2, _int_env("AGENT_V2_EXPLORATION_SELECTOR_TOP_K", 10)
+)
 EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K: int = _int_env(
     "AGENT_V2_EXPLORATION_SELECTOR_EXPLORED_BLOCK_TOP_K", 16
 )
@@ -218,6 +219,17 @@ ENABLE_SYMBOL_AWARE_EXPLORATION: bool = (
 # Max outline entries per file shown to the batch selector after deterministic rank (plan: 10–15).
 EXPLORATION_OUTLINE_TOP_K_FOR_SELECTOR: int = max(
     1, min(30, _int_env("AGENT_V2_EXPLORATION_OUTLINE_TOP_K_FOR_SELECTOR", 12))
+)
+# Cap total ``code`` payload in selector ``outline_for_prompt`` (full bodies + signatures + trim notice).
+MAX_SELECTOR_CODE_CHARS: int = max(
+    1000, _int_env("AGENT_V2_MAX_SELECTOR_CODE_CHARS", 45000)
+)
+# Analyzer context caps for deterministic selector-symbol expansion integration.
+MAX_ANALYZER_CONTEXT_CHARS: int = max(
+    1000, _int_env("AGENT_V2_MAX_ANALYZER_CONTEXT_CHARS", 45000)
+)
+MAX_ANALYZER_SYMBOL_CONTEXT_CHARS: int = max(
+    500, _int_env("AGENT_V2_MAX_ANALYZER_SYMBOL_CONTEXT_CHARS", 22500)
 )
 # Callers/callees per symbol side in analyzer SYMBOL RELATIONSHIPS block.
 EXPLORATION_SYMBOL_GRAPH_CONTEXT_K: int = max(
@@ -250,6 +262,9 @@ EXPLORATION_READ_MAX_CHARS: int = _int_env("AGENT_V2_EXPLORATION_READ_MAX_CHARS"
 EXPLORATION_READ_HEAD_MAX_LINES: int = _int_env("AGENT_V2_EXPLORATION_READ_HEAD_MAX_LINES", 200)
 EXPLORATION_EXPAND_MAX_NODES: int = _int_env("AGENT_V2_EXPLORATION_EXPAND_MAX_NODES", 10)
 EXPLORATION_EXPAND_MAX_DEPTH: int = _int_env("AGENT_V2_EXPLORATION_EXPAND_MAX_DEPTH", 1)
+EXPLORATION_PENDING_EXPANSION_SYMBOLS_TOP_K: int = _int_env(
+    "AGENT_V2_EXPLORATION_PENDING_EXPANSION_SYMBOLS_TOP_K", 8
+)
 # Adaptive MPA routing/context budgets
 EXPLORATION_ROUTING_SIMPLE_MAX_LINES: int = _int_env(
     "AGENT_V2_EXPLORATION_ROUTING_SIMPLE_MAX_LINES", 250
@@ -489,6 +504,8 @@ def validate_config(config: AgentV2Config) -> None:
         raise ValueError("EXPLORATION_EXPAND_MAX_NODES must be >= 1")
     if EXPLORATION_EXPAND_MAX_DEPTH < 1:
         raise ValueError("EXPLORATION_EXPAND_MAX_DEPTH must be >= 1")
+    if EXPLORATION_PENDING_EXPANSION_SYMBOLS_TOP_K < 1:
+        raise ValueError("EXPLORATION_PENDING_EXPANSION_SYMBOLS_TOP_K must be >= 1")
     if EXPLORATION_ROUTING_SIMPLE_MAX_LINES < 1:
         raise ValueError("EXPLORATION_ROUTING_SIMPLE_MAX_LINES must be >= 1")
     if EXPLORATION_ROUTING_COMPLEX_MAX_LINES < 1:

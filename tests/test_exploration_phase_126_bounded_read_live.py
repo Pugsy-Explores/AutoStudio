@@ -105,7 +105,9 @@ def _make_runner_with_capture(monkeypatch, project_root: Path):
         raw = (step.get("_react_action_raw") or "").strip()
         if raw:
             captured.append(raw)
-        return _dispatch_react(step, state)
+        # _dispatch_react now returns ExecutionResult; convert to dict for test compatibility
+        result = _dispatch_react(step, state)
+        return result.model_dump()
 
     runner = ExplorationRunner(
         action_generator=ActionGenerator(fn=_next_action, exploration_fn=_exploration_action_fn),
@@ -190,11 +192,13 @@ class TestPhase126BoundedReadLive:
 
         rt = create_runtime()
 
-        def _capture_execute(step: dict, state: Any) -> dict:
-            raw = (step.get("_react_action_raw") or "").strip()
-            if raw:
-                captured.append(raw)
-            return _dispatch_react(step, state)
+def _capture_execute(step: dict, state: Any) -> dict:
+        raw = (step.get("_react_action_raw") or "").strip()
+        if raw:
+            captured.append(raw)
+        # _dispatch_react now returns ExecutionResult; convert to dict for test compatibility
+        result = _dispatch_react(step, state)
+        return result.model_dump()
 
         capture_dispatcher = Dispatcher(execute_fn=_capture_execute)
         _wire_capture_dispatcher(rt, capture_dispatcher)
