@@ -55,6 +55,19 @@ def get_conversation_sessions_dir() -> str:
     return str(Path(".agent_memory/sessions").resolve())
 
 
+def get_semantic_memory_dir() -> Path:
+    """
+    Root directory for semantic facts (Phase 5.3); facts live at ``facts.jsonl`` under this path.
+
+    Env ``AGENT_V2_SEMANTIC_MEMORY_DIR``: optional override (expanded, resolved).
+    Default: ``.agent_memory/semantic`` under the current working directory.
+    """
+    raw = os.environ.get("AGENT_V2_SEMANTIC_MEMORY_DIR")
+    if raw is not None and str(raw).strip():
+        return Path(str(raw).strip()).expanduser().resolve()
+    return Path(".agent_memory/semantic").resolve()
+
+
 def get_agent_v2_episodic_log_dir() -> str | None:
     """
     Root directory for TraceEmitter JSONL execution logs (Phase 5.1 episodic memory).
