@@ -9,8 +9,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional, Protocol
 
+from agent_v2.runtime.dag_scheduler import DagScheduler, SchedulerResult
 from agent_v2.runtime.plan_compiler import compile_plan, tasks_by_id
-from agent_v2.runtime.phase1_tool_exposure import PLAN_STEP_TO_LEGACY_REACT_ACTION
 from agent_v2.runtime.replanner import Replanner, merge_preserved_completed_steps
 from agent_v2.runtime.session_memory import SessionMemory
 from agent_v2.runtime.tool_mapper import coerce_to_tool_result, map_tool_result_to_execution_result
@@ -161,6 +161,9 @@ class DagExecutor:
         self._tasks_by_id: dict[str, ExecutionTask] = {}
         self._active_plan_id: str | None = None
         self._persistent_completed_ids: set[str] = set()
+
+        # Create explicit scheduler
+        self._scheduler = DagScheduler(dispatcher, argument_generator, policy)
 
     def get_tasks_by_id(self) -> dict[str, ExecutionTask]:
         return dict(self._tasks_by_id)
@@ -334,27 +337,41 @@ class DagExecutor:
     def _run_graph_to_event(
         self, plan: PlanDocument, state: Any
     ) -> tuple[str] | tuple[str, ExecutionTask, ExecutionResult]:
+        """Use explicit scheduler instead of implicit loop."""
         self._ensure_tasks(plan)
         self._publish_progress_metadata(state, plan)
-        max_rounds = len(self._tasks_by_id) + 5
-        for _ in range(max_rounds):
-            completed = self._completed_ids()
-            if len(completed) == len(self._tasks_by_id):
-                return ("completed",)
-            ready = TaskScheduler.ready_tasks(self._tasks_by_id, completed)
-            if not ready:
-                out = self._failure_or_deadlock_when_starved()
-                if out[0] == "deadlock":
-                    return ("deadlock",)
-                return out
-            task = ready[0]
-            task = task.model_copy(update={"status": "ready"})
-            self._tasks_by_id[task.id] = task
-            result = self._execute_task_with_retries(task, state)
-            self._publish_progress_metadata(state, plan)
-            if not result.success:
-                return ("failed", self._tasks_by_id[task.id], result)
-        return ("deadlock",)
+
+        # Snapshot arguments before execution
+        tasks = self._snapshot_all_arguments(state)
+
+        # Run scheduler
+        result = self._scheduler.run_scheduler(tasks, state)
+
+        # Update internal state from scheduler result
+        self._tasks_by_id = self._scheduler._tasks_by_id
+        self._completed_ids = self._scheduler._completed_ids
+        self._persistent_completed_ids.update(self._completed_ids)
+        self._publish_progress_metadata(state, plan)
+
+        # Record traces for all completed tasks
+        for task in self._tasks_by_id.values():
+            if task.status == "completed" and task.last_result:
+                self.trace_emitter.record_execution_task(
+                    task, task.last_result, execution_attempts=task.attempts
+                )
+                self._update_state_history(state, task, str(task.last_result.output.summary or ""))
+            elif task.status == "failed" and task.last_result:
+                self.trace_emitter.record_execution_task(
+                    task, task.last_result, execution_attempts=task.attempts
+                )
+
+        # Map scheduler result to event tuple
+        if result.status == "success":
+            return ("completed",)
+        elif result.status == "failed" and result.failed_task:
+            return ("failed", result.failed_task, result.last_result)
+        else:
+            return ("deadlock",)
 
     def run_one_step(
         self,
@@ -394,9 +411,8 @@ class DagExecutor:
                 }
             return self.finalize_run(state, plan, "failed")
 
-        task = ready[0]
-        task = task.model_copy(update={"status": "ready"})
-        self._tasks_by_id[task.id] = task
+        # For single-step execution, use the legacy retry logic with tracing
+        task = self._snapshot_arguments(ready[0], state)
         result = self._execute_task_with_retries(task, state)
         self._publish_progress_metadata(state, plan)
 
@@ -433,6 +449,16 @@ class DagExecutor:
         gen = self.argument_generator.generate(task, state)
         merged = _merge_args_hints(task, gen)
         return task.model_copy(update={"arguments": merged})
+
+    def _snapshot_all_arguments(self, state: Any) -> list[ExecutionTask]:
+        """Generate arguments for all tasks before execution."""
+        tasks = list(self._tasks_by_id.values())
+        with_args = []
+        for task in tasks:
+            if not task.arguments:
+                task = self._snapshot_arguments(task, state)
+            with_args.append(task)
+        return with_args
 
     def _plan_safe_guard(
         self, state: Any, task: ExecutionTask, merged: dict[str, Any]
