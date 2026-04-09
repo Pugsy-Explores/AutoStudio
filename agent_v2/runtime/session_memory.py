@@ -255,3 +255,57 @@ def _truncate(s: str, max_len: int) -> str:
     if len(s) <= max_len:
         return s
     return s[: max_len - 1] + "…"
+
+
+PLANNER_SESSION_MEMORY_CONTEXT_KEY = "planner_session_memory"
+
+
+def _sync_planner_session_to_context(state: Any, sm: SessionMemory) -> None:
+    ctx = getattr(state, "context", None)
+    if isinstance(ctx, dict):
+        ctx[PLANNER_SESSION_MEMORY_CONTEXT_KEY] = sm
+
+
+def planner_session_memory_from_state(state: Any) -> SessionMemory:
+    """
+    Return the run's SessionMemory, preferring ``state.memory[MEMORY_SESSION]`` and
+    mirroring to ``context['planner_session_memory']`` for backward compatibility.
+    """
+    from agent_v2.state.agent_state import MEMORY_SESSION, ensure_agent_memory_dict
+
+    memory = ensure_agent_memory_dict(state)
+    slot = memory.get(MEMORY_SESSION)
+    if isinstance(slot, SessionMemory):
+        _sync_planner_session_to_context(state, slot)
+        return slot
+    if isinstance(slot, dict):
+        sm = SessionMemory.model_validate(slot)
+        memory[MEMORY_SESSION] = sm
+        _sync_planner_session_to_context(state, sm)
+        return sm
+
+    ctx = getattr(state, "context", None)
+    if not isinstance(ctx, dict):
+        try:
+            state.context = {}
+            ctx = state.context
+        except Exception:
+            sm = SessionMemory()
+            memory[MEMORY_SESSION] = sm
+            return sm
+
+    key = PLANNER_SESSION_MEMORY_CONTEXT_KEY
+    existing = ctx.get(key)
+    if isinstance(existing, SessionMemory):
+        memory[MEMORY_SESSION] = existing
+        return existing
+    if isinstance(existing, dict):
+        sm = SessionMemory.model_validate(existing)
+        ctx[key] = sm
+        memory[MEMORY_SESSION] = sm
+        return sm
+
+    sm = SessionMemory()
+    ctx[key] = sm
+    memory[MEMORY_SESSION] = sm
+    return sm

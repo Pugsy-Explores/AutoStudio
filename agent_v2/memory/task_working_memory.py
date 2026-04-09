@@ -90,27 +90,52 @@ def _gaps_fingerprint_from_flags(gaps_nonempty: bool) -> str:
     return "g1" if gaps_nonempty else "g0"
 
 
+def _sync_task_working_to_context(state: Any, tm: TaskWorkingMemory) -> None:
+    ctx = getattr(state, "context", None)
+    if isinstance(ctx, dict):
+        ctx[TASK_WORKING_MEMORY_CONTEXT_KEY] = tm
+
+
 def task_working_memory_from_state(state: Any) -> TaskWorkingMemory:
+    from agent_v2.state.agent_state import MEMORY_WORKING, ensure_agent_memory_dict
+
+    memory = ensure_agent_memory_dict(state)
+    slot = memory.get(MEMORY_WORKING)
+    if isinstance(slot, TaskWorkingMemory):
+        _sync_task_working_to_context(state, slot)
+        return slot
+    if isinstance(slot, dict):
+        tm = TaskWorkingMemory.model_validate(slot)
+        memory[MEMORY_WORKING] = tm
+        _sync_task_working_to_context(state, tm)
+        return tm
+
     ctx = getattr(state, "context", None)
     if not isinstance(ctx, dict):
         raise TypeError("state.context must be a dict for task working memory")
     key = TASK_WORKING_MEMORY_CONTEXT_KEY
     existing = ctx.get(key)
     if isinstance(existing, TaskWorkingMemory):
+        memory[MEMORY_WORKING] = existing
         return existing
     if isinstance(existing, dict):
         tm = TaskWorkingMemory.model_validate(existing)
         ctx[key] = tm
+        memory[MEMORY_WORKING] = tm
         return tm
     tm = TaskWorkingMemory()
     ctx[key] = tm
+    memory[MEMORY_WORKING] = tm
     return tm
 
 
 def reset_task_working_memory(state: Any) -> TaskWorkingMemory:
+    from agent_v2.state.agent_state import MEMORY_WORKING, ensure_agent_memory_dict
+
     ctx = getattr(state, "context", None)
     if not isinstance(ctx, dict):
         raise TypeError("state.context must be a dict")
     tm = TaskWorkingMemory()
     ctx[TASK_WORKING_MEMORY_CONTEXT_KEY] = tm
+    ensure_agent_memory_dict(state)[MEMORY_WORKING] = tm
     return tm

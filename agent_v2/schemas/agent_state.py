@@ -59,3 +59,6 @@ class AgentState(BaseModel):
 
     execution_policy: Optional[ExecutionPolicy] = None
     failure_policy: Optional[FailurePolicy] = None
+
+    # Phase 5.4 — mirrors runtime dataclass; optional bag for working/session handles
+    memory: dict[str, Any] = Field(default_factory=dict)

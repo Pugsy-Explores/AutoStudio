@@ -10,12 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 import hashlib
+import logging
 import re
 
 from pydantic import BaseModel, Field
 
 # No raw code / snippet keys in stored records
 FORBIDDEN_CONTENT_KEYS: frozenset[str] = frozenset({"raw_code", "code_dump", "full_file", "snippet_body"})
+
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -181,20 +184,44 @@ def get_session_id_from_state(state: Any) -> str:
 
 def get_or_create_conversation_store(state: Any) -> ConversationMemoryStore:
     from agent_v2.config import get_conversation_sessions_dir, use_file_conversation_memory
+    from agent_v2.state.agent_state import ensure_agent_memory_dict
 
+    memory = ensure_agent_memory_dict(state)
     ctx = getattr(state, "context", None)
     if not isinstance(ctx, dict):
         raise TypeError("state.context must be a dict")
-    existing = ctx.get(CONVERSATION_MEMORY_STORE_KEY)
-    if use_file_conversation_memory():
-        if isinstance(existing, FileConversationMemoryStore):
-            return existing
-        store = FileConversationMemoryStore(sessions_dir=get_conversation_sessions_dir())
-        ctx[CONVERSATION_MEMORY_STORE_KEY] = store
-        return store
-    if isinstance(existing, InMemoryConversationMemoryStore):
-        return existing
-    store = InMemoryConversationMemoryStore()
+
+    want_file = use_file_conversation_memory()
+
+    def _compatible(store: Any) -> bool:
+        if want_file:
+            return isinstance(store, FileConversationMemoryStore)
+        return isinstance(store, InMemoryConversationMemoryStore)
+
+    mem_slot = memory.get(CONVERSATION_MEMORY_STORE_KEY)
+    if _compatible(mem_slot):
+        ctx[CONVERSATION_MEMORY_STORE_KEY] = mem_slot
+        return mem_slot
+
+    ctx_existing = ctx.get(CONVERSATION_MEMORY_STORE_KEY)
+    if _compatible(ctx_existing):
+        memory[CONVERSATION_MEMORY_STORE_KEY] = ctx_existing
+        return ctx_existing
+
+    if (mem_slot is not None and not _compatible(mem_slot)) or (
+        ctx_existing is not None and not _compatible(ctx_existing)
+    ):
+        logger.warning(
+            "Replacing incompatible conversation store in state.memory/context"
+        )
+
+    if want_file:
+        store: ConversationMemoryStore = FileConversationMemoryStore(
+            sessions_dir=get_conversation_sessions_dir()
+        )
+    else:
+        store = InMemoryConversationMemoryStore()
+    memory[CONVERSATION_MEMORY_STORE_KEY] = store
     ctx[CONVERSATION_MEMORY_STORE_KEY] = store
     return store
 
