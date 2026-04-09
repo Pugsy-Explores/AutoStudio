@@ -6,8 +6,10 @@ from agent_v2.memory.conversation_memory import (
     ConversationMemoryStore,
     ConversationState,
     ConversationTurn,
+    FileConversationMemoryStore,
     InMemoryConversationMemoryStore,
     SESSION_ID_METADATA_KEY,
+    get_or_create_conversation_store,
     get_or_create_in_memory_store,
     get_session_id_from_state,
 )
@@ -27,9 +29,11 @@ __all__ = [
     "ConversationState",
     "ConversationTurn",
     "InMemoryConversationMemoryStore",
+    "FileConversationMemoryStore",
     "FORBIDDEN_CONTENT_KEYS",
     "CONVERSATION_MEMORY_STORE_KEY",
     "SESSION_ID_METADATA_KEY",
+    "get_or_create_conversation_store",
     "get_or_create_in_memory_store",
     "get_session_id_from_state",
 ]

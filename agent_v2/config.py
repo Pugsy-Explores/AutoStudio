@@ -32,6 +32,29 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
+def use_file_conversation_memory() -> bool:
+    """
+    When True (default), conversation turns persist under ``.agent_memory/sessions/``.
+
+    Env ``AGENT_V2_USE_FILE_CONVERSATION_MEMORY``: set to 0/false/off to use
+    ``InMemoryConversationMemoryStore`` only (process-local, pre–Phase 5.2 behavior).
+    """
+    return _bool_env("AGENT_V2_USE_FILE_CONVERSATION_MEMORY", True)
+
+
+def get_conversation_sessions_dir() -> str:
+    """
+    Root directory for per-session JSON files (Phase 5.2).
+
+    Env ``AGENT_V2_CONVERSATION_SESSIONS_DIR``: optional override (expanded, resolved).
+    Default: ``.agent_memory/sessions`` under the current working directory.
+    """
+    raw = os.environ.get("AGENT_V2_CONVERSATION_SESSIONS_DIR")
+    if raw is not None and str(raw).strip():
+        return str(Path(str(raw).strip()).expanduser().resolve())
+    return str(Path(".agent_memory/sessions").resolve())
+
+
 def get_agent_v2_episodic_log_dir() -> str | None:
     """
     Root directory for TraceEmitter JSONL execution logs (Phase 5.1 episodic memory).

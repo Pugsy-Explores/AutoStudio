@@ -16,7 +16,7 @@ _LOG = logging.getLogger(__name__)
 from agent_v2.config import get_agent_v2_episodic_log_dir, get_config
 from agent_v2.exploration.answer_synthesizer import maybe_synthesize_to_state
 from agent_v2.memory.conversation_memory import (
-    get_or_create_in_memory_store,
+    get_or_create_conversation_store,
     get_session_id_from_state,
 )
 from agent_v2.memory.task_working_memory import (
@@ -369,7 +369,7 @@ def _maybe_thin_planner_observability(
     md = getattr(state, "metadata", None)
     if not isinstance(md, dict):
         return
-    store = get_or_create_in_memory_store(state)
+    store = get_or_create_conversation_store(state)
     sid = get_session_id_from_state(state)
     rolling = store.load(sid).rolling_summary
     snap = build_planner_decision_snapshot(
@@ -385,14 +385,14 @@ def _sync_chat_planning_metadata(state: Any) -> None:
     if not isinstance(md, dict):
         return
     md["task_working_memory_version"] = TASK_WORKING_MEMORY_VERSION
-    store = get_or_create_in_memory_store(state)
+    store = get_or_create_conversation_store(state)
     sid = get_session_id_from_state(state)
     n = len(store.load(sid).turns)
     md["conversation_memory_turns"] = n
 
 
 def _conversation_append_assistant_summary(state: Any) -> None:
-    store = get_or_create_in_memory_store(state)
+    store = get_or_create_conversation_store(state)
     sid = get_session_id_from_state(state)
     ctx = getattr(state, "context", None)
     fa = ""
@@ -533,7 +533,7 @@ class PlannerTaskRuntime:
             reset_task_working_memory(state)
             mem = _planner_session_memory_from_state(state)
             mem.record_user_turn(state.instruction)
-            _st = get_or_create_in_memory_store(state)
+            _st = get_or_create_conversation_store(state)
             _sid = get_session_id_from_state(state)
             _st.append_turn(_sid, "user", str(state.instruction)[:2000])
 
@@ -635,7 +635,7 @@ class PlannerTaskRuntime:
             reset_task_working_memory(state)
             mem = _planner_session_memory_from_state(state)
             mem.record_user_turn(state.instruction)
-            _st = get_or_create_in_memory_store(state)
+            _st = get_or_create_conversation_store(state)
             _sid = get_session_id_from_state(state)
             _st.append_turn(_sid, "user", str(state.instruction)[:2000])
 
@@ -722,7 +722,7 @@ class PlannerTaskRuntime:
             reset_task_working_memory(state)
             mem = _planner_session_memory_from_state(state)
             mem.record_user_turn(state.instruction)
-            _st = get_or_create_in_memory_store(state)
+            _st = get_or_create_conversation_store(state)
             _sid = get_session_id_from_state(state)
             _st.append_turn(_sid, "user", str(state.instruction)[:2000])
 
@@ -831,7 +831,7 @@ class PlannerTaskRuntime:
             )
 
         def _rolling_store_summary() -> str:
-            st = get_or_create_in_memory_store(state)
+            st = get_or_create_conversation_store(state)
             sid = get_session_id_from_state(state)
             return st.load(sid).rolling_summary
 
