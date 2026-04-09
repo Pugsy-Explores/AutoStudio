@@ -82,9 +82,11 @@ class TestPlannerDecisionMapper(unittest.TestCase):
     def test_all_steps_completed_maps_to_stop(self):
         doc = _doc(PlannerControllerOutput(action="continue"))
         st = MagicMock()
-        st.context = {
-            "dag_graph_tasks": {"s1": {}},
-            "dag_completed_step_ids": ["s1"],
+        st.context = {}
+        st.metadata = {
+            "executor_dag_plan_id": "p1",
+            "executor_dag_total": 1,
+            "executor_dag_completed": 1,
         }
         self.assertTrue(plan_document_has_no_pending_work(doc, state=st))
         d = planner_decision_from_plan_document(doc, state=st)

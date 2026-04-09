@@ -1,73 +1,49 @@
 """
-Compile PlanDocument → CompiledExecutionGraph.
+Compile PlanDocument → list[ExecutionTask]. Pure transform; no execution.
 
-Pure transform: no I/O, no LLM, no execution. PlanStep.execution / failure are ignored.
+Plan step order in the document is not used for scheduling (dependencies only).
 """
 from __future__ import annotations
 
 from typing import Any
 
-from agent_v2.schemas.execution_task import CompiledExecutionGraph, ExecutionTask, TaskRuntimeState
-from agent_v2.schemas.plan import PlanDocument, PlanStep
+from agent_v2.schemas.execution_task import ExecutionTask
+from agent_v2.schemas.plan import PlanDocument
 from agent_v2.schemas.policies import ExecutionPolicy
 
 
-def plan_step_for_argument_generation(task: ExecutionTask) -> PlanStep:
-    """Synthetic PlanStep for PlanArgumentGenerator (legacy tool schema seam)."""
-    tool = task.tool
-    stype: Any = "explore"
-    if tool == "open_file":
-        stype = "analyze"
-    elif tool == "edit":
-        stype = "modify"
-    elif tool == "run_tests":
-        stype = "validate"
-    elif tool == "finish":
-        stype = "finish"
-    return PlanStep(
-        step_id=task.id,
-        index=task.plan_step_index,
-        type=stype,
-        goal=task.goal,
-        action=tool,  # type: ignore[arg-type]
-        inputs=dict(task.input_hints),
-        outputs={},
-        dependencies=list(task.dependencies),
-    )
-
-
-def compile_plan_document(
+def compile_plan(
     plan: PlanDocument,
     *,
     policy: ExecutionPolicy | None = None,
-) -> CompiledExecutionGraph:
+) -> list[ExecutionTask]:
     """
-    Map step_id → task.id, action → tool, copy dependencies, empty arguments.
+    step_id → task.id, action → tool, dependencies preserved, arguments = {}.
     """
     max_attempts = 2
     if policy is not None:
         max_attempts = max(1, int(policy.max_retries_per_step))
 
-    by_id: dict[str, ExecutionTask] = {}
-    ordered = sorted(plan.steps, key=lambda s: s.index)
-    for s in ordered:
+    out: list[ExecutionTask] = []
+    for s in plan.steps:
         hints: dict[str, Any] = {}
         if isinstance(s.inputs, dict):
             hints = dict(s.inputs)
-        t = ExecutionTask(
-            id=s.step_id,
-            tool=s.action,
-            dependencies=list(s.dependencies or []),
-            plan_step_index=int(s.index),
-            goal=str(s.goal or ""),
-            input_hints=hints,
-            arguments={},
-            runtime=TaskRuntimeState(
+        out.append(
+            ExecutionTask(
+                id=s.step_id,
+                tool=s.action,
+                dependencies=list(s.dependencies or []),
+                arguments={},
                 status="pending",
                 attempts=0,
                 max_attempts=max_attempts,
-            ),
+                goal=str(s.goal or ""),
+                input_hints=hints,
+            )
         )
-        by_id[t.id] = t
+    return out
 
-    return CompiledExecutionGraph(plan_id=plan.plan_id, tasks_by_id=by_id)
+
+def tasks_by_id(tasks: list[ExecutionTask]) -> dict[str, ExecutionTask]:
+    return {t.id: t for t in tasks}

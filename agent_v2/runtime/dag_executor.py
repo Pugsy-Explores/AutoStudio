@@ -1,16 +1,15 @@
 """
-DAG-backed plan execution: compile → schedule ready tasks → snapshot args → dispatch.
+DAG execution: compile_plan → in-memory ExecutionTask dict → dependency-only schedule → dispatch.
 
-Replaces sequential PlanExecutor. PlanDocument is never mutated; runtime lives on ExecutionTask.
+No PlanStep in this module. No state.context["dag_graph_tasks"].
 """
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional, Protocol
 
-from agent_v2.runtime.plan_compiler import compile_plan_document, plan_step_for_argument_generation
+from agent_v2.runtime.plan_compiler import compile_plan, tasks_by_id
 from agent_v2.runtime.phase1_tool_exposure import PLAN_STEP_TO_LEGACY_REACT_ACTION
 from agent_v2.runtime.replanner import Replanner, merge_preserved_completed_steps
 from agent_v2.runtime.session_memory import SessionMemory
@@ -24,8 +23,8 @@ from agent_v2.schemas.execution import (
     ExecutionOutput,
     ExecutionResult,
 )
-from agent_v2.schemas.execution_task import CompiledExecutionGraph, ExecutionTask, TaskScheduler
-from agent_v2.schemas.plan import PlanDocument, PlanStep
+from agent_v2.schemas.execution_task import ExecutionTask, TaskScheduler
+from agent_v2.schemas.plan import PlanDocument
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.validation.plan_validator import PlanValidator
 
@@ -39,7 +38,10 @@ def _utc_now() -> str:
 
 def _metadata_dict(state: Any) -> dict:
     md = getattr(state, "metadata", None)
-    return md if isinstance(md, dict) else {}
+    if not isinstance(md, dict):
+        state.metadata = {}
+        return state.metadata
+    return md
 
 
 def _planner_session_memory_from_state(state: Any) -> SessionMemory:
@@ -70,7 +72,7 @@ def _plan_safe_execution_active(state: Any) -> bool:
 
 
 class PlanArgumentGeneratorProtocol(Protocol):
-    def generate(self, step: PlanStep, state: Any) -> dict:
+    def generate(self, task: ExecutionTask, state: Any) -> dict:
         ...
 
 
@@ -87,6 +89,11 @@ def _merge_args_hints(task: ExecutionTask, generated: dict) -> dict:
     return out
 
 
+def _dispatch_numeric_id(task_id: str) -> int:
+    h = hash(task_id)
+    return abs(h) % (2**31 - 1) or 1
+
+
 def _to_dispatch_step(task: ExecutionTask, args: dict) -> dict:
     pa = task.tool
     legacy = PLAN_STEP_TO_LEGACY_REACT_ACTION.get(pa)
@@ -95,9 +102,10 @@ def _to_dispatch_step(task: ExecutionTask, args: dict) -> dict:
             raise ValueError("shell uses _dispatch_shell, not ReAct dispatch")
         raise ValueError(f"Unsupported plan action for ReAct dispatch: {pa!r}")
 
+    nid = _dispatch_numeric_id(task.id)
     if pa == "finish":
         return {
-            "id": task.plan_step_index,
+            "id": nid,
             "step_id": task.id,
             "action": "FINISH",
             "_react_action_raw": "finish",
@@ -105,7 +113,7 @@ def _to_dispatch_step(task: ExecutionTask, args: dict) -> dict:
         }
 
     row: dict[str, Any] = {
-        "id": task.plan_step_index,
+        "id": nid,
         "step_id": task.id,
         "action": legacy,
         "artifact_mode": "code",
@@ -150,70 +158,52 @@ class DagExecutor:
         self._policy = policy or _DEFAULT_POLICY
         self._trace_emitter_factory: TraceEmitterFactory = trace_emitter_factory or TraceEmitter
         self.trace_emitter: TraceEmitter = self._trace_emitter_factory()
+        self._tasks_by_id: dict[str, ExecutionTask] = {}
+        self._active_plan_id: str | None = None
+        self._persistent_completed_ids: set[str] = set()
 
-    def _sync_context_graph(self, state: Any, graph: CompiledExecutionGraph) -> None:
+    def get_tasks_by_id(self) -> dict[str, ExecutionTask]:
+        return dict(self._tasks_by_id)
+
+    def get_completed_step_ids(self) -> set[str]:
+        return set(self._persistent_completed_ids)
+
+    def _completed_ids(self) -> set[str]:
+        return {t.id for t in self._tasks_by_id.values() if t.status == "completed"}
+
+    def _publish_progress_metadata(self, state: Any, plan: PlanDocument) -> None:
+        md = _metadata_dict(state)
+        md["executor_dag_plan_id"] = plan.plan_id
+        md["executor_dag_total"] = len(self._tasks_by_id)
+        done = self._completed_ids()
+        md["executor_dag_completed"] = len(done)
+        md["executor_dag_completed_ids"] = sorted(done)
+
+    def _clear_executor_context_keys(self, state: Any) -> None:
         ctx = getattr(state, "context", None)
-        if not isinstance(ctx, dict):
-            state.context = {}
-            ctx = state.context
-        ctx["dag_graph_tasks"] = {k: v.model_dump(mode="json") for k, v in graph.tasks_by_id.items()}
+        if isinstance(ctx, dict):
+            ctx.pop("dag_graph_tasks", None)
+            ctx.pop("dag_completed_step_ids", None)
+            ctx.pop("dag_active_plan_id", None)
+        md = _metadata_dict(state)
+        for k in (
+            "executor_dag_plan_id",
+            "executor_dag_total",
+            "executor_dag_completed",
+            "executor_dag_completed_ids",
+        ):
+            md.pop(k, None)
 
-    def _completed_ids(self, graph: CompiledExecutionGraph) -> set[str]:
-        return {t.id for t in graph.tasks_by_id.values() if t.runtime.status == "completed"}
-
-    def _persist_completed_set(self, state: Any, graph: CompiledExecutionGraph) -> None:
-        ctx = getattr(state, "context", None)
-        if not isinstance(ctx, dict):
+    def _ensure_tasks(self, plan: PlanDocument) -> None:
+        if self._active_plan_id == plan.plan_id and self._tasks_by_id:
             return
-        ctx["dag_completed_step_ids"] = list(self._completed_ids(graph))
-
-    def _load_completed_set(self, state: Any) -> set[str]:
-        ctx = getattr(state, "context", None)
-        if not isinstance(ctx, dict):
-            return set()
-        raw = ctx.get("dag_completed_step_ids")
-        if isinstance(raw, (list, set)):
-            return {str(x) for x in raw}
-        return set()
-
-    def _init_or_restore_graph(self, plan: PlanDocument, state: Any) -> CompiledExecutionGraph:
-        ctx = getattr(state, "context", None)
-        if not isinstance(ctx, dict):
-            state.context = {}
-            ctx = state.context
-
-        fp = plan.plan_id
-        stored = ctx.get("dag_active_plan_id")
-        if stored == fp and ctx.get("dag_graph_tasks"):
-            raw_tasks = ctx["dag_graph_tasks"]
-            if isinstance(raw_tasks, dict):
-                try:
-                    tasks = {k: ExecutionTask.model_validate(v) for k, v in raw_tasks.items()}
-                    graph = CompiledExecutionGraph(plan_id=plan.plan_id, tasks_by_id=tasks)
-                    for tid in self._load_completed_set(state):
-                        if tid in graph.tasks_by_id:
-                            t = graph.tasks_by_id[tid]
-                            if t.runtime.status == "pending":
-                                graph.tasks_by_id[tid] = t.model_copy(
-                                    update={
-                                        "runtime": t.runtime.model_copy(update={"status": "completed"})
-                                    }
-                                )
-                    return graph
-                except Exception:
-                    pass
-
-        graph = compile_plan_document(plan, policy=self._policy)
-        done = self._load_completed_set(state)
-        for tid in done:
-            if tid in graph.tasks_by_id:
-                t = graph.tasks_by_id[tid]
-                graph.tasks_by_id[tid] = t.model_copy(
-                    update={"runtime": t.runtime.model_copy(update={"status": "completed"})}
-                )
-        ctx["dag_active_plan_id"] = fp
-        self._sync_context_graph(state, graph)
-        return graph
+        compiled = compile_plan(plan, policy=self._policy)
+        self._tasks_by_id = tasks_by_id(compiled)
+        self._active_plan_id = plan.plan_id
+        for cid in self._persistent_completed_ids:
+            if cid in self._tasks_by_id:
+                t = self._tasks_by_id[cid]
+                self._tasks_by_id[cid] = t.model_copy(update={"status": "completed"})
 
     def finalize_run(self, state: Any, plan_for_id: PlanDocument, run_status: str) -> dict[str, Any]:
         ctx = getattr(state, "context", None)
@@ -240,17 +230,17 @@ class DagExecutor:
         if getattr(state, "current_plan", None) is None:
             raise ValueError("DagExecutor.run requires state.current_plan before execution.")
 
+        self._tasks_by_id.clear()
+        self._persistent_completed_ids.clear()
+        self._active_plan_id = None
+        self._clear_executor_context_keys(state)
+
         self.trace_emitter = trace_emitter if trace_emitter is not None else self._trace_emitter_factory()
         md0 = _metadata_dict(state)
         md0["executor_dispatch_count"] = 0
         md0.pop("plan_executor_abort", None)
 
         ctx = getattr(state, "context", None)
-        if isinstance(ctx, dict):
-            ctx["dag_completed_step_ids"] = []
-            ctx.pop("dag_graph_tasks", None)
-            ctx.pop("dag_active_plan_id", None)
-
         if isinstance(ctx, dict):
             ctx["active_plan_document"] = plan
 
@@ -274,8 +264,13 @@ class DagExecutor:
                 md["plan_executor_status"] = "failed_final"
                 return self.finalize_run(state, plan, "failed")
 
-            pseudo_step = plan_step_for_argument_generation(failed_task)
-            req = self.replanner.build_replan_request(state, work_plan, pseudo_step, result)
+            req = self.replanner.build_replan_request(
+                state,
+                work_plan,
+                failed_task,
+                result,
+                tasks_by_id=self._tasks_by_id,
+            )
             lf = md.get("langfuse_trace")
             session = _planner_session_memory_from_state(state)
             vtm_raw = md.get("plan_validation_task_mode")
@@ -291,7 +286,7 @@ class DagExecutor:
                 md["plan_executor_status"] = "failed_final"
                 return self.finalize_run(state, plan, "failed")
             md["replan_attempt"] = replan_res.metadata.replan_attempt
-            completed_ids = set(self._load_completed_set(state))
+            completed_ids = set(self._persistent_completed_ids)
             if req.constraints.preserve_completed:
                 new_plan = merge_preserved_completed_steps(
                     work_plan, new_plan, completed_step_ids=completed_ids
@@ -299,8 +294,8 @@ class DagExecutor:
             PlanValidator.validate_plan(new_plan, policy=self._policy, task_mode=vtm)
             if isinstance(state.context, dict):
                 state.context["active_plan_document"] = new_plan
-                state.context.pop("dag_graph_tasks", None)
-                state.context.pop("dag_active_plan_id", None)
+            self._tasks_by_id.clear()
+            self._active_plan_id = None
             work_plan = new_plan
 
     def _max_replans(self, state: Any) -> int:
@@ -310,14 +305,13 @@ class DagExecutor:
         return int(self._policy.max_replans)
 
     def _failure_or_deadlock_when_starved(
-        self, graph: CompiledExecutionGraph
+        self,
     ) -> tuple[Literal["deadlock"]] | tuple[Literal["failed"], ExecutionTask, ExecutionResult]:
-        """No ready pending tasks but graph incomplete: failed upstream task vs cyclic/missing deps."""
-        failed = [t for t in graph.tasks_by_id.values() if t.runtime.status == "failed"]
+        failed = [t for t in self._tasks_by_id.values() if t.status == "failed"]
         if failed:
-            failed.sort(key=lambda t: t.plan_step_index)
+            failed.sort(key=lambda t: t.id)
             ft = failed[0]
-            lr = ft.runtime.last_result
+            lr = ft.last_result
             if lr is None:
                 lr = ExecutionResult(
                     step_id=ft.id,
@@ -340,24 +334,26 @@ class DagExecutor:
     def _run_graph_to_event(
         self, plan: PlanDocument, state: Any
     ) -> tuple[str] | tuple[str, ExecutionTask, ExecutionResult]:
-        graph = self._init_or_restore_graph(plan, state)
-        max_rounds = len(graph.tasks_by_id) + 5
+        self._ensure_tasks(plan)
+        self._publish_progress_metadata(state, plan)
+        max_rounds = len(self._tasks_by_id) + 5
         for _ in range(max_rounds):
-            completed = self._completed_ids(graph)
-            if len(completed) == len(graph.tasks_by_id):
+            completed = self._completed_ids()
+            if len(completed) == len(self._tasks_by_id):
                 return ("completed",)
-            ready = TaskScheduler.ready_tasks(graph, completed)
+            ready = TaskScheduler.ready_tasks(self._tasks_by_id, completed)
             if not ready:
-                out = self._failure_or_deadlock_when_starved(graph)
+                out = self._failure_or_deadlock_when_starved()
                 if out[0] == "deadlock":
                     return ("deadlock",)
                 return out
             task = ready[0]
-            result = self._execute_task_with_retries(graph, task, plan, state)
-            self._sync_context_graph(state, graph)
-            self._persist_completed_set(state, graph)
+            task = task.model_copy(update={"status": "ready"})
+            self._tasks_by_id[task.id] = task
+            result = self._execute_task_with_retries(task, state)
+            self._publish_progress_metadata(state, plan)
             if not result.success:
-                return ("failed", task, result)
+                return ("failed", self._tasks_by_id[task.id], result)
         return ("deadlock",)
 
     def run_one_step(
@@ -376,28 +372,22 @@ class DagExecutor:
         if isinstance(state.context, dict):
             state.context["active_plan_document"] = plan
 
-        graph = self._init_or_restore_graph(plan, state)
-        completed = self._completed_ids(graph)
-        if len(completed) == len(graph.tasks_by_id):
-            fin = next(iter(graph.tasks_by_id.values()))
-            for t in graph.ordered_tasks():
-                if t.tool == "finish":
-                    fin = t
-                    break
+        self._ensure_tasks(plan)
+        self._publish_progress_metadata(state, plan)
+        completed = self._completed_ids()
+        if len(completed) == len(self._tasks_by_id):
             return self.finalize_run(state, plan, "success")
 
-        ready = TaskScheduler.ready_tasks(graph, completed)
+        ready = TaskScheduler.ready_tasks(self._tasks_by_id, completed)
         if not ready:
-            out = self._failure_or_deadlock_when_starved(graph)
+            out = self._failure_or_deadlock_when_starved()
             if out[0] == "failed":
                 _, ft, res = out
                 md = _metadata_dict(state)
                 md["plan_executor_status"] = "failed_step"
                 md["last_failed_step_id"] = ft.id
-                pseudo = plan_step_for_argument_generation(ft)
                 return {
                     "status": "failed_step",
-                    "failed_step": pseudo,
                     "failed_task": ft,
                     "result": res,
                     "state": state,
@@ -405,25 +395,25 @@ class DagExecutor:
             return self.finalize_run(state, plan, "failed")
 
         task = ready[0]
-        result = self._execute_task_with_retries(graph, task, plan, state)
-        self._sync_context_graph(state, graph)
-        self._persist_completed_set(state, graph)
+        task = task.model_copy(update={"status": "ready"})
+        self._tasks_by_id[task.id] = task
+        result = self._execute_task_with_retries(task, state)
+        self._publish_progress_metadata(state, plan)
 
         if not result.success:
             md = _metadata_dict(state)
             md["plan_executor_status"] = "failed_step"
             md["last_failed_step_id"] = task.id
-            pseudo = plan_step_for_argument_generation(task)
+            ft = self._tasks_by_id[task.id]
             return {
                 "status": "failed_step",
-                "failed_step": pseudo,
-                "failed_task": task,
+                "failed_task": ft,
                 "result": result,
                 "state": state,
             }
 
-        completed2 = self._completed_ids(graph)
-        if len(completed2) == len(graph.tasks_by_id):
+        completed2 = self._completed_ids()
+        if len(completed2) == len(self._tasks_by_id):
             return self.finalize_run(state, plan, "success")
         return {"status": "progress", "state": state}
 
@@ -440,8 +430,7 @@ class DagExecutor:
             return task
         if task.tool == "finish":
             return task.model_copy(update={"arguments": {}})
-        ps = plan_step_for_argument_generation(task)
-        gen = self.argument_generator.generate(ps, state)
+        gen = self.argument_generator.generate(task, state)
         merged = _merge_args_hints(task, gen)
         return task.model_copy(update={"arguments": merged})
 
@@ -534,25 +523,16 @@ class DagExecutor:
         _ensure_execution_result_contract(res, task.id)
         return res
 
-    def _execute_task_with_retries(
-        self,
-        graph: CompiledExecutionGraph,
-        task: ExecutionTask,
-        plan: PlanDocument,
-        state: Any,
-    ) -> ExecutionResult:
+    def _execute_task_with_retries(self, task: ExecutionTask, state: Any) -> ExecutionResult:
         task = self._snapshot_arguments(task, state)
-        graph.tasks_by_id[task.id] = task
-
-        max_attempts = max(1, int(task.runtime.max_attempts))
-        result: ExecutionResult | None = None
         now = _utc_now()
-        task = task.model_copy(
-            update={"runtime": task.runtime.model_copy(update={"status": "running", "started_at": now})}
-        )
-        graph.tasks_by_id[task.id] = task
+        task = task.model_copy(update={"status": "running", "started_at": now})
+        self._tasks_by_id[task.id] = task
 
-        while task.runtime.attempts < max_attempts:
+        max_attempts = max(1, int(task.max_attempts))
+        result: ExecutionResult | None = None
+
+        while task.attempts < max_attempts:
             abort = self._guard_limits(state)
             if abort is not None:
                 _metadata_dict(state)["plan_executor_abort"] = abort
@@ -568,14 +548,17 @@ class DagExecutor:
                         timestamp=_utc_now(),
                     ),
                 )
-                rt = task.runtime.model_copy(
+                task = task.model_copy(
                     update={
                         "status": "failed",
                         "completed_at": _utc_now(),
                         "last_result": result,
+                        "attempts": task.attempts + 1,
                     }
                 )
-                graph.tasks_by_id[task.id] = task.model_copy(update={"runtime": rt})
+                self._tasks_by_id[task.id] = task
+                att = task.attempts
+                self.trace_emitter.record_execution_task(task, result, execution_attempts=att)
                 return result
 
             if task.tool == "finish":
@@ -587,55 +570,47 @@ class DagExecutor:
                     error=None,
                     metadata=ExecutionMetadata(tool_name="finish", duration_ms=0, timestamp=_utc_now()),
                 )
-                rt = task.runtime.model_copy(
+                task = task.model_copy(
                     update={
-                        "attempts": task.runtime.attempts + 1,
+                        "attempts": task.attempts + 1,
                         "status": "completed",
                         "completed_at": _utc_now(),
                         "last_result": result,
                     }
                 )
-                graph.tasks_by_id[task.id] = task.model_copy(update={"runtime": rt})
-                ps = plan_step_for_argument_generation(graph.tasks_by_id[task.id])
-                att = graph.tasks_by_id[task.id].runtime.attempts
-                self.trace_emitter.record_step(
-                    ps, result, task.plan_step_index, execution_attempts=att
-                )
+                self._tasks_by_id[task.id] = task
+                self._persistent_completed_ids.add(task.id)
+                att = task.attempts
+                self.trace_emitter.record_execution_task(task, result, execution_attempts=att)
                 self._update_state_history(state, task, str(result.output.summary or ""))
                 return result
 
-            result = self._dispatch_once(graph.tasks_by_id[task.id], state)
-            task = graph.tasks_by_id[task.id]
-            rt = task.runtime.model_copy(update={"attempts": task.runtime.attempts + 1})
-            task = task.model_copy(update={"runtime": rt})
-            graph.tasks_by_id[task.id] = task
+            result = self._dispatch_once(self._tasks_by_id[task.id], state)
+            task = self._tasks_by_id[task.id]
+            task = task.model_copy(update={"attempts": task.attempts + 1, "last_result": result})
+            self._tasks_by_id[task.id] = task
 
             if result.success:
-                rt2 = task.runtime.model_copy(
+                task = task.model_copy(
                     update={
                         "status": "completed",
                         "completed_at": _utc_now(),
-                        "last_result": result,
                     }
                 )
-                task = task.model_copy(update={"runtime": rt2})
-                graph.tasks_by_id[task.id] = task
-                ps = plan_step_for_argument_generation(task)
-                att = graph.tasks_by_id[task.id].runtime.attempts
-                self.trace_emitter.record_step(
-                    ps, result, task.plan_step_index, execution_attempts=att
-                )
+                self._tasks_by_id[task.id] = task
+                self._persistent_completed_ids.add(task.id)
+                att = task.attempts
+                self.trace_emitter.record_execution_task(task, result, execution_attempts=att)
                 self._update_state_history(state, task, str(result.output.summary or ""))
                 return result
 
         assert result is not None
-        rt = task.runtime.model_copy(
+        task = task.model_copy(
             update={"status": "failed", "completed_at": _utc_now(), "last_result": result}
         )
-        graph.tasks_by_id[task.id] = task.model_copy(update={"runtime": rt})
-        ps = plan_step_for_argument_generation(graph.tasks_by_id[task.id])
-        att = graph.tasks_by_id[task.id].runtime.attempts
-        self.trace_emitter.record_step(ps, result, task.plan_step_index, execution_attempts=att)
+        self._tasks_by_id[task.id] = task
+        att = task.attempts
+        self.trace_emitter.record_execution_task(task, result, execution_attempts=att)
         return result
 
     @staticmethod

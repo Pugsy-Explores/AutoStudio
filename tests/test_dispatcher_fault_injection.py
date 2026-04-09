@@ -151,8 +151,8 @@ def test_dag_executor_retries_open_file_after_once_fault(monkeypatch):
     dispatch = _dispatcher(execute_fn)
     arg_gen = MagicMock()
 
-    def _gen(step, state):
-        if step.action == "search":
+    def _gen(task, state):
+        if task.tool == "search":
             return {"query": "q"}
         return {"path": "a.py"}
 
@@ -198,7 +198,7 @@ def test_dag_executor_retries_open_file_after_once_fault(monkeypatch):
     ex = DagExecutor(dispatch, arg_gen)
     out = ex.run(plan, state)
     assert out["status"] == "success"
-    assert int(state.context["dag_graph_tasks"]["s2"]["runtime"]["attempts"]) >= 2
+    assert int(ex.get_tasks_by_id()["s2"].attempts) >= 2
     assert int(state.metadata.get(_META_INJECT_COUNT, 0)) >= 1
 
 
@@ -214,8 +214,8 @@ def test_dag_executor_hard_open_triggers_replan_then_succeeds(monkeypatch):
 
     dispatch = _dispatcher(execute_fn)
 
-    def _gen(step, state):
-        if step.action == "search":
+    def _gen(task, state):
+        if task.tool == "search":
             return {"query": "q"}
         return {"path": "a.py"}
 

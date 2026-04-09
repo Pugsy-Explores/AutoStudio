@@ -14,6 +14,7 @@ from agent_v2.schemas.exploration import (
     effective_exploration_budget,
     read_query_intent_from_agent_state,
 )
+from agent_v2.schemas.execution_task import ExecutionTask
 from agent_v2.schemas.plan import PlanDocument, PlanStep
 from agent_v2.schemas.planner_plan_context import PlannerPlanContext
 from agent_v2.schemas.policies import ExecutionPolicy
@@ -42,64 +43,21 @@ from agent_v2.validation.replan_result_validator import ReplanResultValidator
 _DEFAULT_POLICY = ExecutionPolicy(max_steps=8, max_retries_per_step=2, max_replans=2)
 
 
-def _dag_completed_id_set(state: Any) -> set[str]:
-    ctx = getattr(state, "context", None)
-    if not isinstance(ctx, dict):
-        return set()
-    raw = ctx.get("dag_completed_step_ids")
-    if isinstance(raw, list):
-        return {str(x) for x in raw}
-    return set()
-
-
-def _summary_from_dag_task_row(row: Any) -> str:
-    if not isinstance(row, dict):
-        return ""
-    rt = row.get("runtime")
-    if not isinstance(rt, dict):
-        return ""
-    lr = rt.get("last_result")
-    if not isinstance(lr, dict):
-        return ""
-    out = lr.get("output")
-    if isinstance(out, dict):
-        return str(out.get("summary") or "")
-    return ""
-
-
-def completed_steps_for_replan(state: Any, plan: PlanDocument) -> list[ReplanCompletedStep]:
-    """Completed step summaries from DAG runtime in state.context (not PlanStep)."""
-    ctx = getattr(state, "context", None)
-    raw_tasks: dict[str, Any] = {}
-    if isinstance(ctx, dict) and isinstance(ctx.get("dag_graph_tasks"), dict):
-        raw_tasks = ctx["dag_graph_tasks"]
-    done = _dag_completed_id_set(state)
+def completed_steps_for_replan_from_tasks(
+    plan: PlanDocument,
+    tasks_by_id: dict[str, ExecutionTask],
+) -> list[ReplanCompletedStep]:
+    """Summaries for plan steps whose ExecutionTask.status is completed (dependency-only runtime)."""
     out: list[ReplanCompletedStep] = []
-    for s in sorted(plan.steps, key=lambda x: x.index):
-        if s.step_id not in done:
+    for s in plan.steps:
+        t = tasks_by_id.get(s.step_id)
+        if t is None or t.status != "completed":
             continue
-        summ = _summary_from_dag_task_row(raw_tasks.get(s.step_id))
+        summ = ""
+        if t.last_result is not None and t.last_result.output is not None:
+            summ = str(t.last_result.output.summary or "")
         out.append(ReplanCompletedStep(step_id=s.step_id, summary=summ))
     return out
-
-
-def failure_attempts_from_dag(state: Any, step_id: str) -> int:
-    ctx = getattr(state, "context", None)
-    if not isinstance(ctx, dict):
-        return 0
-    raw_tasks = ctx.get("dag_graph_tasks")
-    if not isinstance(raw_tasks, dict):
-        return 0
-    row = raw_tasks.get(step_id)
-    if not isinstance(row, dict):
-        return 0
-    rt = row.get("runtime")
-    if not isinstance(rt, dict):
-        return 0
-    try:
-        return int(rt.get("attempts", 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 class Replanner:
@@ -116,8 +74,10 @@ class Replanner:
         self,
         state: Any,
         plan: PlanDocument,
-        failed_step: PlanStep,
+        failed_task: ExecutionTask,
         last_result: ExecutionResult,
+        *,
+        tasks_by_id: dict[str, ExecutionTask],
     ) -> ReplanRequest:
         md = getattr(state, "metadata", None)
         if not isinstance(md, dict):
@@ -149,20 +109,20 @@ class Replanner:
             msg_parts.append(lr_summary)
         message = " | ".join(msg_parts) if msg_parts else lr_summary or err_type_enum.value
 
-        attempts = failure_attempts_from_dag(state, failed_step.step_id)
+        attempts = int(failed_task.attempts)
 
         failure_context = ReplanFailureContext(
-            step_id=failed_step.step_id,
+            step_id=failed_task.id,
             error=ReplanFailureError(type=err_type_enum, message=message),
             attempts=attempts,
             last_output_summary=lr_summary,
         )
 
-        completed = completed_steps_for_replan(state, plan)
+        completed = completed_steps_for_replan_from_tasks(plan, tasks_by_id)
 
         partial = [
             ReplanPartialResult(
-                step_id=failed_step.step_id,
+                step_id=failed_task.id,
                 result_summary=lr_summary,
             )
         ]
@@ -186,8 +146,8 @@ class Replanner:
             instruction=state.instruction,
             original_plan=ReplanOriginalPlan(
                 plan_id=plan.plan_id,
-                failed_step_id=failed_step.step_id,
-                current_step_index=failed_step.index,
+                failed_step_id=failed_task.id,
+                current_step_index=0,
             ),
             failure_context=failure_context,
             execution_context=execution_context,

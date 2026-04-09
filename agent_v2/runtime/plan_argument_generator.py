@@ -1,5 +1,5 @@
 """
-Phase 5 — Plan argument generator: LLM fills tool arguments only; action comes from PlanStep.
+Phase 5 — Plan argument generator: LLM fills tool arguments only; tool name comes from ExecutionTask.
 
 Seam module: imports agent.* for model_client and react_schema (same boundary as bootstrap).
 """
@@ -19,7 +19,7 @@ from agent_v2.observability.langfuse_helpers import (
     langfuse_generation_input_with_prompt,
     try_langfuse_generation,
 )
-from agent_v2.schemas.plan import PlanStep
+from agent_v2.schemas.execution_task import ExecutionTask
 
 
 def _model_task_for_tool_args(state: Any) -> str:
@@ -41,7 +41,7 @@ def _strip_json_fence(text: str) -> str:
 
 class PlanArgumentGenerator:
     """
-    Given a fixed PlanStep.action, asks the reasoning model for JSON args only.
+    Given a fixed ExecutionTask.tool, asks the reasoning model for JSON args only.
     """
 
     def __init__(self, generate_fn=None):
@@ -52,7 +52,7 @@ class PlanArgumentGenerator:
             return self._generate_fn(prompt)
         return call_reasoning_model(prompt, task_name=_model_task_for_tool_args(state))
 
-    def _generate_with_langfuse(self, prompt: str, step: PlanStep, state: Any) -> str:
+    def _generate_with_langfuse(self, prompt: str, task: ExecutionTask, state: Any) -> str:
         md = getattr(state, "metadata", None) or {}
         obs = md.get("obs")
         span = None
@@ -69,7 +69,7 @@ class PlanArgumentGenerator:
             name="argument_generation",
             input=langfuse_generation_input_with_prompt(
                 prompt,
-                extra={"step_goal": step.goal, "action": step.action},
+                extra={"step_goal": task.goal, "action": task.tool},
             ),
         )
         text = ""
@@ -88,36 +88,37 @@ class PlanArgumentGenerator:
                 except Exception:
                     pass
 
-    def generate(self, step: PlanStep, state: Any) -> dict:
-        if step.action == "finish":
+    def generate(self, task: ExecutionTask, state: Any) -> dict:
+        if task.tool == "finish":
             return {}
 
-        if step.action == "shell":
-            return self._shell_args(step, state)
+        if task.tool == "shell":
+            return self._shell_args(task, state)
 
-        tool = get_tool_by_name(step.action)
+        tool = get_tool_by_name(task.tool)
         if tool is None:
-            return self._args_from_inputs_only(step)
+            return self._args_from_inputs_only(task)
 
-        prompt = self._build_prompt(step, state, tool.required_args)
-        raw_text = self._generate_with_langfuse(prompt, step, state)
+        prompt = self._build_prompt(task, state, tool.required_args)
+        raw_text = self._generate_with_langfuse(prompt, task, state)
         parsed = self._parse_args_json(raw_text)
-        merged = self._merge_filtered(step, parsed)
-        valid, err = validate_action(step.action, merged)
+        merged = self._merge_filtered(task, parsed)
+        valid, err = validate_action(task.tool, merged)
         if not valid:
-            fallback = self._args_from_inputs_only(step)
-            v2, _ = validate_action(step.action, fallback)
+            fallback = self._args_from_inputs_only(task)
+            v2, _ = validate_action(task.tool, fallback)
             return fallback if v2 else {}
         return merged
 
-    def _shell_args(self, step: PlanStep, state: Any) -> dict:
-        prompt = self._build_prompt(step, state, ["command"])
-        raw_text = self._generate_with_langfuse(prompt, step, state)
+    def _shell_args(self, task: ExecutionTask, state: Any) -> dict:
+        prompt = self._build_prompt(task, state, ["command"])
+        raw_text = self._generate_with_langfuse(prompt, task, state)
         parsed = self._parse_args_json(raw_text)
-        cmd = str(parsed.get("command") or step.inputs.get("command") or "").strip()
+        hints = task.input_hints if isinstance(task.input_hints, dict) else {}
+        cmd = str(parsed.get("command") or hints.get("command") or "").strip()
         return {"command": cmd} if cmd else {}
 
-    def _build_prompt(self, step: PlanStep, state: Any, required_keys: list[str]) -> str:
+    def _build_prompt(self, task: ExecutionTask, state: Any, required_keys: list[str]) -> str:
         hist_lines = []
         if getattr(state, "history", None):
             for h in state.history[-8:]:
@@ -137,24 +138,25 @@ class PlanArgumentGenerator:
             exploration_block = f"\nEXPLORATION (JSON fragment):\n{str(ctx.get('exploration_result'))[:2000]}\n"
 
         keys = ", ".join(f'"{k}"' for k in required_keys)
+        hints = task.input_hints if isinstance(task.input_hints, dict) else {}
         return f"""You are filling tool arguments for a fixed plan step. Do NOT choose a different tool.
 
 USER TASK:
 {getattr(state, "instruction", "")}
 
 STEP GOAL:
-{step.goal}
+{task.goal}
 
-FIXED ACTION (non-negotiable): {step.action}
+FIXED ACTION (non-negotiable): {task.tool}
 REQUIRED JSON keys: {keys}
 
 PLAN STEP INPUTS (hints, may be incomplete):
-{json.dumps(step.inputs or {}, indent=2)}
+{json.dumps(hints, indent=2)}
 
 PRIOR OBSERVATIONS:
 {history_block}
 {exploration_block}
-Return a single JSON object with ONLY the keys needed for action {step.action!r} ({keys}).
+Return a single JSON object with ONLY the keys needed for action {task.tool!r} ({keys}).
 No markdown, no prose, no extra keys beyond what the tool schema allows.
 """
 
@@ -172,13 +174,12 @@ No markdown, no prose, no extra keys beyond what the tool schema allows.
         req = tool.required_args
         return {k: d[k] for k in req if k in d and d[k] is not None}
 
-    def _merge_filtered(self, step: PlanStep, parsed: dict) -> dict:
-        inputs_dict = dict(step.inputs) if isinstance(step.inputs, dict) else {}
-        base = self._filter_to_tool_schema(step.action, inputs_dict)
-        overlay = self._filter_to_tool_schema(step.action, parsed if isinstance(parsed, dict) else {})
+    def _merge_filtered(self, task: ExecutionTask, parsed: dict) -> dict:
+        hints = task.input_hints if isinstance(task.input_hints, dict) else {}
+        base = self._filter_to_tool_schema(task.tool, hints)
+        overlay = self._filter_to_tool_schema(task.tool, parsed if isinstance(parsed, dict) else {})
         return {**base, **overlay}
 
-    def _args_from_inputs_only(self, step: PlanStep) -> dict:
-        if not isinstance(step.inputs, dict):
-            return {}
-        return self._filter_to_tool_schema(step.action, dict(step.inputs))
+    def _args_from_inputs_only(self, task: ExecutionTask) -> dict:
+        hints = task.input_hints if isinstance(task.input_hints, dict) else {}
+        return self._filter_to_tool_schema(task.tool, dict(hints))

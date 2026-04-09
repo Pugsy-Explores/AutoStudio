@@ -2,7 +2,7 @@
 Plan schemas — Schema 1 (PlanDocument) and Schema 2 (PlanStep).
 
 PlanDocument is the planner-owned control plane. PlanStep is immutable at execution time;
-runtime lives on ExecutionTask (see execution_task.py) after compile_plan_document.
+runtime lives on ExecutionTask (see execution_task.py) after compile_plan.
 """
 from __future__ import annotations
 

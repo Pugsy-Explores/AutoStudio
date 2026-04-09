@@ -31,12 +31,11 @@ from agent_v2.state.agent_state import AgentState
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _dag_last_summary(state: AgentState, step_id: str) -> str:
-    raw = (state.context or {}).get("dag_graph_tasks") or {}
-    cell = raw.get(step_id) or {}
-    lr = (cell.get("runtime") or {}).get("last_result") or {}
-    out = lr.get("output") or {}
-    return str(out.get("summary") or "")
+def _task_last_summary(executor: DagExecutor, step_id: str) -> str:
+    t = executor.get_tasks_by_id().get(step_id)
+    if t is None or t.last_result is None or t.last_result.output is None:
+        return ""
+    return str(t.last_result.output.summary or "")
 
 
 _SANDBOX_EDIT_FILE = "tweak_me.py"
@@ -138,7 +137,7 @@ def test_open_file_returns_content(executor: DagExecutor):
     state.current_plan = plan.model_dump(mode="json")
     out = executor.run(plan, state)
     assert out["status"] == "success"
-    summary = _dag_last_summary(state, plan.steps[0].step_id)
+    summary = _task_last_summary(executor, plan.steps[0].step_id)
     assert "ExplorationRunner" in summary or "exploration" in summary.lower()
 
 
@@ -155,7 +154,7 @@ def test_search_returns_results(executor: DagExecutor):
     state.current_plan = plan.model_dump(mode="json")
     out = executor.run(plan, state)
     assert out["status"] == "success"
-    summary = _dag_last_summary(state, plan.steps[0].step_id)
+    summary = _task_last_summary(executor, plan.steps[0].step_id)
     assert "dag_executor" in summary.lower() or "DagExecutor" in summary
 
 
@@ -172,7 +171,7 @@ def test_shell_lists_files(executor: DagExecutor):
     state.current_plan = plan.model_dump(mode="json")
     out = executor.run(plan, state)
     assert out["status"] == "success"
-    summary = _dag_last_summary(state, plan.steps[0].step_id)
+    summary = _task_last_summary(executor, plan.steps[0].step_id)
     assert "dag_executor.py" in summary
 
 
@@ -189,7 +188,7 @@ def test_run_tests_produces_pytest_output(executor: DagExecutor):
     state.current_plan = plan.model_dump(mode="json")
     out = executor.run(plan, state)
     assert out["status"] == "success"
-    summary = _dag_last_summary(state, plan.steps[0].step_id)
+    summary = _task_last_summary(executor, plan.steps[0].step_id)
     low = summary.lower()
     assert "executed successfully" in low
     assert "passed" in low or "ok" in low

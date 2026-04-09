@@ -9,6 +9,7 @@ from agent_v2.planner.planner_v2 import (
     PlannerV2,
     _coerce_step_action_and_type,
 )
+from agent_v2.runtime.plan_compiler import compile_plan
 from agent_v2.runtime.session_memory import SessionMemory
 from agent_v2.schemas.planner_plan_context import PlannerPlanContext
 from agent_v2.schemas.exploration import ExplorationResultMetadata, ExplorationSummary
@@ -257,8 +258,8 @@ class TestPlannerV2(unittest.TestCase):
         self.assertIn("finish", actions)
         self.assertEqual(doc.steps[-1].type, "finish")
         self.assertEqual(doc.steps[-1].action, "finish")
-        for s in doc.steps:
-            self.assertEqual(s.execution.max_attempts, policy.max_retries_per_step)
+        for t in compile_plan(doc, policy=policy):
+            self.assertEqual(t.max_attempts, policy.max_retries_per_step)
         self.assertTrue(calls)
         self.assertIn("USER INSTRUCTION", calls[0])
         self.assertIn("CURRENT UNDERSTANDING:", calls[0])

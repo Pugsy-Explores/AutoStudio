@@ -13,9 +13,23 @@ import uuid
 from typing import Callable, Literal
 
 from agent_v2.schemas.execution import ErrorType, ExecutionResult
+from agent_v2.schemas.execution_task import ExecutionTask
 from agent_v2.schemas.plan import PlanStep
 from agent_v2.observability.trace_text import truncate_trace_text
 from agent_v2.schemas.trace import Trace, TraceError, TraceMetadata, TraceStep
+
+
+def extract_target_from_execution_task(task: ExecutionTask) -> str:
+    """Best-effort target from ExecutionTask.input_hints and goal."""
+    h = task.input_hints if isinstance(task.input_hints, dict) else {}
+    for key in ("path", "query", "file", "instruction", "command"):
+        val = h.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()[:500]
+    g = (task.goal or "").strip()
+    if g:
+        return g[:500]
+    return ""
 
 
 def extract_target_from_plan_step(step: PlanStep) -> str:
@@ -104,6 +118,72 @@ class TraceEmitter:
                 plan_step_index=plan_step_index,
                 action=str(step.action),
                 target=extract_target_from_plan_step(step),
+                success=bool(result.success),
+                error=err,
+                duration_ms=dur,
+                kind="tool",
+                metadata=meta,
+            )
+        )
+
+    def record_execution_task(
+        self,
+        task: ExecutionTask,
+        result: ExecutionResult,
+        *,
+        execution_attempts: int | None = None,
+    ) -> None:
+        """Append a TraceStep from runtime ExecutionTask (plan_step_index = emission order, not PlanStep.index)."""
+        plan_step_index = len(self._steps) + 1
+        err: TraceError | None = None
+        if not result.success:
+            if result.error is not None:
+                err = TraceError(
+                    type=result.error.type,
+                    message=(result.error.message or "").strip() or result.error.type.value,
+                )
+            else:
+                err = TraceError(type=ErrorType.unknown, message="unknown failure")
+
+        dur = 0
+        if result.metadata is not None:
+            dur = int(result.metadata.duration_ms or 0)
+
+        meta: dict = {}
+        tool_name = ""
+        if result.metadata is not None:
+            tool_name = str(result.metadata.tool_name or "")
+        if tool_name:
+            meta["tool_name"] = tool_name
+        if execution_attempts is not None and execution_attempts >= 1:
+            meta["attempts"] = int(execution_attempts)
+        if tool_name == "read_snippet":
+            data = result.output.data if result.output else {}
+            mode = ""
+            if isinstance(data, dict):
+                mode = str(data.get("mode") or "")
+                file_path = str(data.get("file_path") or "").strip()
+                if file_path:
+                    meta["file"] = file_path
+                symbol = str(data.get("symbol") or "").strip()
+                if symbol:
+                    meta["symbol"] = symbol
+                content = data.get("content")
+                if isinstance(content, str) and content.strip():
+                    meta["snippet_preview"] = content.strip()[:160]
+            if mode == "symbol_body":
+                meta["read_source"] = "symbol"
+            elif mode == "line_window":
+                meta["read_source"] = "line"
+            elif mode == "file_head":
+                meta["read_source"] = "head"
+
+        self._steps.append(
+            TraceStep(
+                step_id=task.id,
+                plan_step_index=plan_step_index,
+                action=str(task.tool),
+                target=extract_target_from_execution_task(task),
                 success=bool(result.success),
                 error=err,
                 duration_ms=dur,

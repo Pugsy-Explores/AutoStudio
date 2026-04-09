@@ -1,8 +1,7 @@
 """
-Execution graph — compiled from PlanDocument. Runtime state is NOT stored on PlanStep.
+Runtime execution unit: compiled from PlanDocument. No PlanStep in the execution path.
 
-ExecutionTask is the unit the DAG scheduler runs. TaskRuntimeState holds mutable
-per-task execution fields (arguments are snapshotted on ExecutionTask before dispatch).
+Scheduler uses only dependencies + task status; plan step index is not used for ordering.
 """
 from __future__ import annotations
 
@@ -12,49 +11,36 @@ from pydantic import BaseModel, Field
 
 from agent_v2.schemas.execution import ExecutionResult
 
-
-class TaskRuntimeState(BaseModel):
-    status: Literal["pending", "running", "completed", "failed"] = "pending"
-    attempts: int = 0
-    max_attempts: int = 2
-    started_at: str | None = None
-    completed_at: str | None = None
-    last_result: ExecutionResult | None = None
+TaskStatus = Literal["pending", "ready", "running", "completed", "failed"]
 
 
 class ExecutionTask(BaseModel):
-    """Single node in the execution DAG (compiled from one PlanStep)."""
+    """Single DAG node — the only mutable runtime unit during execution."""
 
     id: str
     tool: str
     dependencies: list[str] = Field(default_factory=list)
-    plan_step_index: int
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    status: TaskStatus = "pending"
+    attempts: int = 0
+    max_attempts: int = 2
     goal: str = ""
     input_hints: dict[str, Any] = Field(default_factory=dict)
-    arguments: dict[str, Any] = Field(default_factory=dict)
-    runtime: TaskRuntimeState = Field(default_factory=TaskRuntimeState)
-
-
-class CompiledExecutionGraph(BaseModel):
-    """Compiler output: tasks plus adjacency (dependencies are listed per task)."""
-
-    plan_id: str
-    tasks_by_id: dict[str, ExecutionTask]
-
-    def ordered_tasks(self) -> list[ExecutionTask]:
-        return sorted(self.tasks_by_id.values(), key=lambda t: t.plan_step_index)
+    last_result: ExecutionResult | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
 
 
 class TaskScheduler:
-    """Minimal scheduler: ready = pending tasks whose dependencies are completed."""
+    """Ready = pending tasks whose dependencies are all completed. Tie-break: task id."""
 
     @staticmethod
-    def ready_tasks(graph: CompiledExecutionGraph, completed_ids: set[str]) -> list[ExecutionTask]:
+    def ready_tasks(tasks_by_id: dict[str, ExecutionTask], completed_ids: set[str]) -> list[ExecutionTask]:
         ready: list[ExecutionTask] = []
-        for t in graph.ordered_tasks():
-            if t.runtime.status != "pending":
+        for t in tasks_by_id.values():
+            if t.status != "pending":
                 continue
             if all(d in completed_ids for d in t.dependencies):
                 ready.append(t)
-        ready.sort(key=lambda x: x.plan_step_index)
+        ready.sort(key=lambda x: x.id)
         return ready

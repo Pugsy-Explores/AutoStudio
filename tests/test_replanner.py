@@ -17,6 +17,7 @@ from agent_v2.schemas.plan import (
     PlanSource,
     PlanStep,
 )
+from agent_v2.schemas.execution_task import ExecutionTask
 from agent_v2.schemas.policies import ExecutionPolicy
 from agent_v2.schemas.planner_plan_context import PlannerPlanContext
 from agent_v2.schemas.replan import ReplanContext, ReplanNewPlan, ReplanResult
@@ -210,11 +211,18 @@ class TestReplannerBuild(unittest.TestCase):
         st.context["exploration_result"] = {
             "summary": {"key_findings": ["f1"], "knowledge_gaps": []},
         }
-        st.context["dag_graph_tasks"] = {
-            "a1": {"runtime": {"attempts": 2, "last_result": None}},
-        }
+        failed = ExecutionTask(
+            id="a1",
+            tool="search",
+            dependencies=[],
+            arguments={},
+            status="failed",
+            attempts=2,
+            goal="g",
+            input_hints={},
+        )
         last = _fail_result("a1", "tool broke")
-        req = r.build_replan_request(st, plan, plan.steps[0], last)
+        req = r.build_replan_request(st, plan, failed, last, tasks_by_id={})
         self.assertEqual(req.original_plan.plan_id, "p0")
         self.assertIn("tool broke", req.failure_context.error.message)
 

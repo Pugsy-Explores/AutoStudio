@@ -39,24 +39,24 @@ def plan_document_has_runnable_work(
     *,
     state: Any | None = None,
 ) -> bool:
-    """True when executor work may remain (DAG in context) or plan exists but graph not yet materialized."""
+    """True when executor progress metadata says work remains, or executor has not published progress yet."""
     if plan_doc is None:
         return False
     steps = plan_doc.steps or []
     if not steps:
         return False
-    ctx = getattr(state, "context", None) if state is not None else None
-    if not isinstance(ctx, dict):
+    if state is None:
         return True
-    raw = ctx.get("dag_graph_tasks")
-    if not isinstance(raw, dict) or len(raw) == 0:
+    md = getattr(state, "metadata", None)
+    if not isinstance(md, dict):
         return True
-    n = len(raw)
-    completed = ctx.get("dag_completed_step_ids")
-    if not isinstance(completed, (list, set, tuple)):
-        completed = []
-    completed_set = {str(x) for x in completed}
-    return len(completed_set) < n
+    ep = md.get("executor_dag_plan_id")
+    if ep is not None and str(ep) == str(plan_doc.plan_id):
+        total = int(md.get("executor_dag_total") or 0)
+        done = int(md.get("executor_dag_completed") or 0)
+        if total > 0:
+            return done < total
+    return True
 
 
 def should_call_planner_v2(

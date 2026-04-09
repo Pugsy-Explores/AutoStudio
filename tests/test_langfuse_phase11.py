@@ -418,21 +418,28 @@ class TestLangfuseArgumentGeneratorIntegration:
     def test_arg_generator_wraps_llm_with_generation(self):
         """PlanArgumentGenerator._generate_with_langfuse creates generation."""
         from agent_v2.runtime.plan_argument_generator import PlanArgumentGenerator
-        from agent_v2.schemas.plan import PlanStep
+        from agent_v2.schemas.execution_task import ExecutionTask
         from agent_v2.state.agent_state import AgentState
 
         def mock_generate(prompt):
             return '{"query": "test query"}'
 
         arg_gen = PlanArgumentGenerator(generate_fn=mock_generate)
-        step = PlanStep(step_id="s1", index=0, type="explore", action="search", goal="find files")
+        task = ExecutionTask(
+            id="s1",
+            tool="search",
+            dependencies=[],
+            arguments={},
+            goal="find files",
+            input_hints={},
+        )
         state = AgentState(instruction="test")
         trace = create_agent_trace(instruction="test", mode="act")
         state.metadata["langfuse_trace"] = trace
         span = trace.span(name="step_0_search", input={})
         state.metadata["_current_langfuse_span"] = span
 
-        args = arg_gen.generate(step, state)
+        args = arg_gen.generate(task, state)
         assert "query" in args
 
 

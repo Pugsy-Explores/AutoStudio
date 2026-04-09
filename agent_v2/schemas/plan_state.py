@@ -1,5 +1,5 @@
 """
-Planner-facing progress snapshot. Execution progress comes from DAG runtime in AgentState.context.
+Planner-facing progress snapshot. Execution progress comes from executor metadata on AgentState.
 """
 
 from __future__ import annotations
@@ -32,45 +32,28 @@ def plan_state_from_plan_document(
     last_result_summary: str = "",
     state: Any | None = None,
 ) -> PlanState:
-    """Derive plan progress from ``state.context`` DAG snapshot (dag_completed_step_ids / dag_graph_tasks)."""
+    """Derive plan progress from ``state.metadata`` executor fields (no context DAG)."""
     completed: list[PlanStateCompletedStep] = []
-    ordered = sorted(plan.steps, key=lambda s: s.index)
-
-    ctx: dict[str, Any] = {}
-    if state is not None:
-        raw = getattr(state, "context", None)
-        if isinstance(raw, dict):
-            ctx = raw
 
     done: set[str] = set()
-    raw_done = ctx.get("dag_completed_step_ids")
-    if isinstance(raw_done, list):
-        done = {str(x) for x in raw_done}
-
-    raw_tasks: dict[str, Any] = {}
-    rt = ctx.get("dag_graph_tasks")
-    if isinstance(rt, dict):
-        raw_tasks = rt
+    if state is not None:
+        md = getattr(state, "metadata", None)
+        if isinstance(md, dict):
+            ep = md.get("executor_dag_plan_id")
+            if ep is not None and str(ep) == str(plan.plan_id):
+                raw_done = md.get("executor_dag_completed_ids")
+                if isinstance(raw_done, list):
+                    done = {str(x) for x in raw_done}
 
     current_id: Optional[str] = None
     current_idx: Optional[int] = None
 
-    for s in ordered:
+    for s in plan.steps:
         if s.step_id in done:
-            summ = ""
-            row = raw_tasks.get(s.step_id)
-            if isinstance(row, dict):
-                rtime = row.get("runtime")
-                if isinstance(rtime, dict):
-                    lr = rtime.get("last_result")
-                    if isinstance(lr, dict):
-                        out = lr.get("output")
-                        if isinstance(out, dict):
-                            summ = str(out.get("summary") or "")
-            completed.append(PlanStateCompletedStep(step_id=s.step_id, summary=summ))
+            completed.append(PlanStateCompletedStep(step_id=s.step_id, summary=""))
         else:
             current_id = s.step_id
-            current_idx = s.index
+            current_idx = None
             break
 
     summ_out = last_result_summary

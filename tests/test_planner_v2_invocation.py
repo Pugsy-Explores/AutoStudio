@@ -57,10 +57,18 @@ def test_plan_document_has_runnable_work():
     )
     plan = _minimal_plan([s])
     st_done = MagicMock()
-    st_done.context = {"dag_graph_tasks": {"s1": {}}, "dag_completed_step_ids": ["s1"]}
+    st_done.metadata = {
+        "executor_dag_plan_id": "p1",
+        "executor_dag_total": 1,
+        "executor_dag_completed": 1,
+    }
     assert plan_document_has_runnable_work(plan, state=st_done) is False
     st_run = MagicMock()
-    st_run.context = {"dag_graph_tasks": {"s1": {}}, "dag_completed_step_ids": []}
+    st_run.metadata = {
+        "executor_dag_plan_id": "p1",
+        "executor_dag_total": 1,
+        "executor_dag_completed": 0,
+    }
     assert plan_document_has_runnable_work(plan, state=st_run) is True
     assert plan_document_has_runnable_work(plan, state=None) is True
 
